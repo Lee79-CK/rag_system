@@ -1,0 +1,46 @@
+[project]
+name = "admin-api"
+version = "0.1.0"
+description = "Admin Backend (FastAPI + SQLAlchemy) — docs/TDD.md §7.5"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.4",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "python-multipart>=0.0.9",
+    "orjson>=3.10",
+    "structlog>=24.1",
+    "prometheus-client>=0.20",
+    "rag-schemas",
+    "rag-common",
+    "rag-observability",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/admin"]
+
+# 루트 ruff 설정(§3.1)을 상속하되, FastAPI 의존성 주입 패턴(Depends/Query/… in defaults)은
+# B008 오탐이므로 immutable call로 등록한다.
+[tool.ruff]
+extend = "../../pyproject.toml"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Header",
+    "fastapi.Query",
+    "fastapi.File",
+    "fastapi.Form",
+    "admin.core.rbac.require_roles",
+]

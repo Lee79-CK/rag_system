@@ -1,0 +1,7 @@
+apiVersion: v2
+name: rag-platform
+description: Mattermost 기반 폐쇄형 Private Cloud RAG LLM 챗봇 (Umbrella Chart) — docs/TDD.md §14
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# 폐쇄망: 외부 chart repo 미사용. qdrant/postgres/redis는 본 chart 템플릿(StatefulSet)으로 배포.

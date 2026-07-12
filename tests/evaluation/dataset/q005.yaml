@@ -1,0 +1,9 @@
+id: q005
+type: no_answer
+question: "2027년 신규 데이터센터의 상세 전력 설계 도면을 알려주세요."
+channel_id: channel-001
+ground_truth:
+  answer_gist: "관련 문서 없음 — 근거 부족 안내가 정답"
+  documents: []
+  pages: []
+  answerable: false

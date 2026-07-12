@@ -1,0 +1,9 @@
+id: q002
+type: multi_doc
+question: "장애 발생 시 보고 대상과 복구 절차를 함께 정리해 주세요."
+channel_id: channel-001
+ground_truth:
+  answer_gist: "보고 체계(운영매뉴얼) + 복구 절차(장애대응매뉴얼) 종합"
+  documents: ["장애대응매뉴얼.pdf", "운영매뉴얼.pdf"]
+  pages: [12, 5]
+  answerable: true

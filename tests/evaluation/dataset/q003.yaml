@@ -1,0 +1,9 @@
+id: q003
+type: table
+question: "장애 등급별 목표 복구 시간(RTO)을 표로 알려주세요."
+channel_id: channel-001
+ground_truth:
+  answer_gist: "1등급 1h, 2등급 4h 등 표 기반 수치"
+  documents: ["장애대응매뉴얼.pdf"]
+  pages: [13]
+  answerable: true

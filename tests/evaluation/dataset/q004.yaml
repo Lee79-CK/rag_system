@@ -1,0 +1,9 @@
+id: q004
+type: definition
+question: "SLA란 무엇인가요?"
+channel_id: channel-001
+ground_truth:
+  answer_gist: "서비스 수준 협약 정의"
+  documents: ["운영매뉴얼.pdf"]
+  pages: [2]
+  answerable: true

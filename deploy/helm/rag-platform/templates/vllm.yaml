@@ -1,0 +1,67 @@
+{{/* vLLM — llm-0/llm-1 Deployment(각 GPU 1) + 공통 Service (ADR-009, §8). */}}
+{{- $v := .Values.vllm }}
+{{- range $replica := $v.replicas }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-{{ $replica }}
+  namespace: {{ $v.namespace }}
+  labels:
+    app.kubernetes.io/name: vllm
+    app.kubernetes.io/part-of: rag-platform
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }   # GPU 2장 한도 내 순차 교체 (§14.2)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vllm
+      vllm-replica: {{ $replica }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vllm
+        vllm-replica: {{ $replica }}
+    spec:
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: vllm
+          image: {{ include "rag.image" (dict "image" $v.image "root" $) }}
+          args: {{ toJson $v.args }}
+          securityContext:
+            {{- toYaml $.Values.containerSecurityContext | nindent 12 }}
+            readOnlyRootFilesystem: {{ $v.securityContext.readOnlyRootFilesystem }}
+          ports:
+            - containerPort: 8000
+          env:
+            {{- include "rag.offlineEnv" $ | nindent 12 }}
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: /health, port: 8000 }
+            failureThreshold: 60
+            periodSeconds: 10          # 모델 로딩 최대 10분 (NFR-HA-008)
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-pvc
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  namespace: {{ $v.namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: vllm      # llm-0/llm-1 공통 label → LB
+  ports:
+    - port: 8000
+      targetPort: 8000

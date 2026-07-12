@@ -1,0 +1,37 @@
+{{/* Grafana 대시보드 ConfigMap (§12) — Prometheus metric 패널. sidecar가 자동 로딩. */}}
+{{- if .Values.monitoring.grafanaDashboards }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-grafana-dashboards
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: rag-platform
+data:
+  rag-overview.json: |
+    {
+      "title": "RAG Platform Overview",
+      "schemaVersion": 39,
+      "panels": [
+        {"title": "Webhook ACK p95", "type": "timeseries",
+         "targets": [{"expr": "histogram_quantile(0.95, sum(rate(bridge_ack_latency_seconds_bucket[5m])) by (le))"}]},
+        {"title": "Answer latency p95 (total)", "type": "timeseries",
+         "targets": [{"expr": "histogram_quantile(0.95, sum(rate(chat_job_duration_seconds_bucket{stage=\"total\"}[5m])) by (le))"}]},
+        {"title": "Chat queue depth", "type": "timeseries",
+         "targets": [{"expr": "chat_queue_depth"}]},
+        {"title": "Delivery result", "type": "timeseries",
+         "targets": [{"expr": "sum(rate(bridge_delivery_total[5m])) by (result)"}]},
+        {"title": "Insufficient evidence", "type": "timeseries",
+         "targets": [{"expr": "sum(rate(rag_insufficient_evidence_total[5m]))"}]},
+        {"title": "Feedback satisfaction ratio", "type": "stat",
+         "targets": [{"expr": "feedback_satisfaction_ratio"}]},
+        {"title": "Invalid feedback signatures", "type": "timeseries",
+         "targets": [{"expr": "sum(rate(bridge_invalid_feedback_sig_total[5m]))"}]},
+        {"title": "Embedding latency p95", "type": "timeseries",
+         "targets": [{"expr": "histogram_quantile(0.95, sum(rate(embedding_latency_seconds_bucket[5m])) by (le))"}]},
+        {"title": "Rerank latency p95", "type": "timeseries",
+         "targets": [{"expr": "histogram_quantile(0.95, sum(rate(rerank_latency_seconds_bucket[5m])) by (le))"}]}
+      ]
+    }
+{{- end }}

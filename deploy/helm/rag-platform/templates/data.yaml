@@ -1,0 +1,57 @@
+{{/* 데이터 계층 StatefulSet — qdrant / postgresql / redis (§12.2). */}}
+{{- $d := .Values.data }}
+{{- range $svc := (list
+    (dict "name" "qdrant" "cfg" $d.qdrant "port" 6333 "mount" "/qdrant/storage")
+    (dict "name" "postgresql" "cfg" $d.postgresql "port" 5432 "mount" "/var/lib/postgresql/data")
+    (dict "name" "redis" "cfg" $d.redis "port" 6379 "mount" "/data")) }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $svc.name }}
+  namespace: {{ $d.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $svc.name }}
+    app.kubernetes.io/part-of: rag-platform
+spec:
+  serviceName: {{ $svc.name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $svc.name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $svc.name }}
+    spec:
+      containers:
+        - name: {{ $svc.name }}
+          image: {{ $svc.cfg.image }}
+          ports:
+            - containerPort: {{ $svc.port }}
+          resources:
+            {{- toYaml $svc.cfg.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ $svc.mount }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ $svc.cfg.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc.name }}
+  namespace: {{ $d.namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $svc.name }}
+  ports:
+    - port: {{ $svc.port }}
+      targetPort: {{ $svc.port }}
+{{- end }}

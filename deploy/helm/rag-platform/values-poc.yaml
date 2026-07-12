@@ -1,0 +1,122 @@
+# PoC values — docs/PRD.md §12 리소스, docs/TDD.md §14. 이미지는 내부 Harbor digest 고정.
+global:
+  imageRegistry: harbor.internal
+  imageTag: "0.1.0"          # --set global.imageTag=<git-sha> 로 override
+  imagePullPolicy: IfNotPresent
+  # 사전 생성 K8s Secret (§3.4, §14.2) — Helm 값에 secret 값 미포함
+  bridgeSecretName: rag-bridge-secrets          # outgoing-token, feedback-signing-key
+  offlineEnv:
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    HF_DATASETS_OFFLINE: "1"
+    HF_HOME: /models/huggingface
+
+# 공통 hardened securityContext (§11 #6). vLLM/OCR은 예외(values 주석) — 아래 vllm.securityContext 참조.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# ---- 애플리케이션 서비스 (rag-app / rag-ai namespace) ----
+appServices:
+  mattermost-bridge:
+    namespace: rag-app
+    replicas: 2
+    image: rag/mattermost-bridge
+    port: 8001
+    command: ["uvicorn", "bridge.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "4", memory: 8Gi } }
+    envFrom: [rag-bridge-secrets]
+    pdbMinAvailable: 1
+  rag-api:
+    namespace: rag-app
+    replicas: 2
+    image: rag/rag-api
+    port: 8002
+    command: ["uvicorn", "rag.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    resources: { requests: { cpu: "4", memory: 8Gi }, limits: { cpu: "6", memory: 12Gi } }
+    pdbMinAvailable: 1
+  rag-worker:
+    namespace: rag-app
+    replicas: 2
+    image: rag/rag-api                      # DEC-017: rag-api와 동일 이미지, entrypoint만 다름
+    port: 0
+    command: ["rq", "worker", "rag-chat", "--url", "redis://redis.rag-data:6379/0"]
+    resources: { requests: { cpu: "4", memory: 8Gi }, limits: { cpu: "6", memory: 12Gi } }
+    pdbMinAvailable: 1
+  admin-api:
+    namespace: rag-app
+    replicas: 2
+    image: rag/admin-api
+    port: 8003
+    command: ["uvicorn", "admin.main:app", "--host", "0.0.0.0", "--port", "8003"]
+    resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "3", memory: 6Gi } }
+    pdbMinAvailable: 1
+  embedding-api:
+    namespace: rag-ai
+    replicas: 2
+    image: rag/embedding-api
+    port: 8004
+    command: ["uvicorn", "embedding.main:app", "--host", "0.0.0.0", "--port", "8004"]
+    resources: { requests: { cpu: "4", memory: 12Gi }, limits: { cpu: "6", memory: 16Gi } }
+    modelVolume: true
+    pdbMinAvailable: 1
+  reranker-api:
+    namespace: rag-ai
+    replicas: 2
+    image: rag/reranker-api
+    port: 8005
+    command: ["uvicorn", "reranker.main:app", "--host", "0.0.0.0", "--port", "8005"]
+    resources: { requests: { cpu: "8", memory: 16Gi }, limits: { cpu: "12", memory: 24Gi } }
+    modelVolume: true
+    pdbMinAvailable: 1
+
+# ---- vLLM (GPU) — ADR-009: GPU 1장 = Replica 1 ----
+vllm:
+  namespace: rag-ai
+  image: rag/vllm-openai
+  replicas: [llm-0, llm-1]
+  servedModelName: internal-rag-llm
+  args:
+    - --model=/models/llm/main
+    - --served-model-name=internal-rag-llm
+    - --max-model-len=16384
+    - --gpu-memory-utilization=0.92
+    - --dtype=auto
+    - --max-num-seqs=16
+    - --disable-log-requests
+  resources: { requests: { cpu: "12", memory: 64Gi }, limits: { cpu: "16", memory: 96Gi, "nvidia.com/gpu": 1 } }
+  # 예외: vLLM은 readOnlyRootFilesystem=false (컴파일 캐시), runAsNonRoot 유지
+  securityContext:
+    readOnlyRootFilesystem: false
+
+# ---- 데이터 계층 (rag-data namespace) ----
+data:
+  namespace: rag-data
+  qdrant:
+    image: harbor.internal/library/qdrant:v1.12.1
+    storage: 500Gi
+    resources: { requests: { cpu: "8", memory: 32Gi } }
+  postgresql:
+    image: harbor.internal/library/postgres:16
+    storage: 200Gi
+    resources: { requests: { cpu: "4", memory: 16Gi } }
+  redis:
+    image: harbor.internal/library/redis:7
+    storage: 20Gi
+    resources: { requests: { cpu: "2", memory: 4Gi } }
+
+# ---- parser-indexer (rag-ingestion) — admin-api가 Job으로 인스턴스화 ----
+ingestion:
+  namespace: rag-ingestion
+  image: rag/parser-indexer
+
+monitoring:
+  grafanaDashboards: true

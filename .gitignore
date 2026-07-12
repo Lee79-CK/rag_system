@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# uv
+# uv.lock is committed intentionally (NFR-MAINT-004)
+
+# Secrets (§3.1 — never commit)
+secrets/
+.env
+*.key
+
+# Local data / models
+/data/
+/models/
+
+# Node
+node_modules/
+apps/admin-web/dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

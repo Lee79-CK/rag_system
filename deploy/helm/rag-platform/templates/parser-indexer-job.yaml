@@ -1,0 +1,40 @@
+{{/* parser-indexer Job 템플릿 (ConfigMap) — admin-api가 이 스펙을 인스턴스화한다 (ADR-008, §14.1). */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: parser-indexer-job-template
+  namespace: {{ .Values.ingestion.namespace }}
+  labels:
+    app.kubernetes.io/part-of: rag-platform
+data:
+  job.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      generateName: index-job-
+      namespace: {{ .Values.ingestion.namespace }}
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: parser-indexer
+              image: {{ include "rag.image" (dict "image" .Values.ingestion.image "root" .) }}
+              command: ["python", "-m", "ingestion.main", "--index-job-id", "__INDEX_JOB_ID__"]
+              env:
+                {{- include "rag.offlineEnv" . | nindent 16 }}
+              volumeMounts:
+                - name: models
+                  mountPath: /models
+                  readOnly: true
+                - name: documents
+                  mountPath: /data/documents
+          volumes:
+            - name: models
+              persistentVolumeClaim: { claimName: models-pvc }
+            - name: documents
+              persistentVolumeClaim: { claimName: documents-pvc }

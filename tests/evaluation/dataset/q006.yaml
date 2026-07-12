@@ -1,0 +1,9 @@
+id: q006
+type: ambiguous
+question: "그거 어떻게 처리하나요?"
+channel_id: channel-001
+ground_truth:
+  answer_gist: "질의가 모호 — 구체화 요청 또는 근거 부족 안내"
+  documents: []
+  pages: []
+  answerable: false

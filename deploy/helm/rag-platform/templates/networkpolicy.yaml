@@ -1,0 +1,76 @@
+{{/* NetworkPolicy default-deny + allowlist (§11 #7, §22.1). 폐쇄망 egress 차단 전제. */}}
+{{- range $ns := (list "rag-app" "rag-ai" "rag-data" "rag-ingestion") }}
+---
+# 기본 전면 차단 (ingress + egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ $ns }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# DNS 조회 허용 (kube-system CoreDNS)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: {{ $ns }}
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# 플랫폼 내부 통신 허용 (part-of=rag-platform 간)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-platform
+  namespace: {{ $ns }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: rag-platform
+        - namespaceSelector:
+            matchLabels:
+              rag-platform: "true"
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: rag-platform
+        - namespaceSelector:
+            matchLabels:
+              rag-platform: "true"
+{{- end }}
+---
+# Mattermost Callback → Bridge (/outgoing, /actions) 는 ingress-nginx 경유 (§7.2.5)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-bridge
+  namespace: rag-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mattermost-bridge
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 8001 }
