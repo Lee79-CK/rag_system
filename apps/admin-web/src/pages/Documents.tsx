@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
@@ -17,8 +17,8 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { InboxOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { PageHeader } from '../components/PageHeader';
 import { QueryState, errorMessage } from '../components/QueryState';
+import { StatusBadge, Surface, Mono } from '../components/ui';
 import {
   useDeactivateDocument,
   useDeleteDocument,
@@ -31,14 +31,15 @@ import { useChannels } from '../api/channels';
 import type { DocumentView, SecurityLevel } from '../types';
 
 const SECURITY_LEVELS: SecurityLevel[] = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'SECRET'];
+const STATUS_OPTIONS = ['ACTIVE', 'INDEXING', 'UPLOADED', 'INACTIVE', 'FAILED', 'DELETED'];
 
-const STATUS_COLOR: Record<string, string> = {
-  UPLOADED: 'default',
-  INDEXING: 'processing',
-  ACTIVE: 'success',
-  INACTIVE: 'warning',
-  DELETED: 'error',
-  FAILED: 'error',
+const filterSelectStyle: React.CSSProperties = {
+  padding: '7px 10px',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  fontSize: 13,
+  background: 'var(--surface)',
+  color: 'var(--text)',
 };
 
 export function Documents() {
@@ -54,6 +55,43 @@ export function Documents() {
   const [detailId, setDetailId] = useState<string | undefined>();
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [form] = Form.useForm();
+
+  // Filter bar state (client-side filtering over the loaded list).
+  const [q, setQ] = useState('');
+  const [fCat, setFCat] = useState('');
+  const [fDept, setFDept] = useState('');
+  const [fLevel, setFLevel] = useState('');
+  const [fStatus, setFStatus] = useState('');
+  const [autoRefresh, setAutoRefresh] = useState(false);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const t = setInterval(() => docs.refetch(), 10_000);
+    return () => clearInterval(t);
+  }, [autoRefresh, docs]);
+
+  const data = useMemo(() => docs.data ?? [], [docs.data]);
+  const categories = useMemo(
+    () => [...new Set(data.map((d) => d.category).filter(Boolean))] as string[],
+    [data],
+  );
+  const departments = useMemo(
+    () => [...new Set(data.map((d) => d.department).filter(Boolean))] as string[],
+    [data],
+  );
+
+  const filtered = useMemo(
+    () =>
+      data.filter(
+        (d) =>
+          (!q || d.title.toLowerCase().includes(q.toLowerCase())) &&
+          (!fCat || d.category === fCat) &&
+          (!fDept || d.department === fDept) &&
+          (!fLevel || d.security_level === fLevel) &&
+          (!fStatus || d.status === fStatus),
+      ),
+    [data, q, fCat, fDept, fLevel, fStatus],
+  );
 
   const submitUpload = async () => {
     const values = await form.validateFields();
@@ -93,34 +131,63 @@ export function Documents() {
     {
       title: '제목',
       dataIndex: 'title',
+      sorter: (a, b) => a.title.localeCompare(b.title),
       render: (v: string, row) => (
-        <Button type="link" style={{ padding: 0 }} onClick={() => setDetailId(row.id)}>
+        <Button
+          type="link"
+          style={{ padding: 0, fontWeight: 600 }}
+          onClick={() => setDetailId(row.id)}
+        >
           {v}
         </Button>
       ),
     },
-    { title: '분류', dataIndex: 'category', render: (v) => v ?? '-' },
+    { title: '카테고리', dataIndex: 'category', render: (v) => v ?? '-' },
     { title: '부서', dataIndex: 'department', render: (v) => v ?? '-' },
     {
       title: '보안등급',
       dataIndex: 'security_level',
-      render: (v: string) => <Tag>{v}</Tag>,
+      render: (v: string) => (
+        <Mono
+          style={{
+            fontSize: 11.5,
+            fontWeight: 700,
+            color: 'var(--text-sub)',
+            background: 'var(--tint-neutral)',
+            padding: '2px 8px',
+            borderRadius: 5,
+          }}
+        >
+          {v}
+        </Mono>
+      ),
     },
     {
       title: '상태',
       dataIndex: 'status',
-      render: (v: string) => <Tag color={STATUS_COLOR[v] ?? 'default'}>{v}</Tag>,
+      sorter: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
+      render: (v: string) => <StatusBadge status={v} />,
     },
     {
       title: '등록일',
       dataIndex: 'created_at',
-      render: (v: string | null) => (v ? new Date(v).toLocaleString() : '-'),
+      align: 'right',
+      sorter: (a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''),
+      render: (v: string | null) => (
+        <Mono style={{ fontSize: 12.5, color: 'var(--text-sub)' }}>
+          {v ? new Date(v).toLocaleString('ko-KR') : '-'}
+        </Mono>
+      ),
     },
     {
-      title: '작업',
+      title: '액션',
       key: 'actions',
+      align: 'right',
       render: (_, row) => (
         <Space size="small" wrap>
+          <Button size="small" onClick={() => setDetailId(row.id)}>
+            상세
+          </Button>
           <Button
             size="small"
             icon={<ReloadOutlined />}
@@ -131,12 +198,15 @@ export function Documents() {
           </Button>
           <Popconfirm
             title="비활성화하시겠습니까?"
+            description="즉시 검색에서 제외됩니다."
             onConfirm={() => runAction('비활성화', () => deactivate.mutateAsync(row.id))}
           >
             <Button size="small">비활성화</Button>
           </Popconfirm>
           <Popconfirm
-            title="삭제(논리)하시겠습니까?"
+            title="문서를 삭제하시겠습니까?"
+            description="색인된 청크가 검색에서 제외됩니다."
+            okButtonProps={{ danger: true }}
             onConfirm={() => runAction('삭제', () => remove.mutateAsync(row.id))}
           >
             <Button size="small" danger>
@@ -149,24 +219,67 @@ export function Documents() {
   ];
 
   return (
-    <>
-      <PageHeader
-        title="Documents"
-        subtitle="문서 등록 / 색인 / 버전 관리 (FR-DOC)"
-        extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
-            문서 업로드
-          </Button>
-        }
-      />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Surface padding="12px 16px" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <Input
+          placeholder="제목 검색"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          allowClear
+          style={{ width: 220 }}
+        />
+        <select style={filterSelectStyle} value={fCat} onChange={(e) => setFCat(e.target.value)}>
+          <option value="">카테고리: 전체</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+        <select style={filterSelectStyle} value={fDept} onChange={(e) => setFDept(e.target.value)}>
+          <option value="">부서: 전체</option>
+          {departments.map((d) => (
+            <option key={d} value={d}>{d}</option>
+          ))}
+        </select>
+        <select style={filterSelectStyle} value={fLevel} onChange={(e) => setFLevel(e.target.value)}>
+          <option value="">보안등급: 전체</option>
+          {SECURITY_LEVELS.map((l) => (
+            <option key={l} value={l}>{l}</option>
+          ))}
+        </select>
+        <select style={filterSelectStyle} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+          <option value="">상태: 전체</option>
+          {STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+        <div style={{ flex: 1 }} />
+        <Button icon={<ReloadOutlined />} onClick={() => docs.refetch()} title="새로고침" />
+        <div
+          onClick={() => setAutoRefresh((v) => !v)}
+          style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}
+        >
+          <span style={{ fontSize: 12, color: 'var(--text-sub)' }}>자동갱신 10s</span>
+          <Toggle on={autoRefresh} />
+        </div>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
+          문서 업로드
+        </Button>
+      </Surface>
 
       <QueryState
         isLoading={docs.isLoading}
         error={docs.error}
-        isEmpty={(docs.data?.length ?? 0) === 0}
-        emptyText="등록된 문서가 없습니다."
+        isEmpty={data.length === 0}
+        emptyText="등록된 문서가 없습니다. 우측 상단의 [문서 업로드]로 시작하세요."
       >
-        <Table rowKey="id" columns={columns} dataSource={docs.data} pagination={{ pageSize: 20 }} />
+        <Surface padding={0} style={{ overflow: 'hidden' }}>
+          <Table
+            rowKey="id"
+            columns={columns}
+            dataSource={filtered}
+            pagination={{ pageSize: 20, showTotal: (t) => `총 ${t}건 · 페이지당 20행` }}
+          />
+        </Surface>
       </QueryState>
 
       <Modal
@@ -192,13 +305,13 @@ export function Documents() {
                 <InboxOutlined />
               </p>
               <p className="ant-upload-text">클릭 또는 드래그하여 업로드</p>
-              <p className="ant-upload-hint">pdf, docx, pptx, xlsx, txt, md, html</p>
+              <p className="ant-upload-hint">pdf, docx, pptx, xlsx, txt, md, html (최대 100MB)</p>
             </Upload.Dragger>
           </Form.Item>
           <Form.Item label="제목" name="title">
             <Input placeholder="미입력 시 파일명 사용" />
           </Form.Item>
-          <Form.Item label="분류(category)" name="category">
+          <Form.Item label="카테고리(category)" name="category">
             <Input />
           </Form.Item>
           <Form.Item label="부서(department)" name="department">
@@ -210,13 +323,13 @@ export function Documents() {
           <Form.Item
             label="허용 Channel (ACL)"
             name="allowed_channel_ids"
-            tooltip="이 문서를 검색에 노출할 Channel을 선택합니다 (Channel 격리)."
+            tooltip="이 문서를 검색에 노출할 Channel을 명시적으로 선택합니다 (Channel 격리)."
           >
             <Select
               mode="multiple"
               allowClear
               loading={channels.isLoading}
-              placeholder="전체 허용은 비워두기"
+              placeholder="허용 Channel을 명시 선택하세요"
               options={(channels.data ?? []).map((c) => ({
                 label: `${c.channel_name} (${c.channel_id})`,
                 value: c.channel_id,
@@ -227,7 +340,36 @@ export function Documents() {
       </Modal>
 
       <DocumentDetail id={detailId} onClose={() => setDetailId(undefined)} docs={docs.data} />
-    </>
+    </div>
+  );
+}
+
+function Toggle({ on }: { on: boolean }) {
+  return (
+    <span
+      style={{
+        position: 'relative',
+        display: 'inline-block',
+        width: 34,
+        height: 18,
+        borderRadius: 999,
+        background: on ? 'var(--primary)' : '#cbd2dc',
+        transition: 'background .15s',
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: 2,
+          left: on ? 18 : 2,
+          width: 14,
+          height: 14,
+          borderRadius: '50%',
+          background: '#fff',
+          transition: 'left .15s',
+        }}
+      />
+    </span>
   );
 }
 
@@ -245,7 +387,7 @@ function DocumentDetail({
 
   const versionColumns: ColumnsType<NonNullable<typeof versions.data>[number]> = [
     { title: 'v', dataIndex: 'version', width: 60 },
-    { title: '상태', dataIndex: 'status', render: (v: string) => <Tag>{v}</Tag> },
+    { title: '상태', dataIndex: 'status', render: (v: string) => <StatusBadge status={v} /> },
     {
       title: '크기',
       dataIndex: 'file_size',
@@ -259,7 +401,7 @@ function DocumentDetail({
     {
       title: '생성',
       dataIndex: 'created_at',
-      render: (v: string | null) => (v ? new Date(v).toLocaleString() : '-'),
+      render: (v: string | null) => (v ? new Date(v).toLocaleString('ko-KR') : '-'),
     },
   ];
 
@@ -271,14 +413,17 @@ function DocumentDetail({
             <code>{doc.id}</code>
           </Descriptions.Item>
           <Descriptions.Item label="제목">{doc.title}</Descriptions.Item>
-          <Descriptions.Item label="분류">{doc.category ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="카테고리">{doc.category ?? '-'}</Descriptions.Item>
           <Descriptions.Item label="부서">{doc.department ?? '-'}</Descriptions.Item>
-          <Descriptions.Item label="보안등급">{doc.security_level}</Descriptions.Item>
+          <Descriptions.Item label="보안등급">
+            <Tag>{doc.security_level}</Tag>
+          </Descriptions.Item>
           <Descriptions.Item label="상태">
-            <Tag color={STATUS_COLOR[doc.status] ?? 'default'}>{doc.status}</Tag>
+            <StatusBadge status={doc.status} />
           </Descriptions.Item>
         </Descriptions>
       )}
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>버전 이력</div>
       <QueryState
         isLoading={versions.isLoading}
         error={versions.error}

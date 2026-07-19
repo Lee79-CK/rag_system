@@ -28,7 +28,30 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ConfigProvider
         locale={koKR}
-        theme={{ algorithm: theme.defaultAlgorithm, token: { colorPrimary: '#1677ff' } }}
+        theme={{
+          algorithm: theme.defaultAlgorithm,
+          token: {
+            colorPrimary: '#2563eb',
+            colorInfo: '#2563eb',
+            colorSuccess: '#16a34a',
+            colorWarning: '#d97706',
+            colorError: '#dc2626',
+            colorLink: '#1d4ed8',
+            colorBorder: '#e3e6ea',
+            colorBorderSecondary: '#eef0f3',
+            colorBgLayout: '#f7f8fa',
+            colorText: '#1a1f27',
+            colorTextSecondary: '#5b6472',
+            borderRadius: 8,
+            fontSize: 14,
+            fontFamily:
+              "'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', sans-serif",
+          },
+          components: {
+            Table: { headerBg: '#ffffff', headerColor: '#5b6472', rowHoverBg: '#f7f8fa' },
+            Card: { boxShadow: '0 1px 2px rgba(16,24,40,.06)' },
+          },
+        }}
       >
         <AntdApp>
           <Router>
