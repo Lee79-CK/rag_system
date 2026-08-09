@@ -21,12 +21,23 @@ data:
           restartPolicy: Never
           securityContext:
             {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          {{- with (.Values.ingestion.nodeSelector | default .Values.nodeSelector) }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (.Values.ingestion.tolerations | default .Values.tolerations) }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           containers:
             - name: parser-indexer
               image: {{ include "rag.image" (dict "image" .Values.ingestion.image "root" .) }}
               command: ["python", "-m", "ingestion.main", "--index-job-id", "__INDEX_JOB_ID__"]
               env:
                 {{- include "rag.offlineEnv" . | nindent 16 }}
+                {{- with .Values.ingestion.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
               volumeMounts:
                 - name: models
                   mountPath: /models
@@ -35,6 +46,10 @@ data:
                   mountPath: /data/documents
           volumes:
             - name: models
+              {{- if .Values.modelStorage.hostPath }}
+              hostPath: { path: {{ .Values.modelStorage.hostPath | quote }}, type: Directory }
+              {{- else }}
               persistentVolumeClaim: { claimName: models-pvc }
+              {{- end }}
             - name: documents
               persistentVolumeClaim: { claimName: documents-pvc }

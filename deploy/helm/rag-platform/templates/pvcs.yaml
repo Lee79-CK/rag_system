@@ -1,5 +1,6 @@
 {{/* 공유 PVC — 모델(읽기전용, NFS §10.3)·문서 원본(NFS DEC-004).
      PVC는 namespace-scoped이므로 사용 namespace마다 생성한다. */}}
+{{- if .Values.modelStorage.create }}
 {{- range $ns := (list (index .Values.appServices "embedding-api").namespace .Values.ingestion.namespace) }}
 ---
 apiVersion: v1
@@ -11,9 +12,13 @@ metadata:
     app.kubernetes.io/part-of: rag-platform
 spec:
   accessModes: ["ReadOnlyMany"]
+  {{- with $.Values.modelStorage.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
   resources:
     requests:
-      storage: 200Gi
+      storage: {{ $.Values.modelStorage.size }}
+{{- end }}
 {{- end }}
 {{- range $ns := (list "rag-app" .Values.ingestion.namespace) }}
 ---
@@ -26,7 +31,10 @@ metadata:
     app.kubernetes.io/part-of: rag-platform
 spec:
   accessModes: ["ReadWriteMany"]
+  {{- with $.Values.documentStorage.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
   resources:
     requests:
-      storage: 1Ti
+      storage: {{ $.Values.documentStorage.size }}
 {{- end }}

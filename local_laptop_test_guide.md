@@ -1,7 +1,8 @@
 # 로컬 Laptop 테스트 가이드 — RAG Platform
 
-> 문서 ID: GUIDE-LOCAL-TEST-001 (v1.0)
-> 기준: TDD-RAG-CHATBOT-POC-001 v1.3 (admin-api = Java 21 Spring Boot, 그 외 Python 3.12)
+> 문서 ID: GUIDE-LOCAL-TEST-001 (v1.1 — admin-api Python 정정)
+> 기준: TDD-RAG-CHATBOT-POC-001 v1.3 + **현행 구현 기준** — 전 서비스 Python 3.12 (uv workspace)
+> 정정(v1.1): TDD v1.3 문서는 admin-api를 Java 21 Spring Boot로 기술하지만, **구현된 `apps/admin-api` 는 Python(FastAPI + SQLAlchemy + Alembic)** 입니다. 이 가이드는 구현을 따릅니다. JDK/Gradle은 필요 없습니다.
 > 대상 환경: **i7 13세대 / RAM 64GB / SSD 1.5TB / RTX 4060 8GB / Windows 11 / Docker Desktop**
 
 ---
@@ -13,7 +14,7 @@
 | Bridge 수신/검증/피드백 파이프라인 | ✅ 완전 | WSL2 + curl 모사 |
 | RAG 파이프라인 (Embedding→검색→Rerank→생성) | ✅ 완전 | CPU 모델 + **소형 LLM(GPU)** |
 | 문서 파싱/색인 (parser-indexer) | ✅ 완전 | CLI 실행 |
-| Admin API (Spring Boot) / Admin Web | ✅ 완전 | 로컬 기동 |
+| Admin API (FastAPI) / Admin Web | ✅ 완전 | 로컬 기동 |
 | Channel 격리 (CH-001~010) | ✅ 완전 | testcontainers |
 | **답변 품질 (32B 모델)** | ⚠️ 불가 | 4060 8GB로는 4B~7B 4bit까지만 — 품질 평가는 DGX/서버에서 |
 | 성능 목표 (p95 30s @ 동시 10) | ⚠️ 참고치만 | 소형 모델 기준 경향 확인 용도 |
@@ -65,19 +66,14 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 **WSL2 Ubuntu 내부:**
 
 ```bash
-# uv + Python 3.12
+# uv + Python 3.12 — admin-api 포함 전 백엔드 서비스가 이걸로 돌아간다 (JDK/Gradle 불필요)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv python install 3.12
 
-# Java 21 (Temurin) + Node 20 — admin-api/web도 WSL에서 실행 권장 (경로/줄바꿈 문제 회피)
-sudo apt update && sudo apt install -y temurin-21-jdk || {
-  # apt 저장소 없으면 SDKMAN 사용
-  curl -s "https://get.sdkman.io" | bash && source ~/.sdkman/bin/sdkman-init.sh
-  sdk install java 21.0.6-tem
-}
+# Node 20 — admin-web(React/Vite) 전용. WSL에서 실행 권장 (경로/줄바꿈 문제 회피)
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs
 
-java -version   # openjdk 21
+uv --version
 node -v         # v20.x
 ```
 
@@ -85,7 +81,7 @@ node -v         # v20.x
 
 ```bash
 # ✅ WSL ext4 (빠름):  ~/work/rag-platform
-# ❌ /mnt/c/... (NTFS 경유 — pip/gradle/파일감시 극도로 느림, CRLF 문제)
+# ❌ /mnt/c/... (NTFS 경유 — uv/npm 설치·파일감시 극도로 느림, CRLF 문제)
 mkdir -p ~/work && cd ~/work
 git clone https://git.internal.example/ai/rag-platform.git && cd rag-platform
 git config core.autocrlf input   # CRLF 방지
@@ -187,48 +183,63 @@ python3 -c "import secrets;print(secrets.token_hex(32),end='')" > secrets/rag/fe
 echo -n "http://localhost:9099/hooks/local" > secrets/mattermost/mattermost-incoming-rag-cloud-ops
 chmod 600 secrets/mattermost/* secrets/rag/*
 
-# DB migration (v1.3: Spring Boot admin-api의 Flyway가 스키마 소유)
-cd apps/admin-api && ./gradlew flywayMigrate && cd ../..
+# DB migration — 스키마 소유자는 admin-api의 Alembic
+#   (apps/admin-api/src/admin/db/migrations, 리비전 0001_initial → 0002_feedback_enabled)
+#   ※ 서비스 기동 시 자동 실행되지 않는다. 아래를 명시적으로 1회 실행할 것
+uv run --package admin-api \
+  alembic -c apps/admin-api/src/admin/db/migrations/alembic.ini upgrade head
+uv run --package admin-api \
+  alembic -c apps/admin-api/src/admin/db/migrations/alembic.ini current
+# → 0002_feedback_enabled (head)
+
 # 시드 + Qdrant 초기화
 make seed && make qdrant-init
 ```
 
-`make mock-mattermost` — :9099에서 Incoming Webhook 수신 payload를 콘솔 출력하는 목 서버. 실제 Mattermost 없이 게시 결과(본문 + 👍/👎 attachment)를 눈으로 확인하는 용도입니다.
+접속 정보는 `env.py` 가 `admin.core.config.get_settings()` 에서 가져오므로, `.env` 의 `POSTGRES_*` (또는 `DATABASE_URL`)만 맞으면 별도 인자가 필요 없습니다.
+
+> **mock-mattermost는 아직 리포에 없습니다.** `tools/` 에는 `mock-llm`, `evaluation` 만 있고 `make mock-mattermost` 타깃도 없습니다. §5의 "게시 결과 확인"은 현재 두 가지로 대체합니다.
+> - `secrets/mattermost/mattermost-incoming-rag-cloud-ops` 를 임시 수신 엔드포인트로 지정하고 직접 확인 (예: `uv run python -m http.server 9099` 로는 POST 본문을 볼 수 없으므로 간단한 echo 서버 필요)
+> - 또는 DB에서 직접 확인 — `messages` 테이블의 assistant 메시지 본문과 `chat_jobs.status` (§5.1의 SQL)
 
 ---
 
 ## 4. 서비스 기동
 
-터미널 4개(또는 `make dev`) 기준:
+uv workspace이므로 **리포 루트에서 `--package` 로 선택 실행**합니다. 서비스마다 `cd` 하면 다음 `cd` 가 상대경로로 깨지므로 아래 형태를 쓰세요. (`make dev` 같은 일괄 타깃은 아직 없습니다 — Makefile 참조.)
 
 ```bash
+cd ~/work/rag-platform
+make install     # uv sync (workspace 전체) — 최초 1회
+
 # [T1] CPU 모델 서빙 — 최초 로딩 1~2분, /health/startup 200 확인
-cd apps/embedding-api && uv sync --frozen && uv run uvicorn embedding.main:app --port 8004 &
-cd apps/reranker-api  && uv sync --frozen && uv run uvicorn reranker.main:app  --port 8005 &
+uv run --package embedding-api uvicorn embedding.main:app --port 8004 &
+uv run --package reranker-api  uvicorn reranker.main:app  --port 8005 &
 
 # [T2] Bridge + RAG API + Worker
-cd apps/mattermost-bridge && uv sync --frozen && uv run uvicorn bridge.main:app --port 8001 &
-cd apps/rag-api && uv sync --frozen && uv run uvicorn rag.main:app --port 8002 &
-cd apps/rag-api && uv run rq worker rag-chat --url redis://localhost:6379/0 &
+uv run --package mattermost-bridge uvicorn bridge.main:app --port 8001 &
+uv run --package rag-api uvicorn rag.main:app --port 8002 &
+uv run --package rag-api rq worker rag-chat --url redis://localhost:6379/0 &
 
-# [T3] Admin API (Spring Boot / Java 21, Virtual Threads)
-cd apps/admin-api && ./gradlew bootRun --args='--spring.profiles.active=local'
-# 확인: curl -s localhost:8003/actuator/health | jq .   → {"status":"UP"}
-# OpenAPI: http://localhost:8003/swagger-ui/index.html
+# [T3] Admin API (FastAPI — 다른 Python 서비스와 동일한 기동 방식)
+uv run --package admin-api uvicorn admin.main:app --port 8003 &
+# 확인: curl -s localhost:8003/health/ready | jq .
+# OpenAPI: http://localhost:8003/docs   (FastAPI 기본 경로)
 
-# [T4] Admin Web
-cd apps/admin-web && npm ci && npm run dev   # http://localhost:5173
+# [T4] Admin Web (uv workspace 제외 — npm)
+cd apps/admin-web && npm ci && npm run dev && cd ../..   # http://localhost:5173
 ```
 
-**기동 상태 일괄 점검:**
+**기동 상태 일괄 점검** — 전 서비스가 FastAPI라 health 경로가 동일합니다:
 
 ```bash
-for p in 8001 8002 8004 8005; do curl -sf localhost:$p/health/ready >/dev/null && echo "$p OK" || echo "$p FAIL"; done
-curl -sf localhost:8003/actuator/health >/dev/null && echo "8003 OK"
+for p in 8001 8002 8003 8004 8005; do
+  curl -sf localhost:$p/health/ready >/dev/null && echo "$p OK" || echo "$p FAIL"
+done
 curl -sf localhost:8010/v1/models >/dev/null && echo "vLLM OK"
 ```
 
-예상 리소스(참고): RAM 사용 총 ~14GB (embedding 2.5 + reranker 2 + JVM 1 + 기타), VRAM 6.5GB. 64GB 노트북에서 브라우저/IDE 병행 여유 충분.
+예상 리소스(참고): RAM 사용 총 ~13GB (embedding 2.5 + reranker 2 + 나머지 Python 서비스 + 기타), VRAM 6.5GB. 64GB 노트북에서 브라우저/IDE 병행 여유 충분.
 
 ---
 
@@ -237,9 +248,9 @@ curl -sf localhost:8010/v1/models >/dev/null && echo "vLLM OK"
 ### 5.1 질문 → 답변 게시
 
 ```bash
-# 사전: 샘플 문서 색인
-cd apps/parser-indexer && uv sync --frozen
-uv run python -m ingestion.main --index-job-id 01000000-0000-0000-0000-000000000001
+# 사전: 샘플 문서 색인 (루트에서 --package 로 실행)
+uv run --package parser-indexer python -m ingestion.main \
+  --index-job-id 01000000-0000-0000-0000-000000000001
 
 # 질문 발송 (Outgoing Webhook 모사)
 curl -s -X POST localhost:8001/integrations/mattermost/v1/outgoing \
@@ -255,17 +266,19 @@ curl -s -X POST localhost:8001/integrations/mattermost/v1/outgoing \
 **확인 포인트:**
 1. 즉시 응답 `{"text":"질문을 접수했습니다..."}` — 2초 이내
 2. `mock-mattermost` 콘솔에 답변 payload 출력 — `text`에 근거 문서 목록, `attachments[0].actions`에 👍/👎ボ튼 2개
-3. DB 검증:
-```sql
-docker exec -it rag-platform-postgres-1 psql -U rag -c \
+3. DB 검증 — 컨테이너 이름은 compose 프로젝트명(디렉터리명)에 따라 달라지므로 `compose exec` 를 씁니다:
+```bash
+docker compose -f docker-compose.dev.yml exec postgres psql -U rag -c \
  "SELECT status, completed_at - started_at AS dur FROM chat_jobs ORDER BY queued_at DESC LIMIT 1;"
 -- COMPLETED, 로컬 4B 기준 5~15초
 ```
 
 ### 5.2 피드백 버튼 클릭
 
+> **`scripts/sign_feedback.py` 는 아직 리포에 없습니다** (`scripts/` 에는 `export_openapi.py`, `measure_latency.py`, `seed_dev.sql` 만 존재). 아래 `SIG` 계산은 서명 규약(HMAC)에 맞춰 직접 산출하거나 해당 스크립트를 먼저 추가해야 합니다. 서명 로직은 bridge의 피드백 검증 코드가 SSOT입니다.
+
 ```bash
-MSG_ID=$(docker exec rag-platform-postgres-1 psql -U rag -tA -c \
+MSG_ID=$(docker compose -f docker-compose.dev.yml exec -T postgres psql -U rag -tA -c \
   "SELECT id FROM messages WHERE role='assistant' ORDER BY created_at DESC LIMIT 1;")
 SIG=$(uv run python scripts/sign_feedback.py --message-id $MSG_ID --value UP)
 
@@ -304,25 +317,30 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8001/integrations/mat
 
 ## 6. 자동화 테스트 실행
 
-```bash
-# Python 서비스
-make lint && make test                 # unit (coverage gate 포함)
-make test-contract                     # Mattermost payload 계약
+전 서비스가 Python 단일 스택이므로 admin-api 테스트도 루트 `make test` 에 포함됩니다 — 별도 빌드 도구 호출이 없습니다.
 
-# Spring Boot admin-api
-cd apps/admin-api && ./gradlew test    # JUnit5 + Testcontainers(자동으로 pg 기동)
+```bash
+make lint && make test                 # ruff + mypy, 전체 unit (admin-api 포함)
 
 # 통합 + Channel 격리 (Docker Desktop 위 testcontainers)
 make test-integration
 make test-isolation                    # ★ CH-001~010 — 로컬에서도 반드시 green
 ```
 
+> `make test-contract` 는 Makefile에 없는 타깃입니다 (`tests/` 에도 contract 디렉터리 없음). Mattermost payload 계약 검증은 현재 `make test` 안의 adapter 단위 테스트가 담당합니다.
+
 Windows/Docker Desktop 주의: testcontainers가 느리면 Docker Desktop → Resources에서 CPU/RAM 상향, WSL 파일시스템(§1.4) 사용 여부 재확인.
 
 ### 6.1 미니 성능 체크 (참고치)
 
 ```bash
-make perf-webhook-burst LOCAL=1    # 20 req/10s — ACK p95 ≤ 2s는 로컬에서도 만족해야 정상
+# 기본값은 -u 50 -r 50 -t 10s / --host http://localhost:8001 (Makefile 참조).
+# BRIDGE_URL 로만 대상 변경이 가능하며 LOCAL 같은 변수는 없다
+make perf-webhook-burst            # ACK p95 ≤ 2s는 로컬에서도 만족해야 정상
+
+# 부하 수준을 바꾸려면 locust를 직접 호출
+uv run locust -f tests/performance/locustfile.py --headless -u 20 -r 20 -t 10s \
+  --host http://localhost:8001
 # 생성 p95는 4B 모델 기준 경향만 기록 (운영 수치 아님)
 ```
 
@@ -339,9 +357,16 @@ kubectl -n rag-app create secret generic rag-bridge-secrets \
   --from-file=feedback-signing-key=secrets/rag/feedback-signing-key
 
 helm upgrade --install rag-platform deploy/helm/rag-platform \
+  -f deploy/helm/rag-platform/values-poc.yaml \
   -f deploy/helm/rag-platform/values-local.yaml --namespace rag-app
-# values-local.yaml: replica 1, vLLM 비활성(외부 :8010 참조), 리소스 request 축소
 ```
+
+> **`values-local.yaml` 은 아직 없습니다.** 리포에는 `values.yaml`(기본) / `values-poc.yaml`(운영) / **`values-lab.yaml`(2-Node RKE2 랩)** 이 있습니다. 로컬용을 만들 때는 `values-lab.yaml` 을 복사해 시작하는 것이 가장 빠릅니다 — replica 1, PDB 해제(`pdbMinAvailable: null`), 리소스 축소, `extraEnv` 로 서비스 URL 주입까지 이미 되어 있습니다. 로컬에서 바꿀 부분은 대체로 셋뿐입니다.
+> - `nodeSelector: {}` — 단일 노드이므로 arch 고정 불필요
+> - `vllm.replicas: []` — GPU vLLM은 chart 밖(§2.2 compose :8010)에서 돌리고, `VLLM_API_URL` 을 `http://host.docker.internal:8010/v1` 로
+> - `modelStorage.hostPath` / `data.storageClass` — Docker Desktop의 기본 `hostpath` SC 사용 시 storageClass 키를 비워 둔다
+>
+> 렌더 결과는 적용 전에 확인하세요: `helm template ... | kubectl apply --dry-run=client -f -`
 
 로컬 K8s는 chart 문법/NetworkPolicy 렌더링 검증 용도이며, GPU 스케줄링·성능 검증은 대상이 아닙니다.
 
@@ -358,7 +383,8 @@ helm upgrade --install rag-platform deploy/helm/rag-platform \
 | WSL 메모리 급증으로 Windows 버벅임 | `.wslconfig`의 memory 상한 확인, `wsl --shutdown` 후 재시작 |
 | testcontainers 이미지 pull 실패(폐쇄망) | `TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=harbor.internal/library/` |
 | localhost 포트를 Windows 브라우저에서 접근 불가 | WSL2 localhost 포워딩 이상 — `wsl --shutdown` 재시작, 또는 `netsh interface portproxy` 확인 |
-| Spring Boot가 8003 대신 8080 기동 | `--spring.profiles.active=local` 누락 — `application-local.yml`의 `server.port=8003` 적용 확인 |
+| admin-api 500 (`relation ... does not exist`) | Alembic이 **자동 실행되지 않는다** — §3의 `alembic upgrade head` 를 돌렸는지 확인. `alembic current` 가 비어 있으면 미적용 |
+| `uv run --package <name>` 이 패키지를 못 찾음 | 패키지명은 디렉터리명이 아니라 `pyproject.toml` 의 `[project] name` — `admin-api`, `rag-api`, `mattermost-bridge`, `parser-indexer`, `embedding-api`, `reranker-api` |
 | embedding-api RAM 과다(>6GB) | fp32 로딩 정상 범위는 ~2.5GB. `EMBEDDING_MAX_BATCH` 축소 및 중복 프로세스 확인 |
 
 ---
@@ -367,12 +393,12 @@ helm upgrade --install rag-platform deploy/helm/rag-platform \
 
 - [ ] `nvidia-smi` (WSL) — RTX 4060 인식
 - [ ] 인프라 3종 + vLLM(4B) 기동, `/v1/models` 응답
-- [ ] Flyway migration + seed + qdrant-init 완료
+- [ ] **Alembic `upgrade head` 수동 실행** + `alembic current` = `0002_feedback_enabled` 확인, seed + qdrant-init 완료
 - [ ] 전 서비스 health OK (8001/8002/8003/8004/8005/8010)
 - [ ] 질문 → 접수 ACK 2초 내 → mock-mattermost에 답변+버튼 게시
 - [ ] 피드백 UP 반영 / 위조 서명 401
 - [ ] 부정 케이스 5종 통과 (§5.3)
-- [ ] `make test`, `./gradlew test`, `make test-integration` green
+- [ ] `make lint`, `make test`(admin-api 포함), `make test-integration` green
 - [ ] **`make test-isolation` (CH-001~010) green**
 - [ ] Admin Web 4개 흐름 수동 확인 (§5.4)
 

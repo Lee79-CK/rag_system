@@ -24,6 +24,14 @@ spec:
       labels:
         app.kubernetes.io/name: {{ $svc.name }}
     spec:
+      {{- with ($svc.cfg.nodeSelector | default $d.nodeSelector | default $.Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($svc.cfg.tolerations | default $d.tolerations | default $.Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ $svc.name }}
           image: {{ $svc.cfg.image }}
@@ -39,6 +47,10 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
+        {{- /* 서비스별 override > data.storageClass > 미지정(클러스터 default SC) */}}
+        {{- with ($svc.cfg.storageClass | default $d.storageClass) }}
+        storageClassName: {{ . }}
+        {{- end }}
         resources:
           requests:
             storage: {{ $svc.cfg.storage }}

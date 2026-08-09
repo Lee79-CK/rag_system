@@ -1,0 +1,161 @@
+# local-path-bulk — HDD(4TB) 기반 StorageClass `local-bulk`
+#
+# 용도: 문서 원본 PVC / 모델 아티팩트 / 백업 등 용량 위주 데이터
+#       ※ DB(PostgreSQL/Qdrant/Redis) PVC 를 여기에 두면 검색 p95 1s 목표가 깨진다.
+# 백엔드 경로: P3 노드의 /data/bulk (HDD 4TB 마운트)
+# 참고: rke2_two_node_test_guide.md §1.4
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# 적용 전 반드시 확인할 것
+#   1) 노드 이름: 아래 nodePathMap 의 "p3" 를 실제 노드 이름으로 바꾼다.
+#        kubectl get nodes -o name
+#        sed -i 's/"node": "p3"/"node": "<실제이름>"/' deploy/k8s/local-path-bulk.yaml
+#   2) HDD 가 /data/bulk 로 마운트되어 있어야 한다 (가이드 §1.4.2). 마운트 전에 적용하면
+#      루트 파일시스템(NVMe) 에 디렉터리가 생겨 조용히 NVMe 를 소진한다.
+#        findmnt /data/bulk    # 반드시 HDD 디바이스가 나와야 함
+#   3) 폐쇄망이면 이미지 미러링: rancher/local-path-provisioner:v0.0.31 , busybox:1.36.1
+#
+# reclaimPolicy=Retain: 문서 원본은 PVC 를 지워도 /data/bulk 에 남긴다.
+#   → 재설치 반복 시 고아 디렉터리가 쌓이므로 주기적으로 확인:
+#     kubectl get pv | grep Released ; sudo du -sh /data/bulk/*
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: local-path-storage
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: local-path-provisioner-bulk
+  namespace: local-path-storage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: local-path-provisioner-role-bulk
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumeclaims", "configmaps", "pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-path-provisioner-bind-bulk
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: local-path-provisioner-role-bulk
+subjects:
+  - kind: ServiceAccount
+    name: local-path-provisioner-bulk
+    namespace: local-path-storage
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-path-config-bulk
+  namespace: local-path-storage
+data:
+  config.json: |-
+    {
+      "nodePathMap": [
+        {
+          "node": "p3",
+          "paths": ["/data/bulk/pvc"]
+        }
+      ]
+    }
+  setup: |-
+    #!/bin/sh
+    set -eu
+    mkdir -m 0777 -p "$VOL_DIR"
+  teardown: |-
+    #!/bin/sh
+    set -eu
+    rm -rf "$VOL_DIR"
+  helperPod.yaml: |-
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: helper-pod
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: helper-pod
+          image: busybox:1.36.1
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-path-provisioner-bulk
+  namespace: local-path-storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: local-path-provisioner-bulk
+  template:
+    metadata:
+      labels:
+        app: local-path-provisioner-bulk
+    spec:
+      serviceAccountName: local-path-provisioner-bulk
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: local-path-provisioner
+          image: rancher/local-path-provisioner:v0.0.31
+          imagePullPolicy: IfNotPresent
+          command: ["local-path-provisioner"]
+          args:
+            - start
+            - --config=/etc/config/config.json
+            - --configmap-name=local-path-config-bulk
+            - --service-account-name=local-path-provisioner-bulk
+            - --provisioner-name=rancher.io/local-path-bulk
+            - --helper-image=busybox:1.36.1
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config/
+          resources:
+            requests: { cpu: "50m", memory: 64Mi }
+            limits:   { cpu: "500m", memory: 256Mi }
+      volumes:
+        - name: config-volume
+          configMap:
+            name: local-path-config-bulk
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-bulk
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: rancher.io/local-path-bulk
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false

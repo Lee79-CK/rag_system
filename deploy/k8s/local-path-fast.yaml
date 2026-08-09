@@ -1,0 +1,164 @@
+# local-path-fast — NVMe(1TB) 기반 StorageClass `local-fast`
+#
+# 용도: PostgreSQL / Qdrant / Redis PVC (검색 p95 ≤ 1s 목표를 위해 NVMe 필수)
+# 백엔드 경로: P3 노드의 /data/fast
+# 참고: rke2_two_node_test_guide.md §1.4
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# 적용 전 반드시 확인할 것
+#   1) 노드 이름: 아래 nodePathMap 의 "p3" 를 실제 노드 이름으로 바꾼다.
+#        kubectl get nodes -o name
+#        sed -i 's/"node": "p3"/"node": "<실제이름>"/' deploy/k8s/local-path-fast.yaml
+#   2) 경로 준비 (P3 로컬):  sudo mkdir -p /data/fast && sudo chmod 0755 /data/fast
+#   3) 폐쇄망이면 두 이미지를 사내 레지스트리로 미러링 후 image 값을 교체:
+#        rancher/local-path-provisioner:v0.0.31 , busybox:1.36.1
+#
+# 주의: local-path 는 hostPath 기반이라 PVC 의 requests.storage 를 **강제하지 않는다**.
+#       요청 용량은 명목값일 뿐이며, 실제로는 /data/fast 가 속한 파일시스템을 끝까지 쓴다.
+#       => df -h /data/fast 로 주기 감시 (가이드 §1.4.3)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: local-path-storage
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: local-path-provisioner-fast
+  namespace: local-path-storage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: local-path-provisioner-role-fast
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumeclaims", "configmaps", "pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-path-provisioner-bind-fast
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: local-path-provisioner-role-fast
+subjects:
+  - kind: ServiceAccount
+    name: local-path-provisioner-fast
+    namespace: local-path-storage
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-path-config-fast
+  namespace: local-path-storage
+data:
+  # DEFAULT_PATH_FOR_NON_LISTED_NODES 를 두지 않는다 →
+  # p3 이외 노드(pgx)에 스케줄된 Pod 의 PVC 는 Pending 으로 실패한다. 의도된 안전장치.
+  config.json: |-
+    {
+      "nodePathMap": [
+        {
+          "node": "p3",
+          "paths": ["/data/fast"]
+        }
+      ]
+    }
+  setup: |-
+    #!/bin/sh
+    set -eu
+    mkdir -m 0777 -p "$VOL_DIR"
+  teardown: |-
+    #!/bin/sh
+    set -eu
+    rm -rf "$VOL_DIR"
+  helperPod.yaml: |-
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: helper-pod
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: helper-pod
+          image: busybox:1.36.1
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-path-provisioner-fast
+  namespace: local-path-storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: local-path-provisioner-fast
+  template:
+    metadata:
+      labels:
+        app: local-path-provisioner-fast
+    spec:
+      serviceAccountName: local-path-provisioner-fast
+      nodeSelector:
+        kubernetes.io/arch: amd64      # P3 고정 (PGX 는 dedicated=llm taint 로도 배제됨)
+      containers:
+        - name: local-path-provisioner
+          image: rancher/local-path-provisioner:v0.0.31
+          imagePullPolicy: IfNotPresent
+          command: ["local-path-provisioner"]
+          args:
+            - start
+            - --config=/etc/config/config.json
+            - --configmap-name=local-path-config-fast
+            - --service-account-name=local-path-provisioner-fast
+            - --provisioner-name=rancher.io/local-path-fast
+            - --helper-image=busybox:1.36.1
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config/
+          resources:
+            requests: { cpu: "50m", memory: 64Mi }
+            limits:   { cpu: "500m", memory: 256Mi }
+      volumes:
+        - name: config-volume
+          configMap:
+            name: local-path-config-fast
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-fast
+  annotations:
+    # RKE2 는 기본 StorageClass 를 제공하지 않는다. storageClassName 을 지정하지 않은
+    # PVC 가 NVMe 로 오도록 fast 를 default 로 둔다.
+    # ★ 문서 원본/모델 PVC 는 반드시 storageClassName: local-bulk 를 명시할 것 (가이드 §4 경고)
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path-fast
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false          # local-path 는 확장 미지원

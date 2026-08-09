@@ -27,6 +27,14 @@ spec:
     spec:
       securityContext:
         {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      {{- with ($v.nodeSelector | default $.Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($v.tolerations | default $.Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: vllm
           image: {{ include "rag.image" (dict "image" $v.image "root" $) }}
@@ -50,8 +58,14 @@ spec:
               readOnly: true
       volumes:
         - name: models
+          {{- /* GPU 노드가 앱 노드와 다른 이기종 랩에서는 models-pvc(앱 노드 local-path)를
+                 GPU 노드에서 쓸 수 없다 → 해당 노드 로컬 경로를 직접 마운트한다. */}}
+          {{- if $v.modelHostPath }}
+          hostPath: { path: {{ $v.modelHostPath | quote }}, type: Directory }
+          {{- else }}
           persistentVolumeClaim:
             claimName: models-pvc
+          {{- end }}
 {{- end }}
 ---
 apiVersion: v1

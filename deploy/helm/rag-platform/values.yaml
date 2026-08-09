@@ -97,9 +97,31 @@ vllm:
   securityContext:
     readOnlyRootFilesystem: false
 
+# ---- 스케줄링 기본값 (미지정 = 제약 없음) ----
+# 단일 아키텍처 운영 클러스터에서는 비워 둔다. 이기종 랩(x86 + arm64)은
+# values-lab.yaml 처럼 서비스별 nodeSelector/tolerations 로 노드를 고정한다.
+nodeSelector: {}
+tolerations: []
+
+# ---- 공유 PVC (§10.3 모델 / DEC-004 문서 원본) ----
+# storageClass: "" → 필드 자체를 렌더하지 않음 = 클러스터 default StorageClass 사용.
+# 운영(PoC)은 NFS default SC 전제이므로 빈 값 유지. 로컬 랩은 values-lab.yaml 에서
+# local-bulk(HDD) 를 명시한다 — 미지정 시 DB용 NVMe SC 로 새어 들어간다.
+modelStorage:
+  create: true          # hostPath 사용 시 false — 소비자 없는 models-pvc 가 Pending 으로 남지 않게
+  storageClass: ""
+  size: 200Gi
+  # hostPath 지정 시 models-pvc 대신 노드 로컬 경로를 마운트한다 (랩 전용).
+  hostPath: ""
+documentStorage:
+  storageClass: ""
+  size: 1Ti
+
 # ---- 데이터 계층 (rag-data namespace) ----
 data:
   namespace: rag-data
+  # 데이터 계층 3종 공통 SC. 서비스별 <svc>.storageClass 로 개별 override 가능.
+  storageClass: ""
   qdrant:
     image: harbor.internal/library/qdrant:v1.12.1
     storage: 500Gi

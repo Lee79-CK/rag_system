@@ -21,6 +21,14 @@ spec:
     spec:
       securityContext:
         {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      {{- with ($svc.nodeSelector | default $.Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($svc.tolerations | default $.Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ $name }}
           image: {{ include "rag.image" (dict "image" $svc.image "root" $) }}
@@ -34,6 +42,9 @@ spec:
           {{- end }}
           env:
             {{- include "rag.offlineEnv" $ | nindent 12 }}
+            {{- with $svc.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- if $svc.envFrom }}
           envFrom:
             {{- range $svc.envFrom }}
@@ -68,8 +79,12 @@ spec:
           emptyDir: {}
         {{- if $svc.modelVolume }}
         - name: models
+          {{- if $.Values.modelStorage.hostPath }}
+          hostPath: { path: {{ $.Values.modelStorage.hostPath | quote }}, type: Directory }
+          {{- else }}
           persistentVolumeClaim:
             claimName: models-pvc
+          {{- end }}
         {{- end }}
 {{- if gt (int $svc.port) 0 }}
 ---
