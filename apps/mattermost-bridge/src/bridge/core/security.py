@@ -10,8 +10,11 @@ def constant_time_token_check(provided: str, expected: str) -> bool:
     """Outgoing Token 상수시간 비교 (§22.2, §11 #1).
 
     타이밍 공격을 피하려고 `hmac.compare_digest`를 사용한다. None-안전.
+    기대 토큰이 비어 있으면(Secret 파일 미마운트 등) **무조건 거부**한다 — fail-closed (§11 #1).
     """
-    return hmac.compare_digest(provided or "", expected or "")
+    if not expected:
+        return False
+    return hmac.compare_digest(provided or "", expected)
 
 
 def source_ip_allowed(ip: str, cidrs: list[str]) -> bool:

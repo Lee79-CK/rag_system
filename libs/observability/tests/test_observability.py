@@ -36,3 +36,38 @@ def test_configure_logging_and_get_logger():
     log = get_logger("t")
     # 예외 없이 로그 호출이 동작해야 한다 (secret은 마스킹됨).
     log.info("event", token="should-be-masked", channel_id="c1")
+
+
+def test_mask_secrets_value_patterns_in_plain_strings():
+    """키 이름이 무해해도(event/exception) 값 안의 DSN 비밀번호·webhook 경로·Bearer 는 가려진다."""
+    from rag_observability.masking import _structlog_processor
+
+    event = {
+        "event": "connect failed: postgresql+psycopg://rag:pw-1234@postgresql.rag-data:5432/rag",
+        "exception": [
+            {
+                "exc_value": "POST https://mm.internal/hooks/abcDEF123 -> 404",
+                "frames": [{"locals": {"auth": "Bearer eyJhbGciOi.xyz"}}],
+            }
+        ],
+        "channel_id": "channel-001",
+    }
+    masked = _structlog_processor(None, "error", event)
+    dumped = str(masked)
+    assert "pw-1234" not in dumped
+    assert "abcDEF123" not in dumped
+    assert "eyJhbGciOi" not in dumped
+    assert "rag:***@postgresql.rag-data" in masked["event"]
+    assert masked["channel_id"] == "channel-001"
+
+
+def test_processor_order_masks_after_dict_tracebacks(capsys):
+    """dict_tracebacks 뒤에 마스킹이 와야 예외 본문 안의 secret 이 걸러진다."""
+    configure_logging("test-service", level="DEBUG")
+    log = get_logger("t")
+    try:
+        raise RuntimeError("dsn=redis://:redis-secret-pw@redis.rag-data:6379/0")
+    except RuntimeError:
+        log.exception("boom")
+    out = capsys.readouterr()
+    assert "redis-secret-pw" not in out.out + out.err

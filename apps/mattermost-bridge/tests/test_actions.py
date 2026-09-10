@@ -76,3 +76,20 @@ def test_fb_no_rag_call(harness):
     )
     # 피드백 경로에서 Queue/LLM 미호출 (§7.1.4 MUST)
     assert harness.enqueuer.calls == []
+
+
+def test_fb_missing_signing_key_rejects_all(harness):
+    """서명 키 파일이 없으면 어떤 서명도(빈 키로 만든 서명 포함) 401 — fail-closed."""
+    from mattermost_adapter import feedback_signature
+
+    _seed_message(harness)
+    harness.settings.feedback_signing_key_file = "/nonexistent/feedback-signing-key"
+    assert harness.settings.feedback_signing_key() == b""
+    forged_with_empty_key = feedback_signature(b"", "msg-1", "UP")
+    resp = harness.client.post(
+        "/integrations/mattermost/v1/actions",
+        json=make_action_body(harness, message_id="msg-1", value="UP", sig=forged_with_empty_key),
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_SIGNATURE"
+    assert len(harness.feedback_repo.feedback) == 0

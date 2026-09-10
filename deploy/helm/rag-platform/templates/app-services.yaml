@@ -1,4 +1,6 @@
-{{/* 애플리케이션 서비스 Deployment + Service + PDB (§12.1). appServices map을 순회한다. */}}
+{{/* 애플리케이션 서비스 Deployment + Service + PDB (§12.1). appServices map을 순회한다.
+     서비스별 플래그: dbEnv / redisEnv / bridgeSecrets / incomingSecrets / modelVolume / documentVolume
+     → 코드(config.py)가 기대하는 env 키·파일 경로를 chart 가 책임지고 채운다. */}}
 {{- range $name, $svc := .Values.appServices }}
 ---
 apiVersion: apps/v1
@@ -19,6 +21,9 @@ spec:
         app.kubernetes.io/name: {{ $name }}
         app.kubernetes.io/part-of: rag-platform
     spec:
+      {{- with $svc.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
       securityContext:
         {{- toYaml $.Values.podSecurityContext | nindent 8 }}
       {{- with ($svc.nodeSelector | default $.Values.nodeSelector) }}
@@ -33,7 +38,12 @@ spec:
         - name: {{ $name }}
           image: {{ include "rag.image" (dict "image" $svc.image "root" $) }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
-          command: {{ toJson $svc.command }}
+          {{- with $svc.command }}
+          command: {{ toJson . }}
+          {{- end }}
+          {{- with $svc.args }}
+          args: {{ toJson . }}
+          {{- end }}
           securityContext:
             {{- toYaml $.Values.containerSecurityContext | nindent 12 }}
           {{- if gt (int $svc.port) 0 }}
@@ -42,6 +52,18 @@ spec:
           {{- end }}
           env:
             {{- include "rag.offlineEnv" $ | nindent 12 }}
+            {{- if $svc.dbEnv }}
+            {{- include "rag.dbEnv" $ | nindent 12 }}
+            {{- end }}
+            {{- if $svc.redisEnv }}
+            {{- include "rag.redisEnv" $ | nindent 12 }}
+            {{- end }}
+            {{- if $svc.bridgeSecrets }}
+            {{- include "rag.bridgeSecretEnv" $ | nindent 12 }}
+            {{- end }}
+            {{- if $svc.incomingSecrets }}
+            {{- include "rag.incomingSecretEnv" $ | nindent 12 }}
+            {{- end }}
             {{- with $svc.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -56,14 +78,14 @@ spec:
             {{- toYaml $svc.resources | nindent 12 }}
           {{- if gt (int $svc.port) 0 }}
           livenessProbe:
-            httpGet: { path: /health/live, port: {{ $svc.port }} }
+            httpGet: { path: {{ $svc.livenessPath | default "/health/live" }}, port: {{ $svc.port }} }
             periodSeconds: 10
           readinessProbe:
-            httpGet: { path: /health/ready, port: {{ $svc.port }} }
+            httpGet: { path: {{ $svc.readinessPath | default "/health/ready" }}, port: {{ $svc.port }} }
             periodSeconds: 10
           startupProbe:
-            httpGet: { path: /health/startup, port: {{ $svc.port }} }
-            failureThreshold: 60
+            httpGet: { path: {{ $svc.startupPath | default "/health/startup" }}, port: {{ $svc.port }} }
+            failureThreshold: {{ $svc.startupFailureThreshold | default 60 }}
             periodSeconds: 10
           {{- end }}
           volumeMounts:
@@ -73,6 +95,23 @@ spec:
             - name: models
               mountPath: /models
               readOnly: true
+            {{- end }}
+            {{- if $svc.documentVolume }}
+            - name: documents
+              mountPath: {{ $.Values.documentStorage.mountPath }}
+            {{- end }}
+            {{- if $svc.bridgeSecrets }}
+            - name: rag-secrets
+              mountPath: {{ $.Values.secretMounts.bridgeSecretsPath }}
+              readOnly: true
+            {{- end }}
+            {{- if $svc.incomingSecrets }}
+            - name: mm-incoming
+              mountPath: {{ $.Values.secretMounts.incomingWebhookPath }}
+              readOnly: true
+            {{- end }}
+            {{- range $svc.extraVolumeMounts }}
+            - {{ toYaml . | nindent 14 | trim }}
             {{- end }}
       volumes:
         - name: tmp
@@ -85,6 +124,23 @@ spec:
           persistentVolumeClaim:
             claimName: models-pvc
           {{- end }}
+        {{- end }}
+        {{- if $svc.documentVolume }}
+        - name: documents
+          persistentVolumeClaim:
+            claimName: documents-pvc
+        {{- end }}
+        {{- if $svc.bridgeSecrets }}
+        - name: rag-secrets
+          secret:
+            secretName: {{ $.Values.global.bridgeSecretName }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if $svc.incomingSecrets }}
+        {{- include "rag.incomingProjectedVolume" $ | nindent 8 }}
+        {{- end }}
+        {{- range $svc.extraVolumes }}
+        - {{ toYaml . | nindent 10 | trim }}
         {{- end }}
 {{- if gt (int $svc.port) 0 }}
 ---

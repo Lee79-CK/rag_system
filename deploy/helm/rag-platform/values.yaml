@@ -1,15 +1,37 @@
-# PoC values — docs/PRD.md §12 리소스, docs/TDD.md §14. 이미지는 내부 Harbor digest 고정.
+# 기본 values — docs/PRD.md §12 리소스, docs/TDD.md §14.
+# 프로파일: values-poc.yaml(운영 PoC, harbor.internal) / values-lab.yaml(2-Node RKE2 랩) 을 -f 로 겹쳐 쓴다.
+# 이 파일의 값은 "코드(config.py)가 기대하는 env 키·Secret 파일 경로"를 chart 가 책임지고 채우는 기준선이다.
 global:
   imageRegistry: harbor.internal
   imageTag: "0.1.0"          # --set global.imageTag=<git-sha> 로 override
   imagePullPolicy: IfNotPresent
-  # 사전 생성 K8s Secret (§3.4, §14.2) — Helm 값에 secret 값 미포함
-  bridgeSecretName: rag-bridge-secrets          # outgoing-token, feedback-signing-key
+  # ---- 사전 생성 K8s Secret (§3.4, §14.2 existingSecret 패턴 — Helm 값에 secret 값 미포함) ----
+  # rag-bridge-secrets: keys `outgoing-token`, `feedback-signing-key` → 파일로 마운트(secretMounts.bridgeSecretsPath)
+  bridgeSecretName: rag-bridge-secrets
+  # PostgreSQL: key `password`. StatefulSet(initdb)과 모든 앱(POSTGRES_PASSWORD)이 같은 Secret 을 읽는다.
+  postgres:
+    host: postgresql.rag-data
+    port: 5432
+    user: rag
+    db: rag
+    existingSecret: rag-postgresql-secret
+  redisUrl: redis://redis.rag-data:6379/0
   offlineEnv:
     HF_HUB_OFFLINE: "1"
     TRANSFORMERS_OFFLINE: "1"
     HF_DATASETS_OFFLINE: "1"
     HF_HOME: /models/huggingface
+
+# Secret 파일 마운트 경로 (코드: MATTERMOST_OUTGOING_TOKEN_SECRET_FILE / FEEDBACK_SIGNING_KEY_FILE / MATTERMOST_SECRET_DIR)
+secretMounts:
+  bridgeSecretsPath: /var/run/secrets/rag
+  incomingWebhookPath: /var/run/secrets/mattermost
+
+# Channel 별 Incoming Webhook Secret (DEC-012). 파일명 = secret_ref (mattermost_channel_bindings.secret_ref).
+# 각 Secret 은 key `url` 하나를 가진다:  kubectl -n rag-app create secret generic <secret_ref> --from-literal=url=https://mm/hooks/xxx
+incomingWebhookSecrets:
+  - { secretName: mattermost-incoming-rag-cloud-ops, key: url }
+  - { secretName: mattermost-incoming-rag-hr, key: url }
 
 # 공통 hardened securityContext (§11 #6). vLLM/OCR은 예외(values 주석) — 아래 vllm.securityContext 참조.
 podSecurityContext:
@@ -24,17 +46,64 @@ containerSecurityContext:
   capabilities:
     drop: ["ALL"]
 
+# Namespace 생성 여부 + NetworkPolicy 가 요구하는 라벨(rag-platform=true). 운영은 NS 를 별도 관리(false).
+namespaces:
+  create: false
+  names: [rag-app, rag-ai, rag-data, rag-ingestion]
+
+networkPolicy:
+  enabled: true
+  # Ingress Controller 가 있는 NS / Pod 셀렉터. RKE2 내장 ingress-nginx 는 kube-system 에 있다 (values-lab).
+  ingressController:
+    namespace: ingress-nginx
+    podSelector: {}
+  # admin-api → kube-apiserver (INDEX_JOB_TRIGGER=k8s). apiserver 는 hostNetwork 라 노드 IP 를 ipBlock 으로 허용한다.
+  apiServer:
+    enabled: false
+    cidrs: []            # 예: ["192.168.0.10/32"]  (control-plane 노드 IP)
+    port: 6443
+
+# Ingress — 라우트는 appServices 에 존재하는 서비스만 렌더된다.
+ingress:
+  enabled: false
+  className: nginx
+  host: rag.internal
+  annotations: {}
+  tls: []                # [{ secretName: rag-tls, hosts: [rag.internal] }]
+  routes:
+    - { path: /integrations, service: mattermost-bridge }
+    - { path: /api,          service: admin-api }
+    - { path: /,             service: admin-web }
+
+# admin-api 가 parser-indexer Job 을 만들 때 쓰는 ServiceAccount (templates/rbac.yaml)
+serviceAccounts:
+  adminApi:
+    create: false
+    name: admin-api
+
+# Alembic 마이그레이션 hook Job (post-install/upgrade). admin-api 는 기동 시 마이그레이션을 하지 않는다.
+migration:
+  enabled: false
+  backoffLimit: 2
+  alembicIni: /app/apps/admin-api/src/admin/db/migrations/alembic.ini   # Containerfile WORKDIR=/app 기준
+
 # ---- 애플리케이션 서비스 (rag-app / rag-ai namespace) ----
+# 플래그: dbEnv(POSTGRES_*) · redisEnv(REDIS_URL/RQ_REDIS_URL) · bridgeSecrets(토큰/서명키 파일)
+#        · incomingSecrets(Incoming Webhook URL 디렉터리) · modelVolume(/models RO) · documentVolume(문서 PVC RW)
 appServices:
   mattermost-bridge:
     namespace: rag-app
     replicas: 2
     image: rag/mattermost-bridge
     port: 8001
-    command: ["uvicorn", "bridge.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    command: ["uvicorn", "bridge.main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips", "*"]
     resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "4", memory: 8Gi } }
-    envFrom: [rag-bridge-secrets]
+    dbEnv: true
+    redisEnv: true
+    bridgeSecrets: true
     pdbMinAvailable: 1
+    extraEnv:
+      - { name: BRIDGE_INTERNAL_URL, value: "http://mattermost-bridge.rag-app:8001" }
   rag-api:
     namespace: rag-app
     replicas: 2
@@ -42,23 +111,48 @@ appServices:
     port: 8002
     command: ["uvicorn", "rag.main:app", "--host", "0.0.0.0", "--port", "8002"]
     resources: { requests: { cpu: "4", memory: 8Gi }, limits: { cpu: "6", memory: 12Gi } }
+    dbEnv: true
+    redisEnv: true
+    bridgeSecrets: true        # FEEDBACK_SIGNING_KEY_FILE (버튼 서명)
+    incomingSecrets: true      # MATTERMOST_SECRET_DIR
     pdbMinAvailable: 1
+    extraEnv: &ragApiEnv
+      - { name: QDRANT_URL,        value: "http://qdrant.rag-data:6333" }
+      - { name: EMBEDDING_API_URL, value: "http://embedding-api.rag-ai:8004" }
+      - { name: RERANKER_API_URL,  value: "http://reranker-api.rag-ai:8005" }
+      - { name: VLLM_API_URL,      value: "http://vllm-service.rag-ai:8000/v1" }
+      - { name: LLM_SERVED_MODEL_NAME, value: "internal-rag-llm" }
+      - { name: BRIDGE_INTERNAL_URL,   value: "http://mattermost-bridge.rag-app:8001" }
+      - { name: TOKENIZER_PATH,        value: "/models/llm/main" }
   rag-worker:
     namespace: rag-app
     replicas: 2
     image: rag/rag-api                      # DEC-017: rag-api와 동일 이미지, entrypoint만 다름
     port: 0
-    command: ["rq", "worker", "rag-chat", "--url", "redis://redis.rag-data:6379/0"]
+    command: ["rq", "worker", "rag-chat"]  # Redis 주소는 RQ_REDIS_URL(redisEnv)
     resources: { requests: { cpu: "4", memory: 8Gi }, limits: { cpu: "6", memory: 12Gi } }
+    dbEnv: true
+    redisEnv: true
+    bridgeSecrets: true
+    incomingSecrets: true
     pdbMinAvailable: 1
+    extraEnv: *ragApiEnv
   admin-api:
     namespace: rag-app
     replicas: 2
     image: rag/admin-api
     port: 8003
-    command: ["uvicorn", "admin.main:app", "--host", "0.0.0.0", "--port", "8003"]
+    command: ["uvicorn", "admin.main:app", "--host", "0.0.0.0", "--port", "8003", "--proxy-headers", "--forwarded-allow-ips", "*"]
     resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "3", memory: 6Gi } }
+    dbEnv: true
+    documentVolume: true       # 업로드 원본 저장 (DOCUMENT_STORAGE_PATH)
+    serviceAccountName: ""     # serviceAccounts.adminApi.create=true 면 "admin-api"
     pdbMinAvailable: 1
+    extraEnv:
+      - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
+      - { name: BRIDGE_INTERNAL_URL,   value: "http://mattermost-bridge.rag-app:8001" }
+      - { name: INDEX_JOB_TRIGGER,     value: "none" }   # k8s 로 바꾸면 serviceAccounts/networkPolicy.apiServer 필요
+      - { name: INDEX_JOB_NAMESPACE,   value: "rag-ingestion" }
   embedding-api:
     namespace: rag-ai
     replicas: 2
@@ -67,7 +161,10 @@ appServices:
     command: ["uvicorn", "embedding.main:app", "--host", "0.0.0.0", "--port", "8004"]
     resources: { requests: { cpu: "4", memory: 12Gi }, limits: { cpu: "6", memory: 16Gi } }
     modelVolume: true
+    startupFailureThreshold: 60      # ×10s. HDD 에서 모델 로딩이 느리면 상향
     pdbMinAvailable: 1
+    extraEnv:
+      - { name: EMBEDDING_MODEL_PATH, value: "/models/embedding/bge-m3" }
   reranker-api:
     namespace: rag-ai
     replicas: 2
@@ -76,7 +173,10 @@ appServices:
     command: ["uvicorn", "reranker.main:app", "--host", "0.0.0.0", "--port", "8005"]
     resources: { requests: { cpu: "8", memory: 16Gi }, limits: { cpu: "12", memory: 24Gi } }
     modelVolume: true
+    startupFailureThreshold: 60
     pdbMinAvailable: 1
+    extraEnv:
+      - { name: RERANKER_MODEL_PATH, value: "/models/reranker/bge-reranker-v2-m3" }
 
 # ---- vLLM (GPU) — ADR-009: GPU 1장 = Replica 1 ----
 vllm:
@@ -96,32 +196,30 @@ vllm:
   # 예외: vLLM은 readOnlyRootFilesystem=false (컴파일 캐시), runAsNonRoot 유지
   securityContext:
     readOnlyRootFilesystem: false
+  # 이미지가 root 전제(NGC 등)면 여기서 덮어쓴다 — 예: { runAsNonRoot: false, runAsUser: 0 } (§22.4 예외 문서화 필수)
+  podSecurityContext: {}
+  modelHostPath: ""            # 지정 시 models-pvc 대신 GPU 노드 로컬 경로를 마운트 (이기종 랩)
 
 # ---- 스케줄링 기본값 (미지정 = 제약 없음) ----
-# 단일 아키텍처 운영 클러스터에서는 비워 둔다. 이기종 랩(x86 + arm64)은
-# values-lab.yaml 처럼 서비스별 nodeSelector/tolerations 로 노드를 고정한다.
 nodeSelector: {}
 tolerations: []
 
 # ---- 공유 PVC (§10.3 모델 / DEC-004 문서 원본) ----
 # storageClass: "" → 필드 자체를 렌더하지 않음 = 클러스터 default StorageClass 사용.
-# 운영(PoC)은 NFS default SC 전제이므로 빈 값 유지. 로컬 랩은 values-lab.yaml 에서
-# local-bulk(HDD) 를 명시한다 — 미지정 시 DB용 NVMe SC 로 새어 들어간다.
 modelStorage:
   create: true          # hostPath 사용 시 false — 소비자 없는 models-pvc 가 Pending 으로 남지 않게
   storageClass: ""
   size: 200Gi
-  # hostPath 지정 시 models-pvc 대신 노드 로컬 경로를 마운트한다 (랩 전용).
-  hostPath: ""
+  hostPath: ""          # 지정 시 models-pvc 대신 노드 로컬 경로를 마운트한다 (랩 전용)
 documentStorage:
   storageClass: ""
   size: 1Ti
+  mountPath: /data/documents   # admin-api(DOCUMENT_STORAGE_PATH) / parser-indexer 공통
 
 # ---- 데이터 계층 (rag-data namespace) ----
 data:
   namespace: rag-data
-  # 데이터 계층 3종 공통 SC. 서비스별 <svc>.storageClass 로 개별 override 가능.
-  storageClass: ""
+  storageClass: ""      # 3종 공통 SC. 서비스별 <svc>.storageClass 로 개별 override 가능.
   qdrant:
     image: harbor.internal/library/qdrant:v1.12.1
     storage: 500Gi
@@ -130,15 +228,23 @@ data:
     image: harbor.internal/library/postgres:16
     storage: 200Gi
     resources: { requests: { cpu: "4", memory: 16Gi } }
+    # POSTGRES_USER/DB/PASSWORD(Secret)/PGDATA 는 templates/data.yaml 이 global.postgres 로 채운다
   redis:
     image: harbor.internal/library/redis:7
     storage: 20Gi
     resources: { requests: { cpu: "2", memory: 4Gi } }
+    args: ["--appendonly", "yes"]   # Chat Job 재시작 무손실 (NFR-HA-003)
 
-# ---- parser-indexer (rag-ingestion) — admin-api가 Job으로 인스턴스화 ----
+# ---- parser-indexer (rag-ingestion) — admin-api가 Job으로 인스턴스화 (INDEX_JOB_TRIGGER=k8s) ----
 ingestion:
   namespace: rag-ingestion
   image: rag/parser-indexer
+  extraEnv:
+    - { name: QDRANT_URL,        value: "http://qdrant.rag-data:6333" }
+    - { name: EMBEDDING_API_URL, value: "http://embedding-api.rag-ai:8004" }
+    - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
+    - { name: OCR_ENABLED,       value: "0" }
 
 monitoring:
   grafanaDashboards: true
+  namespace: monitoring   # ★ ConfigMap 이 이 NS 에 생성된다 — 미존재 시 helm install 실패

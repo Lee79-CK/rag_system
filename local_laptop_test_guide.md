@@ -1,8 +1,8 @@
 # 로컬 Laptop 테스트 가이드 — RAG Platform
 
-> 문서 ID: GUIDE-LOCAL-TEST-001 (v1.1 — admin-api Python 정정)
-> 기준: TDD-RAG-CHATBOT-POC-001 v1.3 + **현행 구현 기준** — 전 서비스 Python 3.12 (uv workspace)
-> 정정(v1.1): TDD v1.3 문서는 admin-api를 Java 21 Spring Boot로 기술하지만, **구현된 `apps/admin-api` 는 Python(FastAPI + SQLAlchemy + Alembic)** 입니다. 이 가이드는 구현을 따릅니다. JDK/Gradle은 필요 없습니다.
+> 문서 ID: GUIDE-LOCAL-TEST-001 (**v1.2 — 2026-09-10 코드 리뷰 반영**)
+> 기준: TDD-RAG-CHATBOT-POC-001 v1.2 + **현행 구현 기준** — 전 서비스 Python 3.12 (uv workspace). admin-api 는 Python(FastAPI + SQLAlchemy + Alembic) — JDK/Gradle 불필요.
+> v1.2 변경 요지 (상세: `docs/code-review-2026-09-10.md` §6): v1.1 이 "리포에 없다"고 표시했던 **mock-mattermost(`make mock-mattermost`) · `scripts/sign_feedback.py` · `samples/`** 가 추가됨 · 색인 절차를 "seed 된 가짜 Job 실행"에서 **admin-api 업로드 → `index_jobs` 생성 → CLI 실행**으로 정정 · `make test-integration` 대상 정정 · §7 chart 신규 키(Secret 마운트/PostgreSQL Secret/Ingress) 반영 · 업로드 시 `allowed_channel_ids` 필수(없으면 검색 불가).
 > 대상 환경: **i7 13세대 / RAM 64GB / SSD 1.5TB / RTX 4060 8GB / Windows 11 / Docker Desktop**
 
 ---
@@ -15,7 +15,7 @@
 | RAG 파이프라인 (Embedding→검색→Rerank→생성) | ✅ 완전 | CPU 모델 + **소형 LLM(GPU)** |
 | 문서 파싱/색인 (parser-indexer) | ✅ 완전 | CLI 실행 |
 | Admin API (FastAPI) / Admin Web | ✅ 완전 | 로컬 기동 |
-| Channel 격리 (CH-001~010) | ✅ 완전 | testcontainers |
+| Channel 격리 (CH-001~010) | ✅ 완전 | `make test-isolation`(in-memory fake) + `make test-integration`(testcontainers 실 Qdrant) |
 | **답변 품질 (32B 모델)** | ⚠️ 불가 | 4060 8GB로는 4B~7B 4bit까지만 — 품질 평가는 DGX/서버에서 |
 | 성능 목표 (p95 30s @ 동시 10) | ⚠️ 참고치만 | 소형 모델 기준 경향 확인 용도 |
 | K8s/Helm 배포 | 🔶 선택 | Docker Desktop 내장 K8s 또는 생략 |
@@ -176,11 +176,16 @@ cp .env.example .env
 #   MAX_CONTEXT_TOKENS=6144
 #   LLM_MODEL_PATH=/models/llm/local-4b
 #   TOKENIZER_PATH=/models/llm/local-4b
+#   DOCUMENT_STORAGE_PATH=./data/documents     (admin-api 업로드 저장 경로 — 미리 mkdir)
+#   INDEX_JOB_TRIGGER=none                     (로컬은 K8s 가 없으므로 색인 Job 을 CLI 로 직접 실행 — §5.1)
+#   EMBEDDING_MOCK=0 / RERANKER_MOCK=0         (실 모델을 쓰려면 `uv sync --extra models` 후. 미설치면 1 유지 → 결정론적 mock)
+mkdir -p data/documents
 
 mkdir -p secrets/mattermost secrets/rag
 echo -n "local-dev-outgoing-token" > secrets/mattermost/outgoing-token
 python3 -c "import secrets;print(secrets.token_hex(32),end='')" > secrets/rag/feedback-signing-key
-echo -n "http://localhost:9099/hooks/local" > secrets/mattermost/mattermost-incoming-rag-cloud-ops
+echo -n "http://localhost:9099/hooks/cloud-ops" > secrets/mattermost/mattermost-incoming-rag-cloud-ops   # 파일명 = binding.secret_ref
+echo -n "http://localhost:9099/hooks/hr"        > secrets/mattermost/mattermost-incoming-rag-hr
 chmod 600 secrets/mattermost/* secrets/rag/*
 
 # DB migration — 스키마 소유자는 admin-api의 Alembic
@@ -198,9 +203,8 @@ make seed && make qdrant-init
 
 접속 정보는 `env.py` 가 `admin.core.config.get_settings()` 에서 가져오므로, `.env` 의 `POSTGRES_*` (또는 `DATABASE_URL`)만 맞으면 별도 인자가 필요 없습니다.
 
-> **mock-mattermost는 아직 리포에 없습니다.** `tools/` 에는 `mock-llm`, `evaluation` 만 있고 `make mock-mattermost` 타깃도 없습니다. §5의 "게시 결과 확인"은 현재 두 가지로 대체합니다.
-> - `secrets/mattermost/mattermost-incoming-rag-cloud-ops` 를 임시 수신 엔드포인트로 지정하고 직접 확인 (예: `uv run python -m http.server 9099` 로는 POST 본문을 볼 수 없으므로 간단한 echo 서버 필요)
-> - 또는 DB에서 직접 확인 — `messages` 테이블의 assistant 메시지 본문과 `chat_jobs.status` (§5.1의 SQL)
+> **mock-mattermost** (`tools/mock-mattermost`, `make mock-mattermost`, :9099) 가 Mattermost Incoming Webhook 수신을 흉내냅니다 — `POST /hooks/{id}` 를 받아 `ok` 를 돌려주고 payload 를 로그(JSON 한 줄)와 메모리에 보관하며 `GET /posts?hook_id=cloud-ops` 로 조회할 수 있습니다. 위 secret 파일의 URL 이 이 서버를 가리키므로 rag-worker 의 실제 `deliver()` 경로(재시도·분할 게시 포함)가 그대로 실행됩니다.
+> 여기서 만든 `secrets/rag/feedback-signing-key` 는 §5.2 의 `scripts/sign_feedback.py` 가 그대로 읽습니다.
 
 ---
 
@@ -226,6 +230,9 @@ uv run --package admin-api uvicorn admin.main:app --port 8003 &
 # 확인: curl -s localhost:8003/health/ready | jq .
 # OpenAPI: http://localhost:8003/docs   (FastAPI 기본 경로)
 
+# [T3b] mock-mattermost — 답변 게시 수신 (:9099)
+make mock-mattermost &
+
 # [T4] Admin Web (uv workspace 제외 — npm)
 cd apps/admin-web && npm ci && npm run dev && cd ../..   # http://localhost:5173
 ```
@@ -237,6 +244,7 @@ for p in 8001 8002 8003 8004 8005; do
   curl -sf localhost:$p/health/ready >/dev/null && echo "$p OK" || echo "$p FAIL"
 done
 curl -sf localhost:8010/v1/models >/dev/null && echo "vLLM OK"
+curl -sf localhost:9099/health/ready >/dev/null && echo "mock-mattermost OK"
 ```
 
 예상 리소스(참고): RAM 사용 총 ~13GB (embedding 2.5 + reranker 2 + 나머지 Python 서비스 + 기타), VRAM 6.5GB. 64GB 노트북에서 브라우저/IDE 병행 여유 충분.
@@ -245,14 +253,24 @@ curl -sf localhost:8010/v1/models >/dev/null && echo "vLLM OK"
 
 ## 5. 기능 테스트 시나리오 (E2E, Mattermost 없이)
 
-### 5.1 질문 → 답변 게시
+### 5.1 문서 업로드 → 색인 → 질문 → 답변 게시
+
+> seed 의 문서 1건(`장애대응매뉴얼`)은 **파일 실체가 없는 메타데이터**라 색인할 수 없습니다. `samples/` 의 `.md` 를 admin-api 로 업로드해 `index_jobs` 를 만들고, 로컬(`INDEX_JOB_TRIGGER=none`)에서는 그 id 로 parser-indexer CLI 를 직접 실행합니다. (K8s 에서는 `k8s` 모드가 Job 을 자동 생성 — RKE2 가이드 §5.)
 
 ```bash
-# 사전: 샘플 문서 색인 (루트에서 --package 로 실행)
-uv run --package parser-indexer python -m ingestion.main \
-  --index-job-id 01000000-0000-0000-0000-000000000001
+# 1) 업로드 — 필드는 평면 multipart. ★ allowed_channel_ids 를 비우면 색인되어도 어느 채널에서도 검색되지 않는다 (검색 전 Channel Filter)
+curl -s -X POST localhost:8003/api/v1/documents -H 'X-Auth-User: cklee' \
+  -F 'file=@samples/장애대응매뉴얼.md' -F 'title=장애대응매뉴얼' -F 'category=장애대응' \
+  -F 'department=Cloud운영팀' -F 'security_level=INTERNAL' \
+  -F 'allowed_channel_ids=channel-001' -F 'start_indexing=true' | tee /tmp/upload.json
+JOB_ID=$(jq -r .data.index_job_id /tmp/upload.json)     # index_job_status=PENDING
 
-# 질문 발송 (Outgoing Webhook 모사)
+# 2) 색인 Job 실행 (로컬은 CLI — .env 의 QDRANT_URL/EMBEDDING_API_URL/POSTGRES_* 사용)
+uv run --package parser-indexer python -m ingestion.main --index-job-id $JOB_ID
+# → PARSING→CHUNKING→EMBEDDING→UPSERTING→VALIDATING, index_job COMPLETED, document ACTIVE
+curl -s localhost:8003/api/v1/documents -H 'X-Auth-User: cklee' | jq '.data[] | {title,status}'
+
+# 3) 질문 발송 (Outgoing Webhook 모사)
 curl -s -X POST localhost:8001/integrations/mattermost/v1/outgoing \
   -H 'Content-Type: application/json' -d '{
   "token":"local-dev-outgoing-token",
@@ -265,7 +283,7 @@ curl -s -X POST localhost:8001/integrations/mattermost/v1/outgoing \
 
 **확인 포인트:**
 1. 즉시 응답 `{"text":"질문을 접수했습니다..."}` — 2초 이내
-2. `mock-mattermost` 콘솔에 답변 payload 출력 — `text`에 근거 문서 목록, `attachments[0].actions`에 👍/👎ボ튼 2개
+2. `mock-mattermost` 콘솔(또는 `curl -s localhost:9099/posts?hook_id=cloud-ops | jq .`)에 답변 payload — `text`에 `[1]` 인용 + `근거 문서` 목록, `attachments[0].actions`에 👍/👎 버튼 2개
 3. DB 검증 — 컨테이너 이름은 compose 프로젝트명(디렉터리명)에 따라 달라지므로 `compose exec` 를 씁니다:
 ```bash
 docker compose -f docker-compose.dev.yml exec postgres psql -U rag -c \
@@ -275,12 +293,12 @@ docker compose -f docker-compose.dev.yml exec postgres psql -U rag -c \
 
 ### 5.2 피드백 버튼 클릭
 
-> **`scripts/sign_feedback.py` 는 아직 리포에 없습니다** (`scripts/` 에는 `export_openapi.py`, `measure_latency.py`, `seed_dev.sql` 만 존재). 아래 `SIG` 계산은 서명 규약(HMAC)에 맞춰 직접 산출하거나 해당 스크립트를 먼저 추가해야 합니다. 서명 로직은 bridge의 피드백 검증 코드가 SSOT입니다.
+> `scripts/sign_feedback.py` 는 `mattermost_adapter.feedback_signature`(서명 규약 SSOT)로 sig 를 산출합니다. 키 파일은 `--key-file`(기본 `FEEDBACK_SIGNING_KEY_FILE` → `./secrets/rag/feedback-signing-key`).
 
 ```bash
 MSG_ID=$(docker compose -f docker-compose.dev.yml exec -T postgres psql -U rag -tA -c \
   "SELECT id FROM messages WHERE role='assistant' ORDER BY created_at DESC LIMIT 1;")
-SIG=$(uv run python scripts/sign_feedback.py --message-id $MSG_ID --value UP)
+SIG=$(uv run python scripts/sign_feedback.py --message-id $MSG_ID --value UP --key-file secrets/rag/feedback-signing-key)
 
 curl -s -X POST localhost:8001/integrations/mattermost/v1/actions \
   -H 'Content-Type: application/json' -d '{
@@ -300,16 +318,20 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8001/integrations/mat
 
 | 케이스 | 명령 요지 | 기대 |
 |---|---|---|
-| 잘못된 token | token=wrong | HTTP 401 |
-| 미등록 Channel | channel_id=channel-999 | HTTP 403 |
+| 잘못된 token | token=wrong | HTTP 401 `INVALID_TOKEN` |
+| **빈 token** | token="" | HTTP 401 (fail-closed — Secret 파일이 비어 있어도 통과하지 않음) |
+| 미등록 Channel | channel_id=channel-999 | HTTP 403 `CHANNEL_NOT_BOUND` |
 | 중복 post_id | 동일 post_id 2회 | 2회째 200 + chat_jobs 1건만 |
 | Bot 메시지 루프 | user_name="RAG Assistant" | 200 + job 미생성 |
-| 근거 없는 질문 | "오늘 점심 메뉴 추천" | "근거를 찾지 못했습니다" 안내 게시 |
+| 트리거 채널 | channel_id=channel-002, text="!rag 연차는 며칠인가요?" | 접수 후 `!rag` 제거된 질문으로 처리. 트리거 없는 text 는 200 무시. (`samples/인사규정집.md` 를 `allowed_channel_ids=channel-002` 로 업로드해 두면 답변) |
+| 격리 (CH-001) | channel-002 에서 "장애 등급별 대응 절차" | 장애대응매뉴얼은 channel-001 전용 → 근거 부족 안내 |
+| 근거 없는 질문 | "오늘 점심 메뉴 추천" | "근거를 찾지 못했습니다" 안내 게시 (`SIMILARITY_THRESHOLD` 기본 0.0 이라 검색 0건일 때만 발동) |
 
 ### 5.4 Admin Web 수동 확인 (http://localhost:5173)
 
-- 문서 업로드 → 색인 Job 진행 스테퍼 → ACTIVE 전환
-- Channels: 연결 테스트(mock-mattermost 수신 확인) → 활성화 확인 모달
+- 우상단 사용자 버튼에서 `X-Auth-User`=`cklee` 설정(localStorage). vite dev 서버가 `/api` → :8003 프록시
+- 문서 업로드(허용 Channel 지정) → 재색인 → CLI 실행(§5.1 2단계) → ACTIVE 전환. Index Jobs 화면은 admin-api 조회 API 가 없어 비어 있음(`apps/admin-web/README.md`)
+- Channels: **연결 테스트는 stub(항상 성공)** — 실제 게시 확인은 §5.1 의 mock-mattermost 로
 - Chat Jobs: 방금 질문의 단계별 latency 바 표시
 - Feedback: 5.2에서 남긴 👍 반영 확인
 
@@ -322,12 +344,12 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8001/integrations/mat
 ```bash
 make lint && make test                 # ruff + mypy, 전체 unit (admin-api 포함)
 
-# 통합 + Channel 격리 (Docker Desktop 위 testcontainers)
-make test-integration
+# Channel 격리 (in-memory fake — Docker 불필요) + Docker 가 필요한 통합 테스트
 make test-isolation                    # ★ CH-001~010 — 로컬에서도 반드시 green
+make test-integration                  # testcontainers 실 Qdrant(test_ch_qdrant.py) + worker 통합. Docker Desktop 필요
 ```
 
-> `make test-contract` 는 Makefile에 없는 타깃입니다 (`tests/` 에도 contract 디렉터리 없음). Mattermost payload 계약 검증은 현재 `make test` 안의 adapter 단위 테스트가 담당합니다.
+> `make test` 는 133 passed, 1 skipped 이 정상입니다 — skip 1건은 Docker 미기동 시 `test_ch_qdrant.py`. `tests/integration`·`tests/mattermost`(contract fixture) 디렉터리는 없으며 `make test-contract` 타깃도 없습니다. Mattermost payload 계약 검증은 `make test` 안의 adapter 단위 테스트가 담당합니다.
 
 Windows/Docker Desktop 주의: testcontainers가 느리면 Docker Desktop → Resources에서 CPU/RAM 상향, WSL 파일시스템(§1.4) 사용 여부 재확인.
 
@@ -348,25 +370,34 @@ uv run locust -f tests/performance/locustfile.py --headless -u 20 -r 20 -t 10s \
 
 ## 7. (선택) Docker Desktop K8s로 Helm 검증
 
-Settings → Kubernetes → Enable 후:
+Settings → Kubernetes → Enable 후. **NS 라벨과 Secret 4종이 선행**되어야 Pod 가 뜹니다(chart 가 Secret 을 파일로 마운트하고 PostgreSQL 비밀번호도 Secret 에서 읽음).
 
 ```bash
-kubectl create ns rag-app
+for ns in rag-app rag-ai rag-data rag-ingestion; do kubectl create ns $ns; kubectl label ns $ns rag-platform=true; done
 kubectl -n rag-app create secret generic rag-bridge-secrets \
   --from-file=outgoing-token=secrets/mattermost/outgoing-token \
   --from-file=feedback-signing-key=secrets/rag/feedback-signing-key
+for ns in rag-data rag-app rag-ingestion; do
+  kubectl -n $ns create secret generic rag-postgresql-secret --from-literal=password=rag-dev-only
+done
+kubectl -n rag-app create secret generic mattermost-incoming-rag-cloud-ops --from-literal=url=http://mock-mattermost.rag-app:9099/hooks/cloud-ops
+kubectl -n rag-app create secret generic mattermost-incoming-rag-hr        --from-literal=url=http://mock-mattermost.rag-app:9099/hooks/hr
 
+make helm-lint helm-template     # 렌더 사전 검증
 helm upgrade --install rag-platform deploy/helm/rag-platform \
   -f deploy/helm/rag-platform/values-poc.yaml \
-  -f deploy/helm/rag-platform/values-local.yaml --namespace rag-app
+  -f deploy/helm/rag-platform/values-local.yaml --set global.imageTag=$(git rev-parse --short HEAD)
 ```
 
-> **`values-local.yaml` 은 아직 없습니다.** 리포에는 `values.yaml`(기본) / `values-poc.yaml`(운영) / **`values-lab.yaml`(2-Node RKE2 랩)** 이 있습니다. 로컬용을 만들 때는 `values-lab.yaml` 을 복사해 시작하는 것이 가장 빠릅니다 — replica 1, PDB 해제(`pdbMinAvailable: null`), 리소스 축소, `extraEnv` 로 서비스 URL 주입까지 이미 되어 있습니다. 로컬에서 바꿀 부분은 대체로 셋뿐입니다.
+> **`values-local.yaml` 은 리포에 없습니다.** `values-lab.yaml`(2-Node RKE2 랩)을 복사해 시작하세요 — replica 1, PDB 해제, 리소스 축소, `INDEX_JOB_TRIGGER=k8s`, Ingress, mock-mattermost/admin-web 까지 이미 되어 있습니다. 로컬에서 바꿀 부분:
+> - `global.imageRegistry` — Docker Desktop 은 로컬 데몬 이미지를 그대로 쓰므로 `make build-images REG=local TAG=...` 후 `imageRegistry: local`, `imagePullPolicy: Never`
 > - `nodeSelector: {}` — 단일 노드이므로 arch 고정 불필요
-> - `vllm.replicas: []` — GPU vLLM은 chart 밖(§2.2 compose :8010)에서 돌리고, `VLLM_API_URL` 을 `http://host.docker.internal:8010/v1` 로
-> - `modelStorage.hostPath` / `data.storageClass` — Docker Desktop의 기본 `hostpath` SC 사용 시 storageClass 키를 비워 둔다
+> - `vllm.replicas: []` — GPU vLLM 은 chart 밖(§2.2 compose :8010)에서 돌리고, rag-api/worker `extraEnv` 의 `VLLM_API_URL` 을 `http://host.docker.internal:8010/v1` 로
+> - `modelStorage.hostPath` / `data.storageClass` / `documentStorage.storageClass` — Docker Desktop 기본 `hostpath` SC 사용 시 storageClass 키를 비워 둔다
+> - `networkPolicy.ingressController` — ingress-nginx 를 설치했다면 그 NS, 없으면 `ingress.enabled: false` 로 port-forward 사용
+> - `networkPolicy.apiServer.cidrs` — Docker Desktop apiserver 주소(`kubectl get endpoints kubernetes`) 로, 또는 `INDEX_JOB_TRIGGER=none` + `serviceAccounts.adminApi.create=false`
 >
-> 렌더 결과는 적용 전에 확인하세요: `helm template ... | kubectl apply --dry-run=client -f -`
+> 렌더 결과는 적용 전에 확인하세요: `helm template ... | kubectl apply --dry-run=client -f -`. 배포 후 검증 8종은 RKE2 가이드 §4.3 을 그대로 씁니다.
 
 로컬 K8s는 chart 문법/NetworkPolicy 렌더링 검증 용도이며, GPU 스케줄링·성능 검증은 대상이 아닙니다.
 
@@ -384,6 +415,11 @@ helm upgrade --install rag-platform deploy/helm/rag-platform \
 | testcontainers 이미지 pull 실패(폐쇄망) | `TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=harbor.internal/library/` |
 | localhost 포트를 Windows 브라우저에서 접근 불가 | WSL2 localhost 포워딩 이상 — `wsl --shutdown` 재시작, 또는 `netsh interface portproxy` 확인 |
 | admin-api 500 (`relation ... does not exist`) | Alembic이 **자동 실행되지 않는다** — §3의 `alembic upgrade head` 를 돌렸는지 확인. `alembic current` 가 비어 있으면 미적용 |
+| 질문이 전부 401 (토큰이 맞는데도) | `MATTERMOST_OUTGOING_TOKEN_SECRET_FILE` 경로의 파일이 없거나 비어 있음 → fail-closed 거부. bridge 기동 로그 `startup.outgoing_token_missing` 확인 |
+| 색인은 COMPLETED 인데 "근거를 찾지 못했습니다" | 업로드 시 `allowed_channel_ids` 누락 → `document_channel_acl` 없음 → 검색 필터에 매칭 안 됨. 재업로드(동일 내용은 409 → 파일 한 글자 수정) |
+| 색인 Job `FAILED@EMBEDDING` | embedding-api(:8004) 미기동 또는 v1.2 이전 코드(요청 키 `input`/`texts` 불일치). `curl -s localhost:8004/health/ready` |
+| 업로드 500 (`No such file or directory: ./data/documents`) | `DOCUMENT_STORAGE_PATH` 디렉터리 미생성 — §3 `mkdir -p data/documents` |
+| mock-mattermost 에 아무것도 안 옴, `mattermost_deliveries.status=DEAD_LETTER` | `secrets/mattermost/<secret_ref>` 파일명이 binding 의 `secret_ref`(`mattermost-incoming-rag-cloud-ops`)와 다름, 또는 :9099 미기동 |
 | `uv run --package <name>` 이 패키지를 못 찾음 | 패키지명은 디렉터리명이 아니라 `pyproject.toml` 의 `[project] name` — `admin-api`, `rag-api`, `mattermost-bridge`, `parser-indexer`, `embedding-api`, `reranker-api` |
 | embedding-api RAM 과다(>6GB) | fp32 로딩 정상 범위는 ~2.5GB. `EMBEDDING_MAX_BATCH` 축소 및 중복 프로세스 확인 |
 
@@ -395,10 +431,12 @@ helm upgrade --install rag-platform deploy/helm/rag-platform \
 - [ ] 인프라 3종 + vLLM(4B) 기동, `/v1/models` 응답
 - [ ] **Alembic `upgrade head` 수동 실행** + `alembic current` = `0002_feedback_enabled` 확인, seed + qdrant-init 완료
 - [ ] 전 서비스 health OK (8001/8002/8003/8004/8005/8010)
+- [ ] mock-mattermost(:9099) 기동
+- [ ] `samples/장애대응매뉴얼.md` 업로드(`allowed_channel_ids=channel-001`) → `index_jobs` 생성 → CLI 색인 COMPLETED → 문서 ACTIVE
 - [ ] 질문 → 접수 ACK 2초 내 → mock-mattermost에 답변+버튼 게시
-- [ ] 피드백 UP 반영 / 위조 서명 401
-- [ ] 부정 케이스 5종 통과 (§5.3)
-- [ ] `make lint`, `make test`(admin-api 포함), `make test-integration` green
+- [ ] 피드백 UP 반영 / 위조 서명 401 (`scripts/sign_feedback.py`)
+- [ ] 부정 케이스 8종 통과 (§5.3 — 빈 토큰, 트리거 채널, 격리 포함)
+- [ ] `make lint`, `make test`(133 passed, 1 skipped), `make test-integration`(Docker) green
 - [ ] **`make test-isolation` (CH-001~010) green**
 - [ ] Admin Web 4개 흐름 수동 확인 (§5.4)
 

@@ -2,14 +2,17 @@
 
 ## What this is
 폐쇄망 K8s 위 Mattermost RAG 챗봇. 설계 SSOT: `docs/TDD.md`, 요구사항: `docs/PRD.md`.
-Monorepo (uv workspace). **구현 현황: M1–M11 전 마일스톤 구현 완료** (로컬 mock LLM/mock 엔진 기준).
-검증: `112 passed, 1 skipped`(Docker-gated) · ruff clean · `helm lint` clean · admin-web `vite build` OK.
+Monorepo (uv workspace). **구현 현황: M1–M11 골격 구현 + 2026-09-10 코드 리뷰 블로커 수정 완료** (로컬 mock LLM/mock 엔진 기준).
+검증: `133 passed, 1 skipped`(Docker-gated `test_ch_qdrant.py`) · ruff clean · `helm lint` clean · poc / poc+lab 렌더 OK · admin-web `vite build` OK.
+알려진 미구현(리뷰 리포트 `docs/code-review-2026-09-10.md` §7): Settings 테이블→rag-api 연동(60s 캐시), 채널 연결 테스트(stub), DLQ retry-delivery 소비자,
+문서 삭제 시 Qdrant 비활성화/파일 삭제, mock 엔진 silent fallback 차단, async 핸들러 내 동기 I/O, 평가셋 100문항·LLM-judge, Circuit Breaker.
 
 ## Hard rules
 - 외부 네트워크 호출 금지 (HF Hub, PyPI 등). 모델은 로컬 경로 로딩만.
 - Python 3.12 고정 (`requires-python ">=3.12,<3.13"`). 의존성은 cp312 바이너리 휠만, sdist 빌드 금지.
 - Secret(토큰/Webhook URL)을 로그·응답·repr에 절대 노출 금지. Pydantic `SecretStr`.
-- Qdrant 검색은 `build_filter()` 없이 호출 금지 (Channel 격리 100%).
+- Qdrant 검색은 `build_filter()` 없이 호출 금지 (Channel 격리 100%). 예외: parser-indexer 내부 검증(`count`/`query_points`, `document_version_id` 필터)은 서빙 경로가 아님.
+- Secret 파일이 비어 있으면 **fail-closed**(빈 토큰/빈 서명키 = 전부 거부). "테스트 편의로 빈 값 허용" 금지.
 - `apps/*` 간 직접 import 금지. 공유는 `libs/*` 로만.
 - `rag/domain/*` 은 FastAPI/LangChain/Mattermost 타입 import 금지 (순수 Python + rag_schemas).
 - 스키마 변경은 `libs/schemas` 에서만. 서비스 로컬 재정의 금지.
@@ -27,9 +30,12 @@ Monorepo (uv workspace). **구현 현황: M1–M11 전 마일스톤 구현 완�
 - `apps/parser-indexer` (ingestion) — 문서 파싱/색인 CLI Job
 - `apps/admin-web` — 관리자 Portal (React 18 + Vite + TS + React Query + antd). uv workspace 제외.
 - `tools/mock-llm` (mock_llm) — 로컬 OpenAI-compatible mock LLM (`make mock-llm`)
+- `tools/mock-mattermost` (mock_mattermost) — Incoming Webhook 수신 mock (`make mock-mattermost`, :9099)
+- `samples/` — E2E 용 샘플 문서(.md) · `scripts/sign_feedback.py` — 피드백 sig 산출
 - `tools/evaluation` (evaluation) — RAG 품질 평가 runner (`make evaluate`)
 - `tests/channel-isolation` — CH-001~010 격리 Gate / `tests/evaluation` 데이터셋 / `tests/performance` locust
-- `deploy/helm/rag-platform` — Umbrella Helm chart (Deployment/Service/PDB/NetworkPolicy/Grafana)
+- `deploy/helm/rag-platform` — 단일 Helm chart (Deployment/Service/PDB/NetworkPolicy/Ingress/Namespace/RBAC/Alembic hook Job/Grafana). `values.yaml` 기본 → `values-poc.yaml`(운영 override) → `values-lab.yaml`(RKE2 랩 override)
+- `apps/*/Containerfile`, `tools/mock-mattermost/Containerfile` — 빌드 컨텍스트는 리포 루트(admin-web 제외). `make build-images REG= TAG=`
 - `scripts/` — `export_openapi.py`, `measure_latency.py`(p95), `seed_dev.sql`
 
 ## Commands
@@ -40,7 +46,10 @@ Monorepo (uv workspace). **구현 현황: M1–M11 전 마일스톤 구현 완�
 - `make evaluate`       # RAG 품질 평가 runner → reports/
 - `make mock-llm`       # 로컬 OpenAI-compatible mock LLM (:8010)
 - `make qdrant-init`    # rag_chunks_v1 collection + payload index
-- `make openapi`        # docs/openapi/*.json export
+- `make openapi`        # docs/openapi/*.json export (API 변경 시 재실행 후 커밋)
+- `make mock-mattermost`# Incoming Webhook 수신 mock (:9099)
+- `make build-images` / `make push-images` REG=registry.local:5000 TAG=$(git rev-parse --short HEAD)
+- `make helm-lint` / `make helm-template`   # chart lint + poc / poc+lab 렌더
 - admin-web: `cd apps/admin-web && npm install && npm run build`
 
 ## Local dev caveat (this machine)

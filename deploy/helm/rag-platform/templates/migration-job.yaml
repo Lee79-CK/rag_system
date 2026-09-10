@@ -1,0 +1,58 @@
+{{/* Alembic 마이그레이션 Helm hook Job (admin-api 이미지, `alembic upgrade head`).
+     admin-api 는 기동 시 마이그레이션을 실행하지 않는다 — migration.enabled=true 면 install/upgrade 마다 1회 실행. */}}
+{{- if .Values.migration.enabled }}
+{{- $svc := index .Values.appServices "admin-api" }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rag-db-migrate
+  namespace: {{ $svc.namespace }}
+  labels:
+    app.kubernetes.io/name: rag-db-migrate
+    app.kubernetes.io/part-of: rag-platform
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rag-db-migrate
+        app.kubernetes.io/part-of: rag-platform   # NetworkPolicy allow-intra-platform → postgresql 접근
+    spec:
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with ($svc.nodeSelector | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "rag.image" (dict "image" $svc.image "root" .) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          # PostgreSQL 이 아직 준비 전일 수 있으므로 최대 30회(5분) 재시도한다
+          command: ["sh", "-c"]
+          args:
+            - |
+              for i in $(seq 1 30); do
+                alembic -c {{ .Values.migration.alembicIni }} upgrade head && exit 0
+                echo "alembic upgrade failed (attempt $i) — retrying in 10s"; sleep 10
+              done
+              exit 1
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            {{- include "rag.offlineEnv" . | nindent 12 }}
+            {{- include "rag.dbEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

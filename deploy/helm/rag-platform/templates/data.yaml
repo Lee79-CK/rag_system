@@ -1,4 +1,5 @@
-{{/* 데이터 계층 StatefulSet — qdrant / postgresql / redis (§12.2). */}}
+{{/* 데이터 계층 StatefulSet — qdrant / postgresql / redis (§12.2).
+     postgresql 은 POSTGRES_USER/DB + POSTGRES_PASSWORD(Secret) + PGDATA 를 반드시 받아야 initdb 가 동작한다. */}}
 {{- $d := .Values.data }}
 {{- range $svc := (list
     (dict "name" "qdrant" "cfg" $d.qdrant "port" 6333 "mount" "/qdrant/storage")
@@ -23,6 +24,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {{ $svc.name }}
+        app.kubernetes.io/part-of: rag-platform   # NetworkPolicy allow-intra-platform podSelector 매칭
     spec:
       {{- with ($svc.cfg.nodeSelector | default $d.nodeSelector | default $.Values.nodeSelector) }}
       nodeSelector:
@@ -32,11 +34,38 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with $svc.cfg.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ $svc.name }}
           image: {{ $svc.cfg.image }}
+          {{- with $svc.cfg.args }}
+          args: {{ toJson . }}
+          {{- end }}
           ports:
             - containerPort: {{ $svc.port }}
+          {{- if or (eq $svc.name "postgresql") $svc.cfg.extraEnv }}
+          env:
+            {{- if eq $svc.name "postgresql" }}
+            - name: POSTGRES_USER
+              value: {{ $.Values.global.postgres.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ $.Values.global.postgres.db | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.postgres.existingSecret }}
+                  key: password
+            # 마운트 루트의 lost+found 때문에 initdb 가 거부되는 것을 피한다
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            {{- end }}
+            {{- with $svc.cfg.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
           resources:
             {{- toYaml $svc.cfg.resources | nindent 12 }}
           volumeMounts:
@@ -60,6 +89,9 @@ kind: Service
 metadata:
   name: {{ $svc.name }}
   namespace: {{ $d.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $svc.name }}
+    app.kubernetes.io/part-of: rag-platform
 spec:
   selector:
     app.kubernetes.io/name: {{ $svc.name }}

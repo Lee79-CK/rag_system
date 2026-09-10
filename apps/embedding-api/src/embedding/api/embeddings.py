@@ -15,7 +15,8 @@ router = APIRouter(prefix="/internal/v1", tags=["embeddings"])
 
 
 class EmbeddingRequest(BaseModel):
-    texts: list[str] = Field(default_factory=list)
+    # 필수 키. 기본값을 두면 호출자의 키 오타(예: `input`)가 200 + 빈 결과로 묻힌다 (FR-IDX-004).
+    texts: list[str] = Field(...)
     normalize: bool = True
 
 

@@ -6,7 +6,7 @@ from rag_observability.logging import (
     configure_logging,
     get_logger,
 )
-from rag_observability.masking import mask_secrets
+from rag_observability.masking import mask_secrets, mask_text
 
 __all__ = [
     "bind_context",
@@ -14,4 +14,5 @@ __all__ = [
     "configure_logging",
     "get_logger",
     "mask_secrets",
+    "mask_text",
 ]

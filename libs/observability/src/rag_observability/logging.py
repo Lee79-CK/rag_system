@@ -28,8 +28,8 @@ def configure_logging(service_name: str, *, level: str = "INFO") -> None:
             merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
-            _structlog_processor,  # secret 마스킹 (§11 #3)
-            structlog.processors.dict_tracebacks,
+            structlog.processors.dict_tracebacks,  # 예외를 dict 로 펼친 뒤에 마스킹해야 traceback 도 걸러진다
+            _structlog_processor,  # secret 마스킹 (§11 #3) — 키 이름 + 값 패턴(DSN 비밀번호, /hooks/ URL)
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(_level_to_int(level)),

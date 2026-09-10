@@ -57,7 +57,10 @@ class Embedder:
         client = self._get_client()
         resp = client.post(
             _EMBEDDINGS_PATH,
-            json={"input": list(texts), "normalize": True},
+            json={
+                "texts": list(texts),
+                "normalize": True,
+            },  # embedding-api 계약 키 = texts (PRD §17.6)
             timeout=self._timeout,
         )
         resp.raise_for_status()

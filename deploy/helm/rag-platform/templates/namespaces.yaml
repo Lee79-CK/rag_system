@@ -1,0 +1,14 @@
+{{/* Namespace 4종 + NetworkPolicy 가 요구하는 라벨 `rag-platform: "true"` (§14.2, §22.1).
+     운영(GitOps)에서는 NS 를 별도 관리하므로 기본 false. 랩은 true. */}}
+{{- if .Values.namespaces.create }}
+{{- range $ns := .Values.namespaces.names }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    rag-platform: "true"
+    app.kubernetes.io/part-of: rag-platform
+{{- end }}
+{{- end }}

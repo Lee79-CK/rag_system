@@ -15,6 +15,7 @@ members = [
     "mattermost-adapter",
     "mattermost-bridge",
     "mock-llm",
+    "mock-mattermost",
     "parser-indexer",
     "rag-api",
     "rag-common",
@@ -49,6 +50,7 @@ source = { editable = "apps/admin-api" }
 dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "orjson" },
     { name = "prometheus-client" },
     { name = "psycopg", extra = ["binary"] },
@@ -74,6 +76,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "orjson", specifier = ">=3.10" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
@@ -1537,6 +1540,35 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
+]
+
+[[package]]
+name = "mock-mattermost"
+version = "0.1.0"
+source = { editable = "tools/mock-mattermost" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "orjson" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "orjson", specifier = ">=3.10" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pytest", specifier = ">=8.3" },
 ]
 
 [[package]]

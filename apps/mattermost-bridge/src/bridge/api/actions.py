@@ -74,10 +74,13 @@ async def actions(
                 403, "SOURCE_NOT_ALLOWED", "허용되지 않은 출처입니다.", request_id
             )
 
-        # 3. HMAC 서명 검증
-        expected_sig = feedback_signature(
-            settings.feedback_signing_key(), ctx.message_id, ctx.value
-        )
+        # 3. HMAC 서명 검증 — 서명 키가 비어 있으면(Secret 미마운트) 전부 거부 (fail-closed)
+        signing_key = settings.feedback_signing_key()
+        if not signing_key:
+            metrics.bridge_invalid_feedback_sig_total.inc()
+            log.error("actions.signing_key_missing")
+            return error_response(401, "INVALID_SIGNATURE", "서명이 유효하지 않습니다.", request_id)
+        expected_sig = feedback_signature(signing_key, ctx.message_id, ctx.value)
         if not hmac.compare_digest(ctx.sig, expected_sig):
             metrics.bridge_invalid_feedback_sig_total.inc()
             log.warning("actions.invalid_signature")

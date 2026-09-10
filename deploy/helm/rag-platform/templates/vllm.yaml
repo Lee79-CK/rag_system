@@ -26,7 +26,8 @@ spec:
         vllm-replica: {{ $replica }}
     spec:
       securityContext:
-        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+        {{- /* NGC vLLM 이미지가 root 전제라면 vllm.podSecurityContext 로 runAsNonRoot/runAsUser 를 덮어쓴다 (예외는 문서화 §22.4) */}}
+        {{- toYaml (mergeOverwrite (deepCopy $.Values.podSecurityContext) ($v.podSecurityContext | default dict)) | nindent 8 }}
       {{- with ($v.nodeSelector | default $.Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

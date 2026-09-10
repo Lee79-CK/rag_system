@@ -35,6 +35,7 @@ data:
               command: ["python", "-m", "ingestion.main", "--index-job-id", "__INDEX_JOB_ID__"]
               env:
                 {{- include "rag.offlineEnv" . | nindent 16 }}
+                {{- include "rag.dbEnv" . | nindent 16 }}
                 {{- with .Values.ingestion.extraEnv }}
                 {{- toYaml . | nindent 16 }}
                 {{- end }}
@@ -43,7 +44,7 @@ data:
                   mountPath: /models
                   readOnly: true
                 - name: documents
-                  mountPath: /data/documents
+                  mountPath: {{ .Values.documentStorage.mountPath }}
           volumes:
             - name: models
               {{- if .Values.modelStorage.hostPath }}

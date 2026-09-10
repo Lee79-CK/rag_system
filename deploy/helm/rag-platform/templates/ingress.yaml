@@ -1,0 +1,50 @@
+{{/* Ingress — Mattermost Callback(/integrations) · Admin API(/api) · Admin Web(/).
+     appServices 에 존재하는 서비스만 라우팅한다(admin-web 미정의 시 / 경로 생략).
+     ⚠ admin-api 는 X-Auth-User 헤더를 신뢰한다(DEC-003). 운영에서는 이 Ingress 앞에 인증 프록시
+       (oauth2-proxy 등)가 헤더를 주입/덮어써야 하며, 클라이언트가 임의로 보낸 헤더는 제거해야 한다. */}}
+{{- if .Values.ingress.enabled }}
+{{- $ing := .Values.ingress }}
+{{- $byNs := dict }}
+{{- range $route := $ing.routes }}
+{{- if hasKey $.Values.appServices $route.service }}
+{{- $svc := index $.Values.appServices $route.service }}
+{{- $list := index $byNs $svc.namespace | default list }}
+{{- $_ := set $byNs $svc.namespace (append $list (dict "route" $route "port" $svc.port)) }}
+{{- end }}
+{{- end }}
+{{- range $ns, $entries := $byNs }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rag-platform
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/part-of: rag-platform
+  {{- with $ing.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ing.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with $ing.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ $ing.host | quote }}
+      http:
+        paths:
+          {{- range $e := $entries }}
+          - path: {{ $e.route.path }}
+            pathType: {{ $e.route.pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ $e.route.service }}
+                port:
+                  number: {{ $e.port }}
+          {{- end }}
+{{- end }}
+{{- end }}

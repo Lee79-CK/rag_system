@@ -112,3 +112,96 @@ def test_secret_never_in_logs(harness, capsys):
     assert harness.settings.outgoing_token() == "test-outgoing-token"
     assert "test-outgoing-token" not in combined
     assert "incoming_webhook_secret_ref" not in combined or "mm-chan1" not in combined
+
+
+# ---------------------------------------------------------------------------
+# 코드 리뷰 후속 (docs/code-review-2026-09-10.md) — fail-closed / 롤백 / 기본 trigger
+# ---------------------------------------------------------------------------
+
+
+def test_fr_mm_002_missing_token_file_denies_empty_token(harness):
+    """Secret 파일이 없으면 기대 토큰이 ''. 예전엔 compare_digest('', '')=True 로 인증이 통과했다."""
+    from bridge.core.security import constant_time_token_check
+
+    assert constant_time_token_check("", "") is False
+    assert constant_time_token_check("anything", "") is False
+
+    harness.settings.mattermost_outgoing_token_secret_file = "/nonexistent/outgoing-token"
+    assert harness.settings.outgoing_token() == ""
+    resp = harness.client.post(
+        "/integrations/mattermost/v1/outgoing",
+        json=make_outgoing_payload(token="", post_id="empty-token"),
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_TOKEN"
+    assert harness.enqueuer.calls == []
+
+
+def test_fr_mm_006_enqueue_failure_rolls_back_dedup_and_rows(harness):
+    """enqueue 실패 → dedup 키/event/job 모두 되돌려 Mattermost 재전송이 처리되어야 한다."""
+    import asyncio
+
+    harness.enqueuer.fail_times = 1
+    payload = make_outgoing_payload(post_id="rollback-post")
+
+    r1 = harness.client.post("/integrations/mattermost/v1/outgoing", json=payload)
+    assert r1.status_code == 500
+    assert harness.event_repo.jobs == []
+    assert harness.event_repo.events == []
+    assert (
+        asyncio.get_event_loop().run_until_complete(harness.redis.exists("mm:event:rollback-post"))
+        == 0
+    )
+
+    # 재전송(enqueue 정상) → 정상 접수, job 1건
+    r2 = harness.client.post("/integrations/mattermost/v1/outgoing", json=payload)
+    assert r2.status_code == 200
+    assert len(harness.enqueuer.calls) == 1
+    assert len(harness.event_repo.jobs) == 1
+
+
+def test_fr_mm_010_default_trigger_word_stripped():
+    """binding.trigger_word 가 NULL 이고 전역 기본값(!rag)으로 게이트를 통과한 경우에도 prefix 를 제거한다."""
+    from rag_schemas import OutgoingWebhookPayload
+
+    binding = ChannelBinding(
+        id="b4",
+        team_id="team1",
+        channel_id="chan1",
+        channel_name="general",
+        mode=ChannelMode.TRIGGER_WORD,
+        trigger_word=None,
+        enabled=True,
+        knowledge_scope=KnowledgeScope(),
+        incoming_webhook_secret_ref="mm-chan1",
+    )
+    payload = OutgoingWebhookPayload.model_validate(make_outgoing_payload(text="!rag 휴가 정책"))
+    chat_request = to_chat_request(payload, binding, "trace-y", default_trigger="!rag")
+    assert chat_request.message == "휴가 정책"
+
+
+def test_enqueue_sets_job_timeout(monkeypatch):
+    """RQ 기본 180s 는 파이프라인 최악치보다 짧다 — 명시적 job_timeout 을 전달해야 한다."""
+    import rq
+    from bridge.services import job_enqueuer
+
+    captured: dict = {}
+
+    class FakeJob:
+        id = "rq-1"
+
+    class FakeQueue:
+        def __init__(self, name, connection=None):
+            captured["queue"] = name
+
+        def enqueue(self, target, *args, **kwargs):
+            captured["target"] = target
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return FakeJob()
+
+    monkeypatch.setattr(rq, "Queue", FakeQueue)
+    assert job_enqueuer.enqueue_chat_job(None, "job-1") == "rq-1"
+    assert captured["queue"] == "rag-chat"
+    assert captured["args"] == ("job-1",)
+    assert captured["kwargs"]["job_timeout"] == job_enqueuer.JOB_TIMEOUT_SECONDS >= 300

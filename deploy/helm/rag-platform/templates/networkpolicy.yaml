@@ -1,5 +1,11 @@
-{{/* NetworkPolicy default-deny + allowlist (§11 #7, §22.1). 폐쇄망 egress 차단 전제. */}}
-{{- range $ns := (list "rag-app" "rag-ai" "rag-data" "rag-ingestion") }}
+{{/* NetworkPolicy default-deny + allowlist (§11 #7, §22.1). 폐쇄망 egress 차단 전제.
+
+     ★ cross-namespace 허용은 Namespace 라벨 `rag-platform: "true"` 에 의존한다.
+       라벨이 없으면 rag-api→qdrant/postgresql/redis/embedding/vllm 등 모든 NS 간 호출이 차단된다.
+       (namespaces.create=true 로 chart 가 라벨을 붙이거나, 직접 `kubectl label ns ... rag-platform=true`) */}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $ic := .Values.networkPolicy.ingressController }}
+{{- range $ns := .Values.namespaces.names }}
 ---
 # 기본 전면 차단 (ingress + egress)
 apiVersion: networking.k8s.io/v1
@@ -29,7 +35,7 @@ spec:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
 ---
-# 플랫폼 내부 통신 허용 (part-of=rag-platform 간)
+# 플랫폼 내부 통신 허용 (part-of=rag-platform Pod 간 + rag-platform=true NS 간)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -55,22 +61,57 @@ spec:
             matchLabels:
               rag-platform: "true"
 {{- end }}
+{{- /* Ingress Controller → 노출 서비스 (bridge /integrations, admin-api /api, admin-web /).
+       RKE2 내장 ingress-nginx 는 kube-system 에 있으므로 values 로 NS/podSelector 를 맞춘다. */}}
+{{- range $route := .Values.ingress.routes }}
+{{- if hasKey $.Values.appServices $route.service }}
+{{- $svc := index $.Values.appServices $route.service }}
 ---
-# Mattermost Callback → Bridge (/outgoing, /actions) 는 ingress-nginx 경유 (§7.2.5)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-ingress-to-bridge
-  namespace: rag-app
+  name: allow-ingress-to-{{ $route.service }}
+  namespace: {{ $svc.namespace }}
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: mattermost-bridge
+      app.kubernetes.io/name: {{ $route.service }}
   policyTypes: ["Ingress"]
   ingress:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
+              kubernetes.io/metadata.name: {{ $ic.namespace }}
+          {{- with $ic.podSelector }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
       ports:
-        - { protocol: TCP, port: 8001 }
+        - { protocol: TCP, port: {{ $svc.port }} }
+{{- end }}
+{{- end }}
+{{- /* admin-api → kube-apiserver (INDEX_JOB_TRIGGER=k8s). API 서버는 hostNetwork 라 ipBlock 으로 허용. */}}
+{{- with .Values.networkPolicy.apiServer }}
+{{- if .enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-admin-api-to-apiserver
+  namespace: {{ (index $.Values.appServices "admin-api").namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: admin-api
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        {{- range .cidrs }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ .port }} }
+{{- end }}
+{{- end }}
+{{- end }}

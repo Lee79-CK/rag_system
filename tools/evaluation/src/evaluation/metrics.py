@@ -8,7 +8,8 @@ from evaluation.models import CaseResult, MetricSummary
 def _doc_match(name: str, expected: list[str]) -> bool:
     """문서명 부분 일치(확장자·경로 차이 허용)."""
     n = name.lower()
-    return any(e.lower().rstrip(".pdf").rstrip() in n or n in e.lower() for e in expected)
+    # str.rstrip(".pdf") 는 문자 집합 제거라 "guide_dp.pdf" → "guide_" 가 된다 → removesuffix 사용
+    return any(e.lower().removesuffix(".pdf").rstrip() in n or n in e.lower() for e in expected)
 
 
 def recall_at_10(result: CaseResult) -> float | None:

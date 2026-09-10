@@ -1,0 +1,43 @@
+{{/* admin-api ServiceAccount + Role(rag-ingestion: configmaps get, jobs create) — INDEX_JOB_TRIGGER=k8s (ADR-008).
+     admin-api 는 ConfigMap `parser-indexer-job-template` 을 읽어 parser-indexer Job 을 생성한다. */}}
+{{- $sa := .Values.serviceAccounts.adminApi }}
+{{- if $sa.create }}
+{{- $adminNs := (index .Values.appServices "admin-api").namespace }}
+{{- $ingNs := .Values.ingestion.namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa.name }}
+  namespace: {{ $adminNs }}
+  labels:
+    app.kubernetes.io/part-of: rag-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rag-index-job-creator
+  namespace: {{ $ingNs }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["parser-indexer-job-template"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rag-index-job-creator
+  namespace: {{ $ingNs }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa.name }}
+    namespace: {{ $adminNs }}
+roleRef:
+  kind: Role
+  name: rag-index-job-creator
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from typing import Annotated, Any
 from urllib.parse import parse_qs
@@ -158,7 +159,7 @@ async def outgoing(
         # 8. mattermost_events + chat_jobs INSERT (단일 트랜잭션, 실패 시 dedup 롤백)
         payload_hash = sha256_hex(f"{payload.post_id}:{payload.text}")  # 원문 미저장 (NFR-DATA-007)
         try:
-            _event_id, job_id = event_repo.record_event_and_job(
+            event_id, job_id = event_repo.record_event_and_job(
                 post_id=payload.post_id,
                 root_id=payload.root_id or None,
                 team_id=payload.team_id,
@@ -173,17 +174,29 @@ async def outgoing(
                 500, "INTERNAL_ERROR", "요청 처리 중 오류가 발생했습니다.", request_id
             )
 
-        # ChatRequest 를 Worker가 로딩할 수 있도록 Redis에 보관 (Mattermost 종속성 제거 완료본)
-        chat_request = to_chat_request(payload, binding, trace_id)
-        await redis.set(
-            f"chat:req:{job_id}", chat_request.model_dump_json(), ex=_CHAT_REQUEST_TTL_SECONDS
-        )
-
-        # 9. RQ enqueue
+        # 8.5 ChatRequest 보관 + 9. RQ enqueue.
+        # 둘 중 하나라도 실패하면 event/job 행과 dedup 키를 모두 되돌린다 — 그렇지 않으면
+        # Mattermost 재전송이 24h 동안 "중복"으로 무시되어 질문이 영구 유실된다 (FR-MM-006).
         try:
+            chat_request = to_chat_request(
+                payload,
+                binding,
+                trace_id,
+                default_trigger=settings.mattermost_default_trigger_word,
+            )
+            await redis.set(
+                f"chat:req:{job_id}", chat_request.model_dump_json(), ex=_CHAT_REQUEST_TTL_SECONDS
+            )
             enqueuer(job_id)
         except Exception:
             log.exception("outgoing.enqueue_failed")
+            try:
+                event_repo.discard_event_and_job(event_id, job_id)
+            except Exception:  # noqa: BLE001 — 보상 트랜잭션 실패는 로그만 (원 오류 응답 유지)
+                log.exception("outgoing.enqueue_rollback_failed")
+            with contextlib.suppress(Exception):
+                await redis.delete(f"chat:req:{job_id}")
+            await delete_dedup(redis, payload.post_id)
             return error_response(500, "INTERNAL_ERROR", "작업 등록에 실패했습니다.", request_id)
 
         # 10. 200 반환

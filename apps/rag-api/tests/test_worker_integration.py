@@ -67,6 +67,12 @@ class FakeStore:
         self.citations = citations
         return self.assistant_id
 
+    def claim_job(self, job_id):
+        if self.jobs.get(job_id) not in (None, "QUEUED"):
+            return False
+        self.jobs[job_id] = "RUNNING"
+        return True
+
     def update_job_status(self, job_id, status, *, error=None, mark_started=False):
         self.jobs[job_id] = status
 
@@ -240,3 +246,46 @@ async def test_insufficient_evidence_skips_llm(binding, tmp_path, monkeypatch):
     assert llm.calls == 0
     assert completion.insufficient_evidence is True
     assert "근거를 찾지 못했습니다" in completion.answer
+
+
+async def test_worker_skips_already_claimed_job(binding, tmp_path, monkeypatch):
+    """RQ 재실행/중복 enqueue 로 같은 job 이 다시 들어오면 LLM 호출·게시 없이 종료한다 (멱등)."""
+    posted: list = []
+
+    async def fake_deliver(url, message, *, secret_ref, config=None, client=None):
+        from mattermost_adapter.delivery import DeliveryResult
+
+        posted.append(message)
+        return DeliveryResult(ok=True, attempts=1, http_status=200, posted_parts=1)
+
+    monkeypatch.setattr("rag.adapters.delivery_adapter.deliver", fake_deliver)
+    (tmp_path / binding.incoming_webhook_secret_ref).write_text("https://mm/hooks/xyz")
+
+    store = FakeStore()
+    store.jobs["job-dup"] = "COMPLETED"  # 이미 처리된 job
+    llm = FakeLLM()
+    deps = WorkerDeps(
+        binding_reader=FakeBindingReader(binding),
+        store=store,
+        pipeline=_pipeline(llm),
+        delivery=MattermostDelivery(
+            DeliveryDeps(secret_dir=str(tmp_path), signing_key=b"k", action_url="http://b/actions")
+        ),
+    )
+    request = ChatRequest(
+        source="mattermost",
+        team_id="team-001",
+        channel_id="channel-001",
+        channel_name="rag-cloud-ops",
+        user_id="u",
+        user_name="un",
+        post_id="p",
+        root_id=None,
+        message="질문",
+        trace_id="t",
+    )
+    result = await process_chat_job(deps, "job-dup", request)
+    assert result is None
+    assert llm.calls == 0
+    assert posted == []
+    assert store.jobs["job-dup"] == "COMPLETED"  # 상태 미변경

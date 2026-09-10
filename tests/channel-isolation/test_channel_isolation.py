@@ -91,6 +91,9 @@ class _FakeStore:
         self.conv.setdefault(conversation_id, []).append(("assistant", content))
         return "aid"
 
+    def claim_job(self, job_id):
+        return True
+
     def update_job_status(self, job_id, status, *, error=None, mark_started=False):
         pass
 

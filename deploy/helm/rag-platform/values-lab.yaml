@@ -4,21 +4,50 @@
 #     -f deploy/helm/rag-platform/values-poc.yaml \
 #     -f deploy/helm/rag-platform/values-lab.yaml \
 #     --set global.imageTag=$TAG
-#   ※ values-poc.yaml 위에 겹쳐 쓴다 (이 파일은 override 전용, 단독 사용 금지).
+#   ※ values.yaml → values-poc.yaml → 이 파일 순서로 겹쳐진다 (override 전용, 단독 사용 금지).
 #
 # 운영(PoC)과 다른 점 — 리포트에 반드시 기록할 것:
 #   - vLLM replica 2 → 1 (GPU 노드 1대). NFR-HA-002 는 순차 재기동으로 대체 검증
-#   - 앱 replica 2 → 1 (P3 20코어 한계). PDB 는 minAvailable 유지 시 rollout 이 막히므로 해제
+#   - 앱 replica 2 → 1 (P3 20코어 한계). PDB 는 minAvailable 유지 시 rollout 이 막히므로 해제(null)
 #   - 데이터 계층 용량 축소 (NVMe 1TB 공유 — 가이드 §1.4.1)
 #   - max-num-seqs 16 → 8 (GB10 메모리 대역폭 ~273GB/s 고려)
-#
-# ⚠️ 이 chart 가 아직 제공하지 않는 것 (랩 구동 전 별도 처리 필요) — 파일 하단 주석 참조
+#   - Namespace 를 chart 가 생성(라벨 rag-platform=true 포함), Ingress Controller = RKE2 내장(kube-system)
+#   - admin-web / mock-mattermost 를 appServices 로 추가 (Ingress `/` 및 E2E 게시 확인용)
 # ─────────────────────────────────────────────────────────────────────────────
 
 global:
   imageRegistry: registry.local:5000
   imageTag: "dev"                 # --set global.imageTag=$(git rev-parse --short HEAD) 로 덮어쓴다
   imagePullPolicy: IfNotPresent
+
+# ---- Namespace / NetworkPolicy / Ingress (chart 가 생성) ----
+namespaces:
+  # Secret(Namespace-scoped)을 helm install 이전에 만들어야 Pod 가 바로 뜨므로 랩에서는 NS 를 가이드 §4.1 에서
+  # kubectl 로 먼저 만들고 라벨(rag-platform=true)을 붙인다. 완전 신규 GitOps 설치라면 true 로 chart 가 생성.
+  create: false
+
+networkPolicy:
+  ingressController:
+    namespace: kube-system        # RKE2 내장 ingress-nginx
+    podSelector: { app.kubernetes.io/name: rke2-ingress-nginx }
+  apiServer:
+    enabled: true                 # admin-api → kube-apiserver (INDEX_JOB_TRIGGER=k8s)
+    cidrs: ["192.168.0.10/32"]    # ★ P3(control-plane) 노드 IP 로 교체
+    port: 6443
+
+ingress:
+  enabled: true
+  className: nginx
+  host: rag.lab.local             # 접속 PC /etc/hosts → P3 IP
+  # 랩 한정: 인증 프록시가 없으므로 클라이언트가 X-Auth-User 를 직접 보낸다 (admin-web 은 localStorage override).
+  annotations: {}
+
+serviceAccounts:
+  adminApi:
+    create: true                  # rag-ingestion 에 Job 생성 권한 (templates/rbac.yaml)
+
+migration:
+  enabled: true                   # helm install/upgrade 시 alembic upgrade head (hook Job)
 
 # ---- 스케줄링 ----
 # 기본은 P3(amd64) 고정. PGX 는 dedicated=llm:NoSchedule taint 로도 막히지만,
@@ -46,7 +75,7 @@ data:
     resources: { requests: { cpu: "500m", memory: 1Gi } }
 
 documentStorage:
-  storageClass: local-bulk        # 문서 원본 → HDD
+  storageClass: local-bulk        # 문서 원본 → HDD (지정하지 않으면 default SC=local-fast(NVMe) 로 새어 들어간다)
   size: 500Gi
 
 modelStorage:
@@ -57,51 +86,52 @@ modelStorage:
                                   #   (Pod 는 runAsUser 10001, hostPath 에는 fsGroup 이 적용되지 않음)
 
 # ---- 애플리케이션 서비스 ----
-# 공통: replica 1, PDB 해제, 리소스 축소(P3 20코어/128GB), in-cluster URL 주입.
-# env 키 이름은 TDD §10 / PRD 부록 B 가 SSOT — 임의 변경 금지.
+# 공통: replica 1, PDB 해제, 리소스 축소(P3 20코어/128GB).
+# 서비스 URL / DB / Redis / Secret 경로는 values.yaml 의 dbEnv·redisEnv·bridgeSecrets·incomingSecrets 플래그와
+# extraEnv 기본값(in-cluster DNS)이 이미 채운다 — 여기서는 랩에서 달라지는 값만 override 한다 (리스트는 통째로 교체됨).
 appServices:
   mattermost-bridge:
     replicas: 1
     pdbMinAvailable: null
     resources: { requests: { cpu: "250m", memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
     extraEnv:
-      - { name: REDIS_URL,     value: "redis://redis.rag-data:6379/0" }
-      - { name: POSTGRES_HOST, value: "postgresql.rag-data" }
       - { name: BRIDGE_INTERNAL_URL, value: "http://mattermost-bridge.rag-app:8001" }
-      - { name: LOG_LEVEL,     value: "INFO" }
+      - { name: LOG_LEVEL, value: "INFO" }
+      # Mattermost(mock) Pod 네트워크 + 접속 PC 대역. 비우면 개방(allow-all) — 랩에서도 채워 둔다
+      - { name: BRIDGE_ALLOWED_SOURCE_CIDRS, value: "10.42.0.0/16,192.168.0.0/16" }
 
   rag-api:
     replicas: 1
     pdbMinAvailable: null
     resources: { requests: { cpu: "500m", memory: 1Gi }, limits: { cpu: "2", memory: 3Gi } }
-    extraEnv: &ragEnv
-      - { name: REDIS_URL,         value: "redis://redis.rag-data:6379/0" }
-      - { name: POSTGRES_HOST,     value: "postgresql.rag-data" }
+    extraEnv: &ragEnvLab
       - { name: QDRANT_URL,        value: "http://qdrant.rag-data:6333" }
       - { name: EMBEDDING_API_URL, value: "http://embedding-api.rag-ai:8004" }
       - { name: RERANKER_API_URL,  value: "http://reranker-api.rag-ai:8005" }
       - { name: VLLM_API_URL,      value: "http://vllm-service.rag-ai:8000/v1" }
       - { name: LLM_SERVED_MODEL_NAME, value: "internal-rag-llm" }
       - { name: BRIDGE_INTERNAL_URL,   value: "http://mattermost-bridge.rag-app:8001" }
-      # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2)
+      # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2)  ※ 코드가 아직 semaphore 로 강제하지 않음 — 리뷰 리포트 참조
       - { name: CHAT_MAX_CONCURRENCY,  value: "8" }
       # tokenizer 는 LLM 노드(PGX)에만 있으므로 P3 의 rag-api 에서는 근사 카운팅 경로를 쓴다
       - { name: TOKENIZER_PATH,        value: "/models/llm/main" }
 
   rag-worker:
-    replicas: 2                   # 가이드 §4 workerReplicaCount 2
+    replicas: 2                   # 큐 재처리 시나리오(§6) 검증에 필요
     pdbMinAvailable: null
     resources: { requests: { cpu: "500m", memory: 1Gi }, limits: { cpu: "2", memory: 3Gi } }
-    extraEnv: *ragEnv
+    extraEnv: *ragEnvLab
 
   admin-api:
     replicas: 1
     pdbMinAvailable: null
     resources: { requests: { cpu: "500m", memory: 1Gi }, limits: { cpu: "2", memory: 2Gi } }
+    serviceAccountName: admin-api
     extraEnv:
-      - { name: POSTGRES_HOST, value: "postgresql.rag-data" }
       - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
       - { name: BRIDGE_INTERNAL_URL,   value: "http://mattermost-bridge.rag-app:8001" }
+      - { name: INDEX_JOB_TRIGGER,     value: "k8s" }        # 업로드/재색인 → parser-indexer Job 자동 생성
+      - { name: INDEX_JOB_NAMESPACE,   value: "rag-ingestion" }
       - { name: APP_ENV,   value: "lab" }
       - { name: LOG_LEVEL, value: "INFO" }
 
@@ -110,29 +140,53 @@ appServices:
     pdbMinAvailable: null
     # CPU 추론(bge-m3). P3 Core Ultra 7 265 기준 — 색인 처리량이 부족하면 cpu limit 을 올린다
     resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "6", memory: 8Gi } }
+    startupFailureThreshold: 90   # HDD(/data/bulk) 에서 모델 로딩 → 최대 15분 허용
     extraEnv:
       - { name: EMBEDDING_MODEL_PATH, value: "/models/embedding/bge-m3" }
-      - { name: EMBEDDING_MOCK,       value: "0" }   # 실모델. 모델 미배치 시 "1"
+      - { name: EMBEDDING_MOCK,       value: "0" }   # 실모델. 모델 미배치 시 "1" (이미지에 --extra models 필요)
 
   reranker-api:
     replicas: 1
     pdbMinAvailable: null
     resources: { requests: { cpu: "4", memory: 6Gi }, limits: { cpu: "8", memory: 12Gi } }
+    startupFailureThreshold: 90
     extraEnv:
       - { name: RERANKER_MODEL_PATH, value: "/models/reranker/bge-reranker-v2-m3" }
       - { name: RERANKER_MOCK,       value: "0" }
+
+  # 관리자 Portal (nginx 정적 서빙, apps/admin-web/Containerfile). API 는 Ingress 가 /api 로 프록시
+  admin-web:
+    namespace: rag-app
+    replicas: 1
+    image: rag/admin-web
+    port: 8080
+    resources: { requests: { cpu: "50m", memory: 64Mi }, limits: { cpu: "500m", memory: 256Mi } }
+    pdbMinAvailable: null   # nginx.conf 가 pid/temp 를 /tmp(emptyDir) 로 쓰므로 추가 볼륨 불필요
+
+  # Mattermost Incoming Webhook 수신 흉내 (tools/mock-mattermost). 게시 payload 확인용 — 운영 미배포
+  mock-mattermost:
+    namespace: rag-app
+    replicas: 1
+    image: rag/mock-mattermost
+    port: 9099
+    command: ["uvicorn", "mock_mattermost.server:app", "--host", "0.0.0.0", "--port", "9099"]
+    resources: { requests: { cpu: "50m", memory: 128Mi }, limits: { cpu: "500m", memory: 256Mi } }
+    pdbMinAvailable: null
 
 # ---- vLLM (PGX / arm64 / GPU 1) ----
 vllm:
   replicas: [llm-0]               # 운영 [llm-0, llm-1] → GPU 노드 1대이므로 1개
   image: ai/vllm-arm64            # 미러링 시 $TAG 로 태깅할 것 (rag.image 헬퍼가 global.imageTag 사용):
-                                  #   docker tag nvcr.io/nvidia/vllm:latest $REG/ai/vllm-arm64:$TAG
+                                  #   docker tag nvcr.io/nvidia/vllm:<tag> $REG/ai/vllm-arm64:$TAG
   nodeSelector:
     ragplatform.io/tier: llm      # 가이드 §1.2 라벨
   tolerations:
     - { key: dedicated, value: llm, operator: Equal, effect: NoSchedule }
   modelHostPath: /models          # PGX 로컬 경로. 모델 실체는 /models/llm/main (§2.1)
                                   # ※ sudo chmod -R a+rX /models
+  # NGC vLLM 이미지가 비루트(10001) 기동에 실패하면 아래 주석을 풀어 예외를 명시한다 (§22.4 — 리포트에 기록)
+  podSecurityContext: {}
+  # podSecurityContext: { runAsNonRoot: false, runAsUser: 0 }
   args:
     - --model=/models/llm/main
     - --served-model-name=internal-rag-llm
@@ -146,33 +200,13 @@ vllm:
     requests: { cpu: "8", memory: 32Gi }
     limits:   { nvidia.com/gpu: 1 }
 
-# ---- parser-indexer Job 템플릿 ----
+# ---- parser-indexer Job 템플릿 (POSTGRES_* 는 dbEnv 헬퍼가 채운다) ----
 ingestion:
   extraEnv:
     - { name: QDRANT_URL,        value: "http://qdrant.rag-data:6333" }
     - { name: EMBEDDING_API_URL, value: "http://embedding-api.rag-ai:8004" }
-    - { name: POSTGRES_HOST,     value: "postgresql.rag-data" }
     - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
     - { name: OCR_ENABLED,       value: "0" }
 
 monitoring:
-  grafanaDashboards: true
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ⚠️ chart 미지원 — 이 values 만으로는 채워지지 않는 항목 (가이드 §4 참조)
-#
-# 1) Secret 파일 마운트
-#    bridge/rag-api 는 토큰을 env 가 아니라 **파일 경로**로 읽는다
-#    (MATTERMOST_OUTGOING_TOKEN_SECRET_FILE, FEEDBACK_SIGNING_KEY_FILE,
-#     MATTERMOST_SECRET_DIR). 현재 chart 는 `envFrom: secretRef` 만 지원하므로
-#    Secret volume 마운트를 추가하거나, 배포 후 kubectl patch 로 주입해야 한다.
-#
-# 2) Ingress — chart 에 Ingress 템플릿이 없다. 가이드 §4.3 의 rag.lab.local 라우팅은
-#    별도 매니페스트로 적용한다 (bridge /integrations, admin-api /api, admin-web /).
-#
-# 3) admin-web / mock-mattermost — appServices 에 정의가 없다. 랩에서 필요하면
-#    여기 appServices 에 항목을 추가하면 그대로 Deployment+Service 가 생성된다.
-#
-# 4) POSTGRES_PASSWORD 등 DB 자격증명은 기본값(rag/rag-dev-only)을 그대로 쓴다.
-#    폐쇄망 랩 한정이며 PoC 이관 시 Secret 으로 전환할 것.
-# ─────────────────────────────────────────────────────────────────────────────
+  grafanaDashboards: false        # kube-prometheus-stack 설치 후 true (가이드 §9). true 면 monitoring NS 선재 필요

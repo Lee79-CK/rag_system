@@ -9,11 +9,14 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from rag_observability import get_logger
 from rag_schemas import ChannelBinding, ChatRequest, RagCompletion, scope_key
 
 from rag.adapters.delivery_adapter import MattermostDelivery
 from rag.domain.pipeline import RagPipeline
 from rag.domain.prompt import INSUFFICIENT_EVIDENCE_TEXT
+
+log = get_logger("rag.worker")
 
 
 class BindingReader(Protocol):
@@ -38,6 +41,10 @@ class ConversationStore(Protocol):
         citations: list[dict[str, Any]],
     ) -> str: ...
 
+    def claim_job(self, job_id: str) -> bool:
+        """QUEUED → RUNNING 원자 전이. 이미 다른 워커가 잡았거나 끝난 job 이면 False (멱등 가드)."""
+        ...
+
     def update_job_status(
         self, job_id: str, status: str, *, error: str | None = ..., mark_started: bool = ...
     ) -> None: ...
@@ -55,9 +62,17 @@ class WorkerDeps:
     delivery: MattermostDelivery
 
 
-async def process_chat_job(deps: WorkerDeps, job_id: str, request: ChatRequest) -> RagCompletion:
-    """§7.2.1 1~15단계. 실패 시 오류 Post 게시 + job FAILED."""
-    deps.store.update_job_status(job_id, "RUNNING", mark_started=True)
+async def process_chat_job(
+    deps: WorkerDeps, job_id: str, request: ChatRequest
+) -> RagCompletion | None:
+    """§7.2.1 1~15단계. 실패 시 오류 Post 게시 + job FAILED.
+
+    RQ 재실행/중복 enqueue 로 같은 job 이 두 번 들어와도 답변이 두 번 게시되지 않도록
+    QUEUED→RUNNING 전이를 원자적으로 선점(claim)한 워커만 진행한다. 선점 실패 시 None.
+    """
+    if not deps.store.claim_job(job_id):
+        log.warning("worker.job_already_claimed", job_id=job_id)
+        return None
 
     binding = deps.binding_reader.get_binding(request.team_id, request.channel_id)
     if binding is None or not binding.enabled:
@@ -145,8 +160,9 @@ def load_chat_request(job_id: str) -> ChatRequest:
 
     from rag.core.config import get_settings
 
-    conn = redis.Redis.from_url(get_settings().redis_url)
-    raw = conn.get(f"chat:req:{job_id}")
+    # job 마다 연결을 열고 반드시 닫는다 (장기 실행 RQ 워커의 소켓 누수 방지)
+    with redis.Redis.from_url(get_settings().redis_url) as conn:
+        raw = conn.get(f"chat:req:{job_id}")
     if raw is None:
         raise RuntimeError(f"chat request payload missing for job {job_id}")
     return ChatRequest.model_validate_json(raw)

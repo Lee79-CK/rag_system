@@ -159,6 +159,9 @@
           }
         },
         "type": "object",
+        "required": [
+          "texts"
+        ],
         "title": "EmbeddingRequest"
       },
       "EmbeddingResponse": {

@@ -1913,6 +1913,24 @@
             "type": "string",
             "title": "Security Level",
             "default": "INTERNAL"
+          },
+          "allowed_channel_ids": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Channel Ids",
+            "description": "허용 Channel ID 목록(콤마 구분). 비우면 어느 채널에서도 검색되지 않는다."
+          },
+          "start_indexing": {
+            "type": "boolean",
+            "title": "Start Indexing",
+            "description": "true 면 업로드 직후 색인 Job 생성",
+            "default": false
           }
         },
         "type": "object",

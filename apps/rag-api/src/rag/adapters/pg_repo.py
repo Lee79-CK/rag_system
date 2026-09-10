@@ -160,6 +160,20 @@ class PgConversationStore:
                 )
         return mid
 
+    def claim_job(self, job_id: str) -> bool:
+        """QUEUED 상태일 때만 RUNNING 으로 전이. rowcount==1 이면 이 워커가 선점한 것."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE chat_jobs SET status = 'RUNNING', started_at = now()
+                    WHERE id = :id AND status = 'QUEUED'
+                    """
+                ),
+                {"id": job_id},
+            )
+        return (result.rowcount or 0) == 1
+
     def update_job_status(
         self, job_id: str, status: str, *, error: str | None = None, mark_started: bool = False
     ) -> None:

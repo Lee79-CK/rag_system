@@ -33,8 +33,12 @@ class SpyEnqueuer:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.fail_times = 0  # >0 이면 그 횟수만큼 enqueue 실패를 흉내낸다 (롤백 테스트)
 
     def __call__(self, chat_job_id: str) -> str:
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise ConnectionError("redis down (simulated)")
         self.calls.append(chat_job_id)
         return chat_job_id
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +17,9 @@ class Settings(BaseSettings):
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "rag"
-    postgres_password: str = "rag-dev-only"
+    postgres_password: SecretStr = SecretStr(
+        "rag-dev-only"
+    )  # repr/log 노출 금지 (CLAUDE.md 규칙 3)
     postgres_db: str = "rag"
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "rag_chunks_v1"
@@ -56,8 +59,9 @@ class Settings(BaseSettings):
     def sqlalchemy_url(self) -> str:
         if self.database_url:
             return self.database_url
+        pw = self.postgres_password.get_secret_value()  # DSN 조립 시에만 노출
         return (
-            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql+psycopg://{self.postgres_user}:{pw}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 

@@ -57,3 +57,10 @@ def test_embedding_empty_texts() -> None:
     assert resp.status_code == 200
     assert resp.json()["embeddings"] == []
     assert resp.json()["usage"]["count"] == 0
+
+
+def test_embedding_missing_texts_key_is_422() -> None:
+    """`texts` 는 필수 — 호출자 키 오타(`input`)가 200 + 빈 결과로 묻히면 색인이 조용히 실패한다."""
+    with _client() as client:
+        resp = client.post(URL, json={"input": ["wrong key"]})
+    assert resp.status_code == 422

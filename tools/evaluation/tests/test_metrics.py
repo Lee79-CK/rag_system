@@ -94,3 +94,12 @@ def test_dataset_loads_sample_yaml():
     assert "q001" in ids
     # no_answer 유형이 하나 이상 존재 (§25.6 분포)
     assert any(not c.ground_truth.answerable for c in cases)
+
+
+def test_doc_match_uses_removesuffix_not_rstrip():
+    """rstrip('.pdf') 는 문자 집합 제거라 'guide_dp.pdf' → 'guide_' 가 되어 오매칭을 냈다."""
+    from evaluation.metrics import _doc_match
+
+    assert _doc_match("guide_dp", ["guide_dp.pdf"]) is True
+    assert _doc_match("guide_", ["guide_dp.pdf"]) is False
+    assert _doc_match("장애대응매뉴얼", ["장애대응매뉴얼.pdf"]) is True

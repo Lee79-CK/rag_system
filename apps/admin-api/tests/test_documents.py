@@ -49,3 +49,87 @@ def test_upload_rejects_bad_extension(client, seed, auth):
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+
+def test_fr_doc_004_upload_writes_channel_acl(client, seed, auth, TestSession):
+    """allowed_channel_ids 가 document_channel_acl 로 저장되어야 색인 후 해당 채널에서 검색된다."""
+    from admin.db.models import DocumentChannelAcl
+
+    seed({"docadmin": ["DOC_ADMIN"]})
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("manual.md", "# 장애대응\n1등급...".encode(), "text/markdown")},
+        data={
+            "title": "장애대응매뉴얼",
+            "allowed_channel_ids": "channel-001, channel-002,channel-001",
+        },
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()["data"]
+    assert body["allowed_channel_ids"] == ["channel-001", "channel-002"]
+    import uuid
+
+    with TestSession() as s:
+        rows = (
+            s.query(DocumentChannelAcl)
+            .filter_by(document_id=uuid.UUID(body["document"]["id"]))
+            .all()
+        )
+    assert sorted(r.channel_id for r in rows) == ["channel-001", "channel-002"]
+
+
+def test_fr_idx_010_upload_with_start_indexing_creates_job_and_records_trigger_failure(
+    client, seed, auth, TestSession
+):
+    """start_indexing=true → index_jobs 행 생성 + 트리거 호출. 트리거 실패는 job.error 로 노출(202/201 유지)."""
+    from admin.db.models import IndexJob
+    from admin.services.index_trigger import IndexTriggerError, provide_index_trigger
+
+    class FailingTrigger:
+        name = "k8s"
+
+        def trigger(self, index_job_id):
+            raise IndexTriggerError("Job 생성 실패: HTTPStatusError status=403")
+
+    client.app.dependency_overrides[provide_index_trigger] = lambda: FailingTrigger()
+    seed({"docadmin": ["DOC_ADMIN"]})
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("p.txt", b"content-for-indexing", "text/plain")},
+        data={"start_indexing": "true", "allowed_channel_ids": "channel-001"},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 201, resp.text
+    job_id = resp.json()["data"]["index_job_id"]
+    with TestSession() as s:
+        job = s.get(IndexJob, __import__("uuid").UUID(job_id))
+    assert job is not None
+    assert job.status == "PENDING"
+    assert job.error and job.error.startswith("TRIGGER_FAILED[k8s]")
+
+
+def test_reindex_calls_trigger(client, seed, auth):
+    from admin.services.index_trigger import provide_index_trigger
+
+    calls: list[str] = []
+
+    class SpyTrigger:
+        name = "spy"
+
+        def trigger(self, index_job_id):
+            calls.append(index_job_id)
+            return "index-job-xyz"
+
+    client.app.dependency_overrides[provide_index_trigger] = lambda: SpyTrigger()
+    seed({"docadmin": ["DOC_ADMIN"]})
+    up = client.post(
+        "/api/v1/documents",
+        files={"file": ("r.txt", b"reindex-me", "text/plain")},
+        headers=auth("docadmin"),
+    )
+    doc_id = up.json()["data"]["document"]["id"]
+    resp = client.post(f"/api/v1/documents/{doc_id}/reindex", headers=auth("docadmin"))
+    assert resp.status_code == 202, resp.text
+    assert calls == [resp.json()["data"]["index_job_id"]]
+    assert resp.json()["data"]["trigger"] == "spy"

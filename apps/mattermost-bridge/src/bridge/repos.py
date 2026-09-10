@@ -60,6 +60,10 @@ class EventRepo(Protocol):
         """이벤트 INSERT + Job INSERT 를 단일 트랜잭션으로 수행 (§7.1.1 step8 MUST)."""
         ...
 
+    def discard_event_and_job(self, event_id: str, job_id: str) -> None:
+        """enqueue 실패 시 보상 트랜잭션 — step8 에서 만든 두 행을 삭제해 재수신을 허용한다."""
+        ...
+
 
 class FeedbackRepo(Protocol):
     def message_exists(self, message_id: str) -> bool: ...
@@ -231,6 +235,13 @@ class SqlEventRepo:
             ).scalar_one()
         return str(event_id), str(job_id)
 
+    def discard_event_and_job(self, event_id: str, job_id: str) -> None:
+        from sqlalchemy import text
+
+        with self._engine.begin() as conn:  # 보상 트랜잭션 (enqueue 실패)
+            conn.execute(text("DELETE FROM chat_jobs WHERE id = :jid"), {"jid": job_id})
+            conn.execute(text("DELETE FROM mattermost_events WHERE id = :eid"), {"eid": event_id})
+
 
 class SqlFeedbackRepo:
     def __init__(self, engine: Any) -> None:
@@ -364,6 +375,13 @@ class InMemoryEventRepo:
         )
         job_id = self.create_chat_job(event_id, conversation_id)
         return event_id, job_id
+
+    def discard_event_and_job(self, event_id: str, job_id: str) -> None:
+        self.jobs = [j for j in self.jobs if j["id"] != job_id]
+        removed = [e for e in self.events if e["id"] == event_id]
+        self.events = [e for e in self.events if e["id"] != event_id]
+        for e in removed:
+            self._seen_post_ids.discard(e["post_id"])  # post_id UNIQUE 해제 → 재수신 가능
 
 
 class InMemoryFeedbackRepo:
