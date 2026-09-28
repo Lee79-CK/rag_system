@@ -24,14 +24,11 @@ from rag_schemas.document import (
 )
 from rag_schemas.errors import ErrorDetail, ErrorResponse
 from rag_schemas.feedback import (
+    FEEDBACK_ACTION_DOWN,
+    FEEDBACK_ACTION_UP,
     FeedbackValue,
-    InteractiveActionContext,
-    InteractiveActionRequest,
     MessageFeedback,
-)
-from rag_schemas.mattermost import (
-    IncomingWebhookMessage,
-    OutgoingWebhookPayload,
+    WidgetActionRequest,
 )
 
 __all__ = [
@@ -55,11 +52,10 @@ __all__ = [
     "ErrorDetail",
     "ErrorResponse",
     # feedback
+    "FEEDBACK_ACTION_DOWN",
+    "FEEDBACK_ACTION_UP",
     "FeedbackValue",
-    "InteractiveActionContext",
-    "InteractiveActionRequest",
     "MessageFeedback",
-    # mattermost
-    "IncomingWebhookMessage",
-    "OutgoingWebhookPayload",
+    "WidgetActionRequest",
 ]
+# Web Chat 계약(DTO/WS 이벤트)은 `rag_schemas.webchat` 에서 직접 import 한다.

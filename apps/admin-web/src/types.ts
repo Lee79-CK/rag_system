@@ -110,17 +110,20 @@ export interface KnowledgeScope {
   document_ids: string[];
 }
 
+/** Web Chat 채널 (admin.api.channels._channel_view). id = Qdrant allowed_channel_ids 값. */
 export interface ChannelView {
   id: string;
-  team_id: string;
-  team_domain: string | null;
-  channel_id: string;
-  channel_name: string;
-  display_name: string | null;
+  name: string;
+  display_name: string;
+  type: 'public' | 'private';
+  purpose: string | null;
+  archived: boolean;
+  created_at: string | null;
+  member_count?: number;
   bindings?: BindingView[];
 }
 
-/** Mirrors admin.api.channels._binding_view. NEVER carries a secret value. */
+/** Mirrors admin.api.channels._binding_view. */
 export interface BindingView {
   id: string;
   channel_ref: string;
@@ -132,17 +135,13 @@ export interface BindingView {
   mention_user: boolean;
   ack_message_enabled: boolean;
   feedback_enabled: boolean;
-  /** K8s Secret NAME only — never the URL/value (FR-OPS-010). */
-  secret_ref: string;
-  secret_updated_at: string | null;
 }
 
 export interface ChannelCreate {
-  team_id: string;
-  channel_id: string;
-  channel_name: string;
-  team_domain?: string | null;
-  display_name?: string | null;
+  name: string;
+  display_name: string;
+  type?: 'public' | 'private';
+  purpose?: string | null;
 }
 
 export interface BindingCreate {
@@ -154,41 +153,46 @@ export interface BindingCreate {
   mention_user: boolean;
   ack_message_enabled: boolean;
   feedback_enabled: boolean;
-  secret_ref: string;
 }
 
-export type BindingUpdate = Partial<Omit<BindingCreate, 'secret_ref'>>;
+export type BindingUpdate = Partial<BindingCreate>;
 
-export interface SecretUpdateResult {
-  channel_id: string;
-  binding_id: string;
-  secret_ref: string;
-  secret_updated_at: string;
+export interface ChannelMemberView {
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: 'member' | 'channel_admin';
+  joined_at: string | null;
 }
 
-export interface ConnectionTestResult {
-  channel_id: string;
-  secret_ref: string;
-  ok: boolean;
-  detail: string | null;
+// ----- Web Chat 사용자 (admin.api.chat_users) -----
+export interface ChatUserView {
+  id: string;
+  email: string;
+  display_name: string;
+  role: 'user' | 'admin';
+  is_bot: boolean;
+  is_active: boolean;
+  must_change_password: boolean;
+  created_at: string | null;
+}
+
+/** 생성/재설정 응답에만 1회 포함 — 화면을 닫으면 다시 볼 수 없다. */
+export interface ChatUserWithTempPassword extends ChatUserView {
+  temporary_password: string;
 }
 
 // ----- Chat Jobs (§7.5) -----
 export interface ChatJobView {
   id: string;
-  event_id: string | null;
+  post_id: string | null;
+  bot_post_id: string | null;
   conversation_id: string | null;
   status: string;
   error: string | null;
   queued_at: string | null;
   started_at: string | null;
   completed_at: string | null;
-}
-
-export interface RetryDeliveryResult {
-  chat_job_id: string;
-  delivery_id: string;
-  status: string;
 }
 
 // ----- Settings (§7.5 / §5.1) -----

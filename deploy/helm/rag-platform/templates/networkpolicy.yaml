@@ -67,6 +67,7 @@ spec:
 {{- if hasKey $.Values.appServices $route.service }}
 {{- $svc := index $.Values.appServices $route.service }}
 ---
+<<<<<<< HEAD
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -76,11 +77,26 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: {{ $route.service }}
+=======
+# 사용자 브라우저 → chat-web(:3000) / chat-gateway(:8001, REST + WebSocket) 는 ingress-nginx 경유 (§22.1)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-chat
+  namespace: rag-app
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [chat-gateway, chat-web]
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
   policyTypes: ["Ingress"]
   ingress:
     - from:
         - namespaceSelector:
             matchLabels:
+<<<<<<< HEAD
               kubernetes.io/metadata.name: {{ $ic.namespace }}
           {{- with $ic.podSelector }}
           podSelector:
@@ -115,3 +131,9 @@ spec:
 {{- end }}
 {{- end }}
 {{- end }}
+=======
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressControllerNamespace | default "ingress-nginx" }}
+      ports:
+        - { protocol: TCP, port: 8001 }
+        - { protocol: TCP, port: 3000 }
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

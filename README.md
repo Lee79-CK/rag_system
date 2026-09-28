@@ -1,36 +1,43 @@
-# RAG Platform — Mattermost 기반 폐쇄형 Private Cloud RAG LLM 챗봇
+# RAG Platform — Web Chat 기반 폐쇄형 Private Cloud RAG LLM 챗봇
 
-사내 Mattermost Channel에 게시된 질문을 Outgoing Webhook으로 수신하여, Channel별로 격리된 지식 범위 내에서 RAG 파이프라인(Embedding → Qdrant 검색 → Re-rank → vLLM 생성)을 수행하고, 출처와 👍/👎 피드백 버튼이 포함된 한국어 답변을 Incoming Webhook으로 동일 Channel에 게시하는 시스템입니다.
+사내 사용자가 **RAG Web Chat**(`apps/chat-web`, aiops_chatbot UI 이식)의 채널에 질문하면, `chat-gateway` 가 이를 받아
+Channel별로 격리된 지식 범위 내에서 RAG 파이프라인(Embedding → Qdrant 검색 → Re-rank → vLLM 생성)을 실행하고,
+답변을 **토큰 단위로 스트리밍**(socket.io)하여 근거 문서 표와 👍/👎 피드백 버튼과 함께 보여주는 시스템입니다.
 
-> - 요구사항: `docs/PRD.md` (PRD-RAG-CHATBOT-POC-001 v1.1)
-> - 기술 설계: `docs/TDD.md` (TDD-RAG-CHATBOT-POC-001 v1.2) — **구현의 SSOT**
+> **v2.0 (2026-09-28)** — 사용자 UI 를 Mattermost 에서 Web Chat 으로 전환했습니다. Mattermost 연동(bridge/adapter/Webhook)은 완전히 제거되었습니다.
+> 이식 기록: `apps/chat-web/PORTING.md` (원본 `../aiops_chatbot` 은 수정하지 않음).
+
+> - 요구사항: `docs/PRD.md` (PRD-RAG-CHATBOT-POC-001 v2.0)
+> - 기술 설계: `docs/TDD.md` (TDD-RAG-CHATBOT-POC-001 v2.0) — **구현의 SSOT**
 > - Claude Code 컨텍스트: `CLAUDE.md`
 > - 보안 체크리스트: `docs/security-checklist.md`
 
 ## 0. 구현 현황
 
-TDD §15 로드맵 **M1–M11 전 마일스톤 구현 완료**. 로컬은 GPU/모델 미배치 전제로 **mock 엔진 + mock LLM** 기준.
+TDD §15 로드맵 **M1–M12 구현 완료** (M12 = Web Chat 전환). 로컬은 GPU/모델 미배치 전제로 **mock 엔진 + mock LLM** 기준.
 
 | 지표 | 결과 |
 |---|---|
-| Python 테스트 | **112 passed, 1 skipped** (Docker-gated Qdrant 격리 테스트) |
-| Lint | `ruff check .` clean (전 패키지) |
-| Helm | `helm lint` clean · `helm template` 45개 리소스 렌더 |
-| admin-web | `npm run typecheck` + `vite build` → `dist/` OK |
+| Python 테스트 | **159 passed** (Docker 가용 시 실 Qdrant 격리 테스트 포함 · Docker 없으면 1 skipped) |
+| Lint | `ruff check .` / `ruff format --check .` clean |
+| Helm | `helm lint` clean (values / values-poc / values-lab) |
+| admin-web | `npm run build` (tsc + vite) OK |
+| chat-web | `npm run typecheck` + `next build` (standalone) OK |
 
 | 구성요소 | 위치 | 테스트 |
 |---|---|---|
-| 공유 스키마/유틸 (M1) | `libs/schemas·common·observability·mattermost-adapter` | 28 |
-| mattermost-bridge (M2) | `apps/mattermost-bridge` | 14 |
-| admin-api + Alembic (M3) | `apps/admin-api` | 16 |
+| 공유 스키마/유틸 (M1) | `libs/schemas·common·observability·chat-adapter` | 34 |
+| chat-gateway (M2 → v2.0) | `apps/chat-gateway` (REST + socket.io) | 40 |
+| admin-api + Alembic (M3) | `apps/admin-api` | 24 |
 | embedding/reranker (M4) | `apps/embedding-api`·`apps/reranker-api` | 20 |
 | parser-indexer (M5) | `apps/parser-indexer` | 13 |
-| rag domain/worker/feedback (M6) | `apps/rag-api` | 10 |
+| rag domain/worker/streaming/feedback (M6) | `apps/rag-api` | 15 |
 | p95 측정 (M7) | `scripts/measure_latency.py` | — |
-| admin-web (M8) | `apps/admin-web` (React) | build |
-| Channel 격리 Gate (M9) | `tests/channel-isolation` (CH-001~010) | 11 |
-| Helm/NetworkPolicy/모니터링 (M10) | `deploy/helm/rag-platform` | helm lint |
-| 평가 runner + perf (M11) | `tools/evaluation`, `tests/performance` | 6 |
+| admin-web (M8) | `apps/admin-web` (React + Vite) | build |
+| Channel 격리 Gate (M9) | `tests/channel-isolation` (CH-001~010) | 12 |
+| Helm/NetworkPolicy/Ingress/모니터링 (M10) | `deploy/helm/rag-platform` | helm lint |
+| 평가 runner + perf (M11) | `tools/evaluation`, `tests/performance`, `tests/contract` | 7 |
+| **Web Chat UI (M12)** | `apps/chat-web` (Next.js 15, aiops_chatbot 이식) | typecheck/build |
 
 **로컬 실행 캐비엇**: 이 저장소는 Intel macOS(GPU 없음)에서 개발되어 실 모델 의존성(`torch`/`FlagEmbedding`)은
 optional `models` extra로 분리했다. 기본 경로는 `EMBEDDING_MOCK=1`/`RERANKER_MOCK=1` + `make mock-llm`.
@@ -42,10 +49,10 @@ GPU 노드에서는 `uv sync --extra models` 로 실 엔진을 활성화한다. 
 
 > **명령 안내**: 아래 §2~§9의 일부 `make` 타깃/스크립트는 운영 절차를 설명하는 예시로, 현재 저장소에
 > 실제 구현된 것은 다음이다 — `make install lint fmt test test-cov test-isolation test-integration
-> evaluate perf-webhook-burst mock-llm qdrant-init seed openapi infra-up infra-down clean`,
-> 스크립트는 `scripts/export_openapi.py`·`measure_latency.py`·`seed_dev.sql`. 그 외(`make dev`,
-> `verify-wheels`, `build-images`, `test-contract/e2e`, `seed-vectors`, `sign_feedback.py` 등)는
-> 배포 파이프라인 확장 시 추가 예정인 계획 항목이다.
+> evaluate perf-chat-burst mock-llm qdrant-init seed seed-users openapi chat-gateway chat-web-dev
+> chat-web-build infra-up infra-down clean`, 스크립트는 `scripts/export_openapi.py`·`measure_latency.py`·
+> `seed_dev.sql`·`create_chat_user.py`. 그 외(`make dev`, `verify-wheels`, `build-images`, `test-e2e`,
+> `seed-vectors`, `perf-peak/soak` 등)는 배포 파이프라인 확장 시 추가 예정인 계획 항목이다.
 
 ## 목차
 
@@ -65,26 +72,30 @@ GPU 노드에서는 `uv sync --extra models` 로 실 엔진을 활성화한다. 
 ## 1. 아키텍처 개요
 
 ```text
-사용자 ──> Mattermost Channel
-              │  Outgoing Webhook (질문)
-              ▼
-        mattermost-bridge ──> Redis Queue(RQ) ──> rag-worker
-              ▲                                     │
-              │  Incoming Webhook (답변+👍/👎 버튼)    ├─> embedding-api (BGE-M3, CPU)
-              │  Interactive Action (피드백 클릭)      ├─> qdrant (Channel/ACL Filter 검색)
-              └─────────────────────────────────────┤─> reranker-api (BGE-reranker, CPU)
-                                                    ├─> vLLM ×2 (GPU 1장/Replica)
-                                                    └─> PostgreSQL (대화/Job/피드백)
+사용자(브라우저) ──HTTPS──> Ingress (chat host, 동일 출처)
+                            ├─ /        ──> chat-web (Next.js standalone, aiops_chatbot UI 이식)
+                            ├─ /api/v1  ──> chat-gateway  REST (로그인·채널·질문·피드백)
+                            └─ /ws      ──> chat-gateway  socket.io (post.* / llm.stream.delta|end)
+                                               │  질문 Post + placeholder Bot Post + chat_jobs
+                                               ▼
+                                         Redis Queue(RQ) ──> rag-worker
+                                               ▲               ├─> embedding-api (BGE-M3, CPU)
+       socket.io Redis manager (delta emit) ───┘               ├─> qdrant (build_filter: Channel/ACL)
+                                                               ├─> reranker-api (BGE-reranker, CPU)
+                                                               ├─> vLLM ×2 (stream=True)
+                                                               └─> PostgreSQL (Bot Post 갱신/대화/피드백)
 
 관리자 ──> admin-web ──> admin-api ──> PostgreSQL / K8s Job(parser-indexer)
+                         (채널·Binding·멤버·채팅 사용자·문서 ACL)
 ```
 
 | 서비스 | 역할 | 포트(로컬) |
 |---|---|---|
-| `mattermost-bridge` | Webhook 수신/검증/Job 등록, 답변 게시, 피드백 수신 | 8001 |
-| `rag-api` / `rag-worker` | RAG 파이프라인 오케스트레이션 | 8002 / - |
-| `admin-api` | 문서/Channel Binding/설정/피드백 관리 | 8003 |
-| `admin-web` | 관리자 Portal (React) | 5173 |
+| `chat-web` | 사용자 Web Chat UI (Next.js 15, aiops_chatbot 이식) | 3000 |
+| `chat-gateway` | 로그인(prehash/JWT)·채널 멤버십·질문 수신/Job 등록·실시간(socket.io `/ws`)·피드백 | 8001 |
+| `rag-api` / `rag-worker` | RAG 파이프라인 오케스트레이션 · 답변 스트리밍/Bot Post 갱신 | 8002 / - |
+| `admin-api` | 문서(ACL)/채널·Binding·멤버/채팅 사용자/설정/피드백 관리 | 8003 |
+| `admin-web` | 관리자 Portal (React + Vite) | 5173 |
 | `embedding-api` | BGE-M3 임베딩 | 8004 |
 | `reranker-api` | BGE-reranker-v2-m3 재정렬 | 8005 |
 | `parser-indexer` | 문서 파싱/색인 배치 (CLI) | - |
@@ -93,7 +104,8 @@ GPU 노드에서는 `uv sync --extra models` 로 실 엔진을 활성화한다. 
 - Python **3.12 고정**, 의존성은 cp312 바이너리 휠만 (sdist 빌드 금지)
 - 런타임 외부 네트워크 호출 금지 — 모델은 로컬 경로 로딩만
 - Qdrant 검색은 `build_filter()` 없이 호출 금지 (Channel 격리 100%)
-- Secret(Token/Webhook URL)은 로그·응답·repr에 절대 노출 금지
+- Secret(JWT 키/pepper/피드백 서명키/토큰)은 로그·응답·repr에 절대 노출 금지
+- Channel 격리: 채널 멤버십(REST 404 · WS room) + `build_filter()` + scope_key
 
 ---
 
@@ -105,7 +117,7 @@ GPU 노드에서는 `uv sync --extra models` 로 실 엔진을 활성화한다. 
 |---|---|---|
 | Python | 3.12.x | `requires-python = ">=3.12,<3.13"` |
 | uv | 최신 | Python 패키지/venv 관리 |
-| Node.js | 20 LTS | admin-web |
+| Node.js | 22 LTS | admin-web (Vite) · chat-web (Next.js 15) |
 | Docker / Podman | 최신 | 로컬 인프라 및 이미지 빌드 |
 | PostgreSQL | 16 | 컨테이너 |
 | Redis | 7 | 컨테이너 |
@@ -188,7 +200,11 @@ git clone https://git.internal.example/ai/rag-platform.git && cd rag-platform
 make install
 
 # 개별 서비스 예시
-cd apps/mattermost-bridge && uv sync --frozen   # uv.lock 기반, sdist 빌드 발생 시 실패 처리
+uv sync --all-packages --frozen   # uv.lock 기반, sdist 빌드 발생 시 실패 처리
+
+# 프론트엔드 (uv workspace 제외 — npm)
+cd apps/admin-web && npm ci && cd -
+cd apps/chat-web  && npm ci && cd -
 ```
 
 **검증**: `make verify-wheels` — 설치 로그에 `Building wheel`(sdist 빌드)이 0건인지 확인합니다 (TDD §3.4).
@@ -234,14 +250,14 @@ QDRANT_URL=http://localhost:6333
 EMBEDDING_API_URL=http://localhost:8004
 RERANKER_API_URL=http://localhost:8005
 VLLM_API_URL=http://localhost:8010/v1        # mock-llm 포트
-BRIDGE_INTERNAL_URL=http://localhost:8001
 
-# Mattermost Bridge
-MATTERMOST_BASE_URL=https://mattermost.internal.example
-MATTERMOST_OUTGOING_TOKEN_SECRET_FILE=./secrets/mattermost/outgoing-token
-BRIDGE_ALLOWED_SOURCE_CIDRS=127.0.0.1/32,10.0.0.0/8
-BRIDGE_BOT_USERNAME=RAG Assistant
-MATTERMOST_DEFAULT_TRIGGER_WORD=!rag
+# Web Chat — chat-gateway
+CHAT_WORKSPACE_SLUG=rag                       # prehash salt — chat-web NEXT_PUBLIC_WORKSPACE_SLUG 와 동일
+CHAT_DEFAULT_TRIGGER_WORD=!rag
+CHAT_CORS_ORIGINS=http://localhost:3000       # dev 교차 출처 WS. 운영(Ingress 동일 출처)은 비움
+JWT_SECRET_FILE=./secrets/rag/jwt-secret
+PASSWORD_PEPPER_FILE=./secrets/rag/password-pepper   # chat-gateway · admin-api 공유
+COOKIE_SECURE=false                           # 로컬 HTTP 전용. 운영 true
 
 # Feedback (v1.1)
 FEEDBACK_ENABLED=true
@@ -264,36 +280,31 @@ TOKENIZER_PATH=/models/llm/main
 ### 3.3 로컬 Secret 파일 생성
 
 ```bash
-mkdir -p secrets/mattermost secrets/rag
-
-# Outgoing Webhook Token (Mattermost 관리콘솔에서 발급받은 값)
-echo -n "<outgoing-webhook-token>" > secrets/mattermost/outgoing-token
-
-# 피드백 버튼 HMAC 서명키 (신규 생성)
-python3 -c "import secrets; print(secrets.token_hex(32), end='')" > secrets/rag/feedback-signing-key
-
-# Channel별 Incoming Webhook URL — secret_ref 이름과 파일명 일치 필수
-echo -n "https://mattermost.internal.example/hooks/xxxxxxxx" \
-  > secrets/mattermost/mattermost-incoming-rag-cloud-ops
-
-chmod 600 secrets/mattermost/* secrets/rag/*
+mkdir -p secrets/rag
+for k in jwt-secret password-pepper feedback-signing-key; do
+  python3 -c "import secrets; print(secrets.token_hex(32), end='')" > secrets/rag/$k
+done
+chmod 600 secrets/rag/*
 ```
+
+| 파일 | 사용처 | 용도 |
+|---|---|---|
+| `jwt-secret` | chat-gateway | access token(HS256) 서명 |
+| `password-pepper` | chat-gateway · admin-api | 비밀번호 해시 pepper (**교체 시 전 사용자 비밀번호 재설정 필요**) |
+| `feedback-signing-key` | chat-gateway · rag-worker | 피드백 토큰 HMAC(`message_id:bot_post_id`) |
 
 ### 3.4 Kubernetes Secret (PoC/운영)
 
 ```bash
-# Outgoing Token + 피드백 서명키
-kubectl -n rag-app create secret generic rag-bridge-secrets \
-  --from-literal=outgoing-token='<token>' \
-  --from-literal=feedback-signing-key="$(python3 -c 'import secrets;print(secrets.token_hex(32),end="")')"
-
-# Channel별 Incoming Webhook URL (이름 = Binding의 secret_ref)
-kubectl -n rag-app create secret generic mattermost-incoming-rag-cloud-ops \
-  --from-literal=url='https://mattermost.internal.example/hooks/xxxxxxxx'
+kubectl -n rag-app create secret generic rag-chat-secrets \
+  --from-file=jwt-secret=secrets/rag/jwt-secret \
+  --from-file=password-pepper=secrets/rag/password-pepper \
+  --from-file=feedback-signing-key=secrets/rag/feedback-signing-key
 ```
 
-- Helm values에는 `existingSecret: rag-bridge-secrets` 형태로 이름만 기입합니다.
-- Secret 교체(Rotation): Admin Web `Channels > Secret 교체` 또는 `POST /api/v1/mattermost/channels/{id}/secret` → K8s Secret 갱신 + `secret_updated_at` 기록. **값 재조회 API는 존재하지 않습니다** (FR-OPS-010).
+- Helm 은 `appServices.<svc>.secretMount`(chat-gateway / rag-worker / admin-api)로 `/var/run/secrets/rag` 에 파일 마운트하고
+  `*_FILE` env 로 경로만 전달합니다. values 에는 Secret **이름**(`global.chatSecretName`)만 기입합니다.
+- JWT 키 교체: 모든 access token 무효화(최대 15분 후 refresh 로 재발급). 피드백 키 교체: 이전 답변의 피드백 버튼이 401(정상).
 
 ---
 
@@ -303,7 +314,9 @@ kubectl -n rag-app create secret generic mattermost-incoming-rag-cloud-ops \
 
 ```bash
 cd apps/admin-api
-uv run alembic upgrade head     # rev.1: TDD §5 전체 DDL, rev.2: feedback_enabled 컬럼
+uv run alembic -c src/admin/db/migrations/alembic.ini upgrade head
+# rev.1: TDD §5 DDL · rev.2: feedback_enabled · rev.3(0003_webchat): Mattermost 제거 → chat_* 테이블
+# ⚠ v1.x DB 를 rev.3 으로 올린 경우 Channel id 가 UUID 로 재매핑되므로 전 문서 재색인이 필요합니다.
 ```
 
 ### 4.2 샘플 데이터 주입
@@ -326,26 +339,24 @@ INSERT INTO user_roles VALUES
   ('b0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000001'),
   ('b0000000-0000-0000-0000-000000000002', 'a0000000-0000-0000-0000-000000000002');
 
--- Mattermost Channel / 지식 범위 / Binding
-INSERT INTO mattermost_channels (id, team_id, team_domain, channel_id, channel_name, display_name) VALUES
-  ('c0000000-0000-0000-0000-000000000001', 'team-001', 'cloud-team', 'channel-001', 'rag-cloud-ops', 'Cloud 운영 Q&A'),
-  ('c0000000-0000-0000-0000-000000000002', 'team-001', 'cloud-team', 'channel-002', 'rag-hr', '인사 규정 Q&A');
+-- Web Chat 채널 / 지식 범위 / Binding  (chat_channels.id = Qdrant allowed_channel_ids)
+INSERT INTO chat_channels (id, name, display_name, type, purpose) VALUES
+  ('c0000000-0000-0000-0000-000000000001', 'rag-cloud-ops', 'Cloud 운영 Q&A', 'public', 'Cloud 운영 문서 질의'),
+  ('c0000000-0000-0000-0000-000000000002', 'rag-hr', '인사 규정 Q&A', 'public', '"!rag 질문" 형식');
 
 INSERT INTO knowledge_scopes (id, name, filter_json, conversation_mode) VALUES
   ('d0000000-0000-0000-0000-000000000001', 'Cloud 운영 문서',
-   '{"categories": ["운영매뉴얼", "장애대응"], "departments": ["Cloud운영팀"], "security_levels": ["INTERNAL"]}', 'CHANNEL'),
+   '{"categories": ["운영매뉴얼", "장애대응"], "departments": ["Cloud운영팀"], "security_levels": ["INTERNAL"]}', 'THREAD'),
   ('d0000000-0000-0000-0000-000000000002', '인사 규정',
    '{"categories": ["인사규정"], "security_levels": ["INTERNAL"]}', 'CHANNEL');
 
-INSERT INTO mattermost_channel_bindings
+INSERT INTO channel_bindings
   (id, channel_ref, mode, trigger_word, enabled, knowledge_scope_id, history_turns,
-   mention_user, ack_message_enabled, feedback_enabled, secret_ref) VALUES
+   mention_user, ack_message_enabled, feedback_enabled) VALUES
   ('e0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001',
-   'DEDICATED_CHANNEL', NULL, true, 'd0000000-0000-0000-0000-000000000001', 8,
-   true, true, true, 'mattermost-incoming-rag-cloud-ops'),
+   'DEDICATED_CHANNEL', NULL, true, 'd0000000-0000-0000-0000-000000000001', 8, false, true, true),
   ('e0000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000002',
-   'TRIGGER_WORD', '!rag', true, 'd0000000-0000-0000-0000-000000000002', 8,
-   true, true, true, 'mattermost-incoming-rag-hr');
+   'TRIGGER_WORD', '!rag', true, 'd0000000-0000-0000-0000-000000000002', 8, true, true, true);
 
 -- 문서 / 버전 / Channel ACL
 INSERT INTO documents (id, title, category, department, security_level, status, created_by) VALUES
@@ -360,7 +371,7 @@ UPDATE documents SET active_version_id = 'f1000000-0000-0000-0000-000000000001'
  WHERE id = 'f0000000-0000-0000-0000-000000000001';
 
 INSERT INTO document_channel_acl VALUES
-  ('f0000000-0000-0000-0000-000000000001', 'channel-001', 'ALLOW');
+  ('f0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', 'ALLOW');
 
 -- 색인 Job (완료 상태 예시)
 INSERT INTO index_jobs (id, document_version_id, status, progress, stage, chunk_count, vector_count,
@@ -368,50 +379,28 @@ INSERT INTO index_jobs (id, document_version_id, status, progress, stage, chunk_
   ('01000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000001',
    'COMPLETED', 100, 'VALIDATING', 128, 128, now() - interval '1 hour', now() - interval '50 min');
 
--- Webhook Event / Chat Job / 대화 / 메시지
-INSERT INTO mattermost_events (id, post_id, root_id, team_id, channel_id, user_id, payload_hash, status) VALUES
-  ('02000000-0000-0000-0000-000000000001', 'post-001', NULL, 'team-001', 'channel-001',
-   'mmuser-001', 'sha256:ab12...', 'ACCEPTED');
-
-INSERT INTO channel_conversations (id, scope_key, team_id, channel_id, mode) VALUES
-  ('03000000-0000-0000-0000-000000000001', 'team-001:channel-001', 'team-001', 'channel-001', 'CHANNEL');
-
-INSERT INTO chat_jobs (id, event_id, conversation_id, status, queued_at, started_at, completed_at) VALUES
-  ('04000000-0000-0000-0000-000000000001', '02000000-0000-0000-0000-000000000001',
-   '03000000-0000-0000-0000-000000000001', 'COMPLETED', now() - interval '10 min',
-   now() - interval '10 min', now() - interval '9 min');
-
-INSERT INTO messages (id, conversation_id, mattermost_post_id, role, content, latency_ms) VALUES
-  ('05000000-0000-0000-0000-000000000001', '03000000-0000-0000-0000-000000000001', 'post-001',
-   'user', '장애 등급별 대응 절차를 알려주세요.', NULL),
-  ('05000000-0000-0000-0000-000000000002', '03000000-0000-0000-0000-000000000001', NULL,
-   'assistant', '장애 등급은 심각도에 따라 1~4등급으로 구분되며... [1]', 8420);
-
-INSERT INTO citations (message_id, chunk_id, document_id, score, rank) VALUES
-  ('05000000-0000-0000-0000-000000000002', 'f1000000...-00012',
-   'f0000000-0000-0000-0000-000000000001', 0.91, 1);
-
--- 피드백 (v1.1)
-INSERT INTO message_feedback (message_id, mattermost_user_id, value, channel_id) VALUES
-  ('05000000-0000-0000-0000-000000000002', 'mmuser-001', 'UP', 'channel-001');
-
--- 전송 이력 / 설정 / 감사 로그
-INSERT INTO mattermost_deliveries (chat_job_id, channel_id, attempt, status, http_status) VALUES
-  ('04000000-0000-0000-0000-000000000001', 'channel-001', 1, 'SENT', 200);
-
+-- 설정 / 감사 로그
 INSERT INTO settings (key, value, updated_by) VALUES
   ('retrieval.vector_top_k', '30', 'b0000000-0000-0000-0000-000000000001'),
   ('retrieval.similarity_threshold', '0.0', 'b0000000-0000-0000-0000-000000000001');
 
-INSERT INTO audit_logs (actor, action, target, result, detail) VALUES
-  ('cklee', 'CHANNEL_BINDING_ENABLE', 'channel-001', 'SUCCESS', '{"binding_id": "e0000000-..."}');
+```
+
+채팅 사용자와 채널 멤버십은 비밀번호 해시가 필요하므로 SQL 이 아닌 스크립트로 생성합니다
+(대화·Post·피드백 데이터는 실제 사용으로 쌓이므로 seed 하지 않습니다):
+
+```bash
+export PASSWORD_PEPPER_FILE=./secrets/rag/password-pepper
+make seed-users
+# hong@example.com (admin, rag-cloud-ops + rag-hr) / kim@example.com (rag-hr) — 비밀번호 Rag!Assistant2026 (로컬 전용)
+# 개별: uv run python scripts/create_chat_user.py --email a@b.co --name 이름 --password '…' --channels rag-hr
 ```
 
 ### 4.3 Qdrant 초기화 + 샘플 벡터
 
 ```bash
 make qdrant-init    # rag_chunks_v1 collection + payload index 7종 생성 (TDD §6.2)
-make seed-vectors   # 샘플 문서 chunk 5개를 실제 embedding-api로 색인 (allowed_channel_ids=[channel-001])
+# 샘플 문서 색인: admin-api 업로드(allowed_channel_ids=채널 UUID) → reindex → parser-indexer CLI (§5.3)
 ```
 
 ---
@@ -433,13 +422,16 @@ make dev                                         # 전 서비스 + mock-llm 병�
 cd apps/embedding-api && uv run uvicorn embedding.main:app --port 8004
 cd apps/reranker-api  && uv run uvicorn reranker.main:app  --port 8005
 
-# Bridge / RAG API / Admin API
-cd apps/mattermost-bridge && uv run uvicorn bridge.main:app --port 8001 --reload
-cd apps/rag-api           && uv run uvicorn rag.main:app    --port 8002 --reload
-cd apps/admin-api         && uv run uvicorn admin.main:app  --port 8003 --reload
+# Chat Gateway / RAG API / Admin API
+make chat-gateway                                # = uv run --package chat-gateway uvicorn gateway.main:app --port 8001
+cd apps/rag-api   && uv run uvicorn rag.main:app   --port 8002 --reload
+cd apps/admin-api && uv run uvicorn admin.main:app --port 8003 --reload
 
 # RAG Worker (RQ)
 cd apps/rag-api && uv run rq worker rag-chat --url redis://localhost:6379/0
+
+# Web Chat (사용자) — /api 는 chat-gateway 로 dev 프록시, WS 는 gateway 직접
+make chat-web-dev                                # http://localhost:3000  (localhost 로 접속: WebCrypto 요건)
 
 # Admin Web
 cd apps/admin-web && npm ci && npm run dev      # http://localhost:5173
@@ -448,47 +440,33 @@ cd apps/admin-web && npm ci && npm run dev      # http://localhost:5173
 ### 5.3 문서 색인 (parser-indexer CLI)
 
 ```bash
-# Admin Web 업로드 대신 CLI로 직접 실행 가능
-cd apps/parser-indexer
-uv run python -m ingestion.main --index-job-id 01000000-0000-0000-0000-000000000001
+# 1) 업로드 + Channel ACL (admin-web 문서 관리 화면과 동일)
+curl -s -X POST localhost:8003/api/v1/documents -H 'X-Auth-User: cklee' \
+  -F file=@manual.pdf -F category=장애대응 -F department=Cloud운영팀 \
+  -F allowed_channel_ids=c0000000-0000-0000-0000-000000000001
+# 2) 색인 Job 생성 → CLI 실행
+curl -s -X POST localhost:8003/api/v1/documents/<document_id>/reindex -H 'X-Auth-User: cklee'
+uv run --package parser-indexer python -m ingestion.main --index-job-id <index_job_id>
 ```
 
 ### 5.4 Mock LLM (GPU 없는 로컬)
 
 ```bash
-make mock-llm   # :8010 에서 OpenAI-compatible /v1/chat/completions 제공 (고정/에코 응답)
+make mock-llm   # :8010 OpenAI-compatible /v1/chat/completions (stream=true 시 SSE, MOCK_LLM_STREAM_DELAY_MS)
 ```
 
 실 GPU 환경(vLLM)은 §7.3 배포 후 `VLLM_API_URL`만 교체하면 됩니다.
 
-### 5.5 로컬 E2E 흐름 확인 (Mattermost 없이)
+### 5.5 로컬 E2E 흐름 확인 (브라우저)
 
-```bash
-# 1) Outgoing Webhook 모사 — 질문 발송
-curl -s -X POST http://localhost:8001/integrations/mattermost/v1/outgoing \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "token": "'$(cat secrets/mattermost/outgoing-token)'",
-    "team_id": "team-001", "team_domain": "cloud-team",
-    "channel_id": "channel-001", "channel_name": "rag-cloud-ops",
-    "user_id": "mmuser-001", "user_name": "honggildong",
-    "post_id": "post-'$(date +%s)'", "root_id": "",
-    "text": "장애 등급별 대응 절차를 알려주세요."
-  }'
-# → {"text": "질문을 접수했습니다..."} (p95 2초 이내)
+1. http://localhost:3000 → `hong@example.com` / `Rag!Assistant2026` 로그인 (prehash 만 전송)
+2. `#rag-cloud-ops`(DEDICATED · THREAD 컨텍스트)에서 질문 → 스레드가 열리고 "질문을 접수했습니다…" → **토큰 스트리밍** → 근거 문서 표 + 👍/👎
+3. 같은 스레드에 후속 질문 → 이전 대화가 컨텍스트로 사용됨 (scope_key = `{channel_id}:{root_id}`)
+4. `#rag-hr`(TRIGGER_WORD): 일반 메시지는 답변 없음, `!rag 연차 규정` 만 답변
+5. 👍 클릭 → admin-web 피드백 대시보드 반영 · 위조 토큰은 401
+6. `kim@example.com` 으로 로그인 → `#rag-cloud-ops` 미노출, URL 직접 접근 시 "채널을 찾을 수 없거나 접근 권한이 없습니다"
 
-# 2) Worker 로그에서 파이프라인 단계별 latency 확인, Incoming Webhook 게시는
-#    로컬에서 make mock-mattermost (수신 payload를 콘솔에 출력) 로 확인
-
-# 3) 피드백 버튼 클릭 모사
-SIG=$(uv run python scripts/sign_feedback.py --message-id <message_id> --value UP)
-curl -s -X POST http://localhost:8001/integrations/mattermost/v1/actions \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":"mmuser-001","post_id":"p1","channel_id":"channel-001",
-       "context":{"action":"feedback","message_id":"<message_id>",
-                  "chat_job_id":"<job_id>","value":"UP","sig":"'$SIG'"}}'
-# → {"ephemeral_text": "피드백이 반영되었습니다. 감사합니다 🙏"}
-```
+API 만으로 확인하려면 `tests/performance/locustfile.py` 의 로그인/질문 흐름 또는 `docs/openapi/chat-gateway.json` 참고.
 
 ---
 
@@ -497,26 +475,18 @@ curl -s -X POST http://localhost:8001/integrations/mattermost/v1/actions \
 ### 6.1 계층별 실행
 
 ```bash
-make lint            # ruff + mypy (py312 타깃)
-make test            # 전체 unit test (coverage: 전체 ≥80%, rag/domain ≥90%)
-make test-contract   # tests/mattermost — 실제 payload fixture(JSON/form) 계약 테스트
-make test-integration
-make test-isolation  # ★ CH-001~010 Channel 격리 — 배포 차단 Gate
-make test-e2e        # Mattermost Sandbox Channel 필요 (PoC 환경)
+make lint              # ruff + mypy (py312 타깃)
+make test              # 전체 테스트 (159 passed)
+make test-integration  # tests/contract — mock-llm SSE ↔ openai SDK LLMClient.stream 계약
+make test-isolation    # ★ CH-001~010 Channel 격리 — 배포 차단 Gate
+make chat-web-build    # chat-web typecheck + next build (standalone)
 ```
 
-### 6.2 통합 테스트 (testcontainers)
+### 6.2 통합 테스트
 
-`tests/integration`은 **testcontainers**로 postgres/redis/qdrant를 자동 기동합니다. Docker daemon만 있으면 별도 준비가 필요 없습니다.
-
-```bash
-uv run pytest tests/integration -v
-# 주요 시나리오:
-#  - Outgoing 수신 → Redis Job → Worker → (mock LLM) → 게시 payload(attachment 포함) 검증
-#  - 문서 색인 → Qdrant 검증 → 재실행 멱등성
-#  - 문서 삭제 → is_active=false → 검색 제외
-#  - 피드백 UPSERT / 서명 위조 401
-```
+- `tests/channel-isolation/test_ch_qdrant.py` 는 **testcontainers** 로 실 Qdrant 를 띄워 CH-001 을 검증합니다 (Docker 없으면 skip).
+- chat-gateway 테스트는 fakeredis + in-memory store + spy emitter 로 REST/WS/피드백 계약을 검증합니다.
+- rag-api worker 테스트는 fake stream LLM 으로 delta 순서·Bot Post 갱신·피드백 토큰·오류 경로를 검증합니다.
 
 폐쇄망에서 testcontainers 이미지 pull이 안 되는 경우:
 
@@ -533,7 +503,7 @@ make test-isolation
 # 실패 시 CI가 배포 파이프라인을 차단합니다.
 ```
 
-테스트 이름 규약: PRD 요구사항 ID 포함 — `test_fr_mm_006_...`, `test_ch_002_...`, `test_fb_...`
+테스트 이름 규약: PRD 요구사항 ID 포함 — `test_fr_web_006_...`, `test_ch_002_...`, `test_fb_...`
 
 ---
 
@@ -542,9 +512,11 @@ make test-isolation
 ### 7.1 이미지 빌드
 
 ```bash
-# 개별
-docker build -f apps/mattermost-bridge/Containerfile \
-  -t harbor.internal/rag/mattermost-bridge:$(git rev-parse --short HEAD) .
+# 개별 (Containerfile 은 배포 파이프라인에서 관리 — 저장소 미포함)
+docker build -f apps/chat-gateway/Containerfile \
+  -t harbor.internal/rag/chat-gateway:$(git rev-parse --short HEAD) .
+# chat-web: `npm ci && npm run build` 후 .next/standalone + .next/static 을 Node 22 런타임 이미지에 복사
+#           (NEXT_PUBLIC_* 는 build 시 고정 — 운영은 NEXT_PUBLIC_WS_URL 비움 = same-origin)
 
 # 전체 (Makefile)
 make build-images TAG=$(git rev-parse --short HEAD)
@@ -559,7 +531,7 @@ make build-images TAG=$(git rev-parse --short HEAD)
 Lint/Format → Unit Test → Contract Test → admin-web Build/Test → SAST
 → Dependency/License Scan → Image Build → SBOM 생성(syft) → Image Scan(trivy)
 → Harbor Push → Dev 배포 → Integration Test → test-isolation(Gate)
-→ Sandbox Channel E2E → 승인 → PoC Namespace 배포
+→ Web Chat E2E(스테이징) → 승인 → PoC Namespace 배포
 ```
 
 ### 7.3 Kubernetes 배포 (Helm)
@@ -572,6 +544,8 @@ helm dependency update deploy/helm/rag-platform
 helm upgrade --install rag-platform deploy/helm/rag-platform \
   -f deploy/helm/rag-platform/values-poc.yaml \
   --set global.imageTag=<git-sha> \
+  --set ingress.enabled=true --set ingress.chatHost=chat.rag.internal \
+  --set ingress.tlsSecretName=rag-chat-tls \
   --namespace rag-app --create-namespace
 
 # 배포 확인
@@ -579,18 +553,19 @@ kubectl get pods -n rag-app -n rag-ai -n rag-data -n rag-ingestion
 kubectl -n rag-ai rollout status deploy/vllm-llm-0   # startupProbe 최대 10분
 ```
 
-- Namespace 배치: `rag-app`(bridge/admin/rag), `rag-ai`(vllm/embedding/reranker), `rag-data`(qdrant/pg/redis), `rag-ingestion`(parser-indexer Job)
+- Namespace 배치: `rag-app`(chat-web/chat-gateway/admin/rag), `rag-ai`(vllm/embedding/reranker), `rag-data`(qdrant/pg/redis), `rag-ingestion`(parser-indexer Job)
+- Ingress: chat host 의 `/api/v1`·`/ws` → chat-gateway, `/` → chat-web (동일 출처 필수 — refresh 쿠키 SameSite=Strict, WS Origin 검사). **TLS 필수** (브라우저 WebCrypto prehash)
+- chat-gateway 다중 replica: socket.io Redis manager 로 브로드캐스트, 클라이언트는 websocket 전용이라 sticky session 불필요
 - vLLM Rolling: `maxSurge=0, maxUnavailable=1` (GPU 2장 한도 내 순차 교체)
 - GitOps(선택): `deploy/argocd/` Application 등록 시 Harbor digest 갱신으로 자동 sync
 
 ### 7.4 배포 후 스모크 체크리스트
 
 ```bash
-for svc in bridge rag-api admin-api embedding reranker; do
-  kubectl -n rag-app exec deploy/debug -- curl -sf http://$svc:8000/health/ready && echo "$svc OK"
-done
-# Admin Web → Channels → 연결 테스트 (Incoming Webhook 테스트 메시지 게시)
-# 테스트 Channel에서 질문 1건 → 답변 + 👍/👎 버튼 표시 확인
+curl -sf https://chat.rag.internal/health/live            # chat-web
+curl -sf https://chat.rag.internal/api/v1/auth/me -o /dev/null -w '%{http_code}\n'   # 401 = gateway 도달
+# admin-web → 채팅 사용자 생성(임시 비밀번호) → 채널 관리 › 멤버 추가 → Binding 활성화
+# 브라우저 로그인 → 테스트 채널 질문 1건 → 스트리밍 답변 + 근거 문서 표 + 👍/👎 확인
 ```
 
 ---
@@ -650,7 +625,9 @@ Runner 산출 지표와 PoC 목표(PRD §8.1):
 ### 8.5 성능(부하) 테스트
 
 ```bash
-make perf-webhook-burst   # 50명, 10초 내 질문 — ACK p95 ≤ 2s 검증
+CHAT_EMAIL=hong@example.com CHAT_PASSWORD='Rag!Assistant2026' make perf-chat-burst
+                          # 50명, 10초 내 질문 — 질문 ACK(POST /api/v1/posts) p95 ≤ 2s 검증
+                          # ※ 부하 시험 중 RATE_LIMIT_PER_USER_PER_MIN 을 충분히 올릴 것
 make perf-peak            # 동시 10 생성 — 답변 게시 p95 ≤ 30s
 make perf-soak            # 5~10 동시, 2시간 — 메모리 누수 확인
 ```
@@ -663,10 +640,14 @@ make perf-soak            # 5~10 동시, 2시간 — 메모리 누수 확인
 |---|---|
 | `uv sync` 중 `Building wheel...` 후 실패 | cp312 휠 부재 패키지가 sdist 빌드 시도 (3.12는 distutils 제거). 내부 PyPI에 cp312 휠 반입 요청. `make verify-wheels`로 대상 식별 |
 | embedding/reranker 기동 시 Hub 접속 오류 | 모델 경로 미배치 또는 Hub ID 로딩 코드 혼입. `HF_HUB_OFFLINE=1` 유지 상태에서 `*_MODEL_PATH` 확인 |
-| Outgoing 요청이 401 | `secrets/mattermost/outgoing-token` 값과 Mattermost 발급 token 불일치 |
-| 답변이 다른 Channel에 게시 | 발생 시 Critical. Binding의 `secret_ref` ↔ 실제 Incoming URL 대상 Channel 재확인, `make test-isolation` 실행 |
-| 피드백 클릭이 401 | Bridge 재기동으로 서명키 변경됨 — 이전 게시 버튼의 sig 불일치(정상 동작). 키는 Secret으로 고정 운용 |
-| 질문이 무응답 | 비활성 Binding(무응답 정책) 또는 Trigger Word 미일치. `mattermost_events.status=IGNORED_*` 확인 |
+| 로그인 버튼이 반응 없음 / `crypto.subtle` 오류 | HTTP + LAN IP 로 접속함. WebCrypto 는 HTTPS 또는 localhost 에서만 동작 — TLS 적용 또는 localhost 사용 |
+| 로그인 401 (비밀번호 맞음) | chat-gateway `CHAT_WORKSPACE_SLUG` ≠ chat-web `NEXT_PUBLIC_WORKSPACE_SLUG`, 또는 admin-api 와 gateway 의 `PASSWORD_PEPPER_FILE` 불일치 |
+| 답변이 스트리밍되지 않음(완료 후 한 번에 표시) | WS 미연결. 브라우저 콘솔의 `/ws` 403 → Origin 불일치(dev 는 `CHAT_CORS_ORIGINS`), Ingress 는 `/ws` 라우팅·websocket timeout 확인 |
+| "생각 중…" 에서 멈춤 | rag-worker 미기동/실패. `chat_jobs.status`·worker 로그 확인 (실패 시 Bot Post 가 오류 안내로 갱신됨) |
+| 답변에 다른 채널 문서 인용 | 발생 시 Critical. 문서 ACL(`document_channel_acl`)·Qdrant `allowed_channel_ids` 가 채널 UUID 인지 확인, `make test-isolation` |
+| 피드백 클릭이 401 | `FEEDBACK_SIGNING_KEY_FILE` 이 gateway 와 worker 간 불일치(또는 키 교체 후 이전 답변). 키는 Secret 으로 고정 운용 |
+| 질문이 무응답(Bot 답변 없음) | Binding 비활성/미설정 또는 Trigger Word 미일치 — 메시지는 일반 대화로만 게시됨. admin-web 채널 관리에서 확인 |
+| 채널이 사이드바에 없음 | 채널 멤버가 아님. admin-web 채널 관리 › 멤버 추가 (연결 중이면 재접속 시 반영) |
 | vLLM Pod CrashLoop | startupProbe 시간 부족 또는 VRAM 초과. `--max-model-len`/quantization 확인 |
 
 ---

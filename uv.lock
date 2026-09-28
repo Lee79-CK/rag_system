@@ -10,10 +10,10 @@ resolution-markers = [
 [manifest]
 members = [
     "admin-api",
+    "chat-adapter",
+    "chat-gateway",
     "embedding-api",
     "evaluation",
-    "mattermost-adapter",
-    "mattermost-bridge",
     "mock-llm",
     "mock-mattermost",
     "parser-indexer",
@@ -368,6 +368,82 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/80/cc/f920afd1a23c58ccd53c1d36085a71893a4737ff5e66e0371efab6809850/charset_normalizer-3.4.9-cp312-cp312-win_amd64.whl", hash = "sha256:4b3dac63058cc36820b0dd072f89898604e2d39686fe05321729d00d8ac185a0", size = 162557, upload-time = "2026-07-07T14:33:32.176Z" },
     { url = "https://files.pythonhosted.org/packages/f0/e6/0386d43a261ff4e4b30c5857af7df877254b46bec7b9d1b74b6bf969a90b/charset_normalizer-3.4.9-cp312-cp312-win_arm64.whl", hash = "sha256:78fa18e436a1a0e58dbd7e02fc4473f3f32cceb12df9dfca542d075961c307d2", size = 152665, upload-time = "2026-07-07T14:33:33.711Z" },
     { url = "https://files.pythonhosted.org/packages/98/2b/f97f1c193fb855c345d678f5077d6926034db0722df74c8f057020e05a25/charset_normalizer-3.4.9-py3-none-any.whl", hash = "sha256:68e5f26a1ad57ded6d1cfb85331d1c1a195314756471d97758c48498bb4dcdf5", size = 64538, upload-time = "2026-07-07T14:34:56.993Z" },
+]
+
+[[package]]
+name = "chat-adapter"
+version = "0.1.0"
+source = { editable = "libs/chat-adapter" }
+dependencies = [
+    { name = "python-socketio" },
+    { name = "rag-schemas" },
+    { name = "redis" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "python-socketio", specifier = ">=5.11" },
+    { name = "rag-schemas", editable = "libs/schemas" },
+    { name = "redis", specifier = ">=5.0" },
+]
+
+[[package]]
+name = "chat-gateway"
+version = "0.1.0"
+source = { editable = "apps/chat-gateway" }
+dependencies = [
+    { name = "chat-adapter" },
+    { name = "fastapi" },
+    { name = "orjson" },
+    { name = "prometheus-client" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-socketio" },
+    { name = "rag-common" },
+    { name = "rag-observability" },
+    { name = "rag-schemas" },
+    { name = "redis" },
+    { name = "rq" },
+    { name = "sqlalchemy" },
+    { name = "structlog" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "fakeredis" },
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "chat-adapter", editable = "libs/chat-adapter" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "orjson", specifier = ">=3.10" },
+    { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydantic-settings", specifier = ">=2.4" },
+    { name = "python-socketio", specifier = ">=5.11" },
+    { name = "rag-common", editable = "libs/common" },
+    { name = "rag-observability", editable = "libs/observability" },
+    { name = "rag-schemas", editable = "libs/schemas" },
+    { name = "redis", specifier = ">=5.0" },
+    { name = "rq", specifier = ">=1.16" },
+    { name = "sqlalchemy", specifier = ">=2.0" },
+    { name = "structlog", specifier = ">=24.1" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "fakeredis", specifier = ">=2.23" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
 ]
 
 [[package]]
@@ -1440,82 +1516,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2f/e1/78ee7a023dac597a5825441ebd17170785a9dab23de95d2c7508ade94e0e/markupsafe-3.0.3-cp312-cp312-win32.whl", hash = "sha256:d88b440e37a16e651bda4c7c2b930eb586fd15ca7406cb39e211fcff3bf3017d", size = 14540, upload-time = "2025-09-27T18:36:38.761Z" },
     { url = "https://files.pythonhosted.org/packages/aa/5b/bec5aa9bbbb2c946ca2733ef9c4ca91c91b6a24580193e891b5f7dbe8e1e/markupsafe-3.0.3-cp312-cp312-win_amd64.whl", hash = "sha256:26a5784ded40c9e318cfc2bdb30fe164bdb8665ded9cd64d500a34fb42067b1c", size = 15105, upload-time = "2025-09-27T18:36:39.701Z" },
     { url = "https://files.pythonhosted.org/packages/e5/f1/216fc1bbfd74011693a4fd837e7026152e89c4bcf3e77b6692fba9923123/markupsafe-3.0.3-cp312-cp312-win_arm64.whl", hash = "sha256:35add3b638a5d900e807944a078b51922212fb3dedb01633a8defc4b01a3c85f", size = 13906, upload-time = "2025-09-27T18:36:40.689Z" },
-]
-
-[[package]]
-name = "mattermost-adapter"
-version = "0.1.0"
-source = { editable = "libs/mattermost-adapter" }
-dependencies = [
-    { name = "httpx" },
-    { name = "rag-common" },
-    { name = "rag-schemas" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "rag-common", editable = "libs/common" },
-    { name = "rag-schemas", editable = "libs/schemas" },
-]
-
-[[package]]
-name = "mattermost-bridge"
-version = "0.1.0"
-source = { editable = "apps/mattermost-bridge" }
-dependencies = [
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "mattermost-adapter" },
-    { name = "orjson" },
-    { name = "prometheus-client" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "rag-common" },
-    { name = "rag-observability" },
-    { name = "rag-schemas" },
-    { name = "redis" },
-    { name = "rq" },
-    { name = "sqlalchemy" },
-    { name = "structlog" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "fakeredis" },
-    { name = "httpx" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "mattermost-adapter", editable = "libs/mattermost-adapter" },
-    { name = "orjson", specifier = ">=3.10" },
-    { name = "prometheus-client", specifier = ">=0.20" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pydantic-settings", specifier = ">=2.4" },
-    { name = "rag-common", editable = "libs/common" },
-    { name = "rag-observability", editable = "libs/observability" },
-    { name = "rag-schemas", editable = "libs/schemas" },
-    { name = "redis", specifier = ">=5.0" },
-    { name = "rq", specifier = ">=1.16" },
-    { name = "sqlalchemy", specifier = ">=2.0" },
-    { name = "structlog", specifier = ">=24.1" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "fakeredis", specifier = ">=2.23" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
 ]
 
 [[package]]
@@ -2690,9 +2690,9 @@ name = "rag-api"
 version = "0.1.0"
 source = { editable = "apps/rag-api" }
 dependencies = [
+    { name = "chat-adapter" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "mattermost-adapter" },
     { name = "openai" },
     { name = "orjson" },
     { name = "prometheus-client" },
@@ -2725,9 +2725,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "chat-adapter", editable = "libs/chat-adapter" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "mattermost-adapter", editable = "libs/mattermost-adapter" },
     { name = "openai", specifier = ">=1.40" },
     { name = "orjson", specifier = ">=3.10" },
     { name = "prometheus-client", specifier = ">=0.20" },

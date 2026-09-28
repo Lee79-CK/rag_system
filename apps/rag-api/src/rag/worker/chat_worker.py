@@ -12,20 +12,20 @@ from typing import Any, Protocol
 from rag_observability import get_logger
 from rag_schemas import ChannelBinding, ChatRequest, RagCompletion, scope_key
 
-from rag.adapters.delivery_adapter import MattermostDelivery
 from rag.domain.pipeline import RagPipeline
-from rag.domain.prompt import INSUFFICIENT_EVIDENCE_TEXT
+
+CHANNEL_DISABLED_TEXT = "⚠️ 이 채널의 RAG 응답이 비활성화되어 답변할 수 없습니다."
 
 log = get_logger("rag.worker")
 
 
 class BindingReader(Protocol):
-    def get_binding(self, team_id: str, channel_id: str) -> ChannelBinding | None: ...
+    def get_binding(self, channel_id: str) -> ChannelBinding | None: ...
 
 
 class ConversationStore(Protocol):
     def upsert_conversation(
-        self, *, scope_key: str, team_id: str, channel_id: str, root_id: str | None, mode: str
+        self, *, scope_key: str, channel_id: str, root_id: str | None, mode: str
     ) -> str: ...
 
     def load_history(self, conversation_id: str, limit: int) -> list[tuple[str, str]]: ...
@@ -37,6 +37,7 @@ class ConversationStore(Protocol):
         conversation_id: str,
         content: str,
         *,
+        post_id: str,
         latency_ms: int | None,
         citations: list[dict[str, Any]],
     ) -> str: ...
@@ -49,9 +50,28 @@ class ConversationStore(Protocol):
         self, job_id: str, status: str, *, error: str | None = ..., mark_started: bool = ...
     ) -> None: ...
 
-    def record_delivery(
-        self, job_id: str, channel_id: str, *, attempt: int, status: str, http_status: int | None
-    ) -> None: ...
+
+class DeltaSink(Protocol):
+    async def push(self, delta: str) -> None: ...
+
+    async def flush(self) -> None: ...
+
+
+class DeliveryPort(Protocol):
+    """답변 전달 포트. 구현: rag.adapters.webchat_delivery.WebChatDelivery."""
+
+    def open_stream(self, request: ChatRequest) -> DeltaSink: ...
+
+    async def deliver_answer(
+        self,
+        *,
+        binding: ChannelBinding,
+        request: ChatRequest,
+        completion: RagCompletion,
+        chat_job_id: str,
+    ) -> bool: ...
+
+    async def deliver_error(self, *, request: ChatRequest, text: str = ...) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -59,9 +79,10 @@ class WorkerDeps:
     binding_reader: BindingReader
     store: ConversationStore
     pipeline: RagPipeline
-    delivery: MattermostDelivery
+    delivery: DeliveryPort
 
 
+<<<<<<< HEAD
 async def process_chat_job(
     deps: WorkerDeps, job_id: str, request: ChatRequest
 ) -> RagCompletion | None:
@@ -73,17 +94,23 @@ async def process_chat_job(
     if not deps.store.claim_job(job_id):
         log.warning("worker.job_already_claimed", job_id=job_id)
         return None
+=======
+async def process_chat_job(deps: WorkerDeps, job_id: str, request: ChatRequest) -> RagCompletion:
+    """§7.2.1 1~15단계. 실패 시 Bot Post 를 오류 안내로 갱신 + job FAILED."""
+    deps.store.update_job_status(job_id, "RUNNING", mark_started=True)
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
-    binding = deps.binding_reader.get_binding(request.team_id, request.channel_id)
+    binding = deps.binding_reader.get_binding(request.channel_id)
     if binding is None or not binding.enabled:
         deps.store.update_job_status(job_id, "FAILED", error="CHANNEL_NOT_BOUND_OR_DISABLED")
+        # placeholder Bot Post 가 "생각 중" 으로 남지 않도록 안내로 갱신한다.
+        await deps.delivery.deliver_error(request=request, text=CHANNEL_DISABLED_TEXT)
         raise RuntimeError(f"binding missing/disabled for {request.channel_id}")
 
     # 2. scope_key → conversation upsert
     sk = scope_key(binding, request.root_id, request.post_id)
     conversation_id = deps.store.upsert_conversation(
         scope_key=sk,
-        team_id=request.team_id,
         channel_id=request.channel_id,
         root_id=request.root_id,
         mode=binding.conversation_mode.value,
@@ -95,21 +122,26 @@ async def process_chat_job(
     # 3. user 메시지 저장
     deps.store.add_user_message(conversation_id, request.post_id, request.message)
 
+    # 5~12. 파이프라인 (LLM 토큰 스트리밍 → llm.stream.delta)
+    stream = deps.delivery.open_stream(request)
     try:
-        output = await deps.pipeline.run(question=request.message, binding=binding, history=history)
-    except Exception as exc:  # noqa: BLE001 — 파이프라인 실패 시 오류 Post (FR-CHAT-009)
-        deps.store.update_job_status(job_id, "FAILED", error=str(exc)[:500])
-        await deps.delivery.deliver_error(
-            binding=binding,
-            request=request,
-            text="⚠️ 답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+        output = await deps.pipeline.run(
+            question=request.message, binding=binding, history=history, on_delta=stream.push
         )
+        await stream.flush()
+    except Exception as exc:  # noqa: BLE001 — 파이프라인 실패 시 오류 안내 (FR-CHAT-009)
+        deps.store.update_job_status(job_id, "FAILED", error=str(exc)[:500])
+        await deps.delivery.deliver_error(request=request)
         raise
 
     latency_ms = int(output.usage.get("llm_ms", 0)) or None
     citation_dicts = [c.model_dump() for c in output.citations]
     message_id = deps.store.add_assistant_message(
-        conversation_id, output.answer, latency_ms=latency_ms, citations=citation_dicts
+        conversation_id,
+        output.answer,
+        post_id=request.bot_post_id,
+        latency_ms=latency_ms,
+        citations=citation_dicts,
     )
 
     completion = RagCompletion(
@@ -120,25 +152,30 @@ async def process_chat_job(
         usage=output.usage,
     )
 
-    # 14. 게시 + delivery 기록
-    result = await deps.delivery.deliver_answer(
+    # 13~14. Bot Post 최종 갱신 + post.updated / llm.stream.end
+    ok = await deps.delivery.deliver_answer(
         binding=binding, request=request, completion=completion, chat_job_id=job_id
-    )
-    deps.store.record_delivery(
-        job_id,
-        request.channel_id,
-        attempt=result.attempts,
-        status="SENT" if result.ok else "DEAD_LETTER",
-        http_status=result.http_status,
     )
 
     # 15. Job 상태 확정
-    deps.store.update_job_status(job_id, "COMPLETED" if result.ok else "DELIVERY_FAILED")
-    _ = INSUFFICIENT_EVIDENCE_TEXT  # (답변 텍스트는 파이프라인에서 이미 처리)
+    deps.store.update_job_status(job_id, "COMPLETED" if ok else "DELIVERY_FAILED")
     return completion
 
 
 _deps: WorkerDeps | None = None
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _event_loop() -> asyncio.AbstractEventLoop:
+    """프로세스 수명 동안 재사용하는 event loop.
+
+    AsyncRedisManager(socket.io)·httpx·AsyncOpenAI 클라이언트는 생성된 loop 에 묶이므로,
+    job 마다 asyncio.run() 으로 loop 를 새로 만들면 SimpleWorker 에서 연결 재사용이 깨진다.
+    """
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+    return _loop
 
 
 def get_worker_deps() -> WorkerDeps:
@@ -152,9 +189,9 @@ def get_worker_deps() -> WorkerDeps:
 
 
 def load_chat_request(job_id: str) -> ChatRequest:
-    """bridge가 Redis `chat:req:{job_id}`에 보관한 ChatRequest를 로딩한다 (§7.1.1).
+    """chat-gateway 가 Redis `chat:req:{job_id}`에 보관한 ChatRequest를 로딩한다 (§7.1.1).
 
-    이벤트 테이블에는 hash만 저장하므로(NFR-DATA-007) 질문 원문은 Redis에서 읽는다.
+    질문 원문은 chat_posts 에도 있으나, 트리거 제거·정규화된 표준 요청은 Redis 에서 읽는다.
     """
     import redis
 
@@ -169,6 +206,6 @@ def load_chat_request(job_id: str) -> ChatRequest:
 
 
 def run_chat_job(job_id: str) -> None:
-    """RQ entrypoint. bridge는 job_id만 enqueue하고 ChatRequest는 Redis에 보관한다 (§7.1.1)."""
+    """RQ entrypoint. gateway 는 job_id만 enqueue하고 ChatRequest는 Redis에 보관한다 (§7.1.1)."""
     request = load_chat_request(job_id)
-    asyncio.run(process_chat_job(get_worker_deps(), job_id, request))
+    _event_loop().run_until_complete(process_chat_job(get_worker_deps(), job_id, request))

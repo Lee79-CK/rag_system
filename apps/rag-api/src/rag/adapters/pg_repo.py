@@ -1,4 +1,4 @@
-"""PostgreSQL 영속화 어댑터 — 대화/메시지/citation/job/delivery (§5, §7.2.1).
+"""PostgreSQL 영속화 어댑터 — 대화/메시지/citation/job/Bot Post 갱신 (§5, §7.2.1).
 
 앱 간 코드 공유 금지(§2.1)이므로 admin-api ORM을 import하지 않고 SQLAlchemy Core SQL을 사용한다.
 대화 이력 조회는 항상 conversation_id로 필터한다 (FR-CTX-002).
@@ -10,38 +10,43 @@ import json
 import uuid
 from typing import Any
 
+from chat_adapter import PostRow
 from rag_schemas import (
     ChannelBinding,
     ChannelMode,
     ConversationMode,
     KnowledgeScope,
 )
+from rag_schemas.webchat import UserBrief
 from sqlalchemy import Engine, text
 
 
 class PgBindingReader:
-    """(team_id, channel_id) → ChannelBinding. admin-api가 관리하는 테이블을 read-only 조회."""
+    """channel_id → ChannelBinding. admin-api가 관리하는 테이블을 read-only 조회."""
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
-    def get_binding(self, team_id: str, channel_id: str) -> ChannelBinding | None:
+    def get_binding(self, channel_id: str) -> ChannelBinding | None:
         sql = text(
             """
-            SELECT b.id, c.team_id, c.channel_id, c.channel_name, b.mode, b.trigger_word,
+            SELECT b.id, c.id AS channel_id, c.name AS channel_name, b.mode, b.trigger_word,
                    b.enabled, b.history_turns, b.mention_user, b.ack_message_enabled,
-                   b.feedback_enabled, b.secret_ref,
-                   ks.filter_json, ks.conversation_mode
-            FROM mattermost_channel_bindings b
-            JOIN mattermost_channels c ON c.id = b.channel_ref
+                   b.feedback_enabled, ks.filter_json, ks.conversation_mode
+            FROM channel_bindings b
+            JOIN chat_channels c ON c.id = b.channel_ref
             LEFT JOIN knowledge_scopes ks ON ks.id = b.knowledge_scope_id
-            WHERE c.team_id = :team_id AND c.channel_id = :channel_id
+            WHERE c.id = CAST(:channel_id AS uuid)
+            ORDER BY b.enabled DESC, b.updated_at DESC
+            LIMIT 1
             """
         )
+        try:
+            uuid.UUID(channel_id)
+        except ValueError:
+            return None
         with self._engine.connect() as conn:
-            row = (
-                conn.execute(sql, {"team_id": team_id, "channel_id": channel_id}).mappings().first()
-            )
+            row = conn.execute(sql, {"channel_id": channel_id}).mappings().first()
         if row is None:
             return None
         filter_json = row["filter_json"] or {}
@@ -49,8 +54,7 @@ class PgBindingReader:
             filter_json = json.loads(filter_json)
         return ChannelBinding(
             id=str(row["id"]),
-            team_id=row["team_id"],
-            channel_id=row["channel_id"],
+            channel_id=str(row["channel_id"]),
             channel_name=row["channel_name"],
             mode=ChannelMode(row["mode"]),
             trigger_word=row["trigger_word"],
@@ -58,7 +62,6 @@ class PgBindingReader:
             conversation_mode=ConversationMode(row["conversation_mode"] or "CHANNEL"),
             history_turns=row["history_turns"],
             knowledge_scope=KnowledgeScope(**filter_json) if filter_json else KnowledgeScope(),
-            incoming_webhook_secret_ref=row["secret_ref"],
             mention_user=row["mention_user"],
             ack_message_enabled=row["ack_message_enabled"],
             feedback_enabled=row["feedback_enabled"],
@@ -70,20 +73,19 @@ class PgConversationStore:
         self._engine = engine
 
     def upsert_conversation(
-        self, *, scope_key: str, team_id: str, channel_id: str, root_id: str | None, mode: str
+        self, *, scope_key: str, channel_id: str, root_id: str | None, mode: str
     ) -> str:
         with self._engine.begin() as conn:
             conn.execute(
                 text(
                     """
-                    INSERT INTO channel_conversations (id, scope_key, team_id, channel_id, root_id, mode)
-                    VALUES (gen_random_uuid(), :sk, :team, :chan, :root, :mode)
+                    INSERT INTO channel_conversations (id, scope_key, channel_id, root_id, mode)
+                    VALUES (gen_random_uuid(), :sk, :chan, :root, :mode)
                     ON CONFLICT (scope_key) DO NOTHING
                     """
                 ),
                 {
                     "sk": scope_key,
-                    "team": team_id,
                     "chan": channel_id,
                     "root": root_id,
                     "mode": mode,
@@ -115,7 +117,7 @@ class PgConversationStore:
             conn.execute(
                 text(
                     """
-                    INSERT INTO messages (id, conversation_id, mattermost_post_id, role, content)
+                    INSERT INTO messages (id, conversation_id, post_id, role, content)
                     VALUES (:id, :cid, :post, 'user', :content)
                     """
                 ),
@@ -128,19 +130,27 @@ class PgConversationStore:
         conversation_id: str,
         content: str,
         *,
+        post_id: str,
         latency_ms: int | None,
         citations: list[dict[str, Any]],
     ) -> str:
+        """assistant 답변 저장. post_id = Bot Post id (피드백 검증 시 Post→message 역조회)."""
         mid = str(uuid.uuid4())
         with self._engine.begin() as conn:
             conn.execute(
                 text(
                     """
-                    INSERT INTO messages (id, conversation_id, role, content, latency_ms)
-                    VALUES (:id, :cid, 'assistant', :content, :lat)
+                    INSERT INTO messages (id, conversation_id, post_id, role, content, latency_ms)
+                    VALUES (:id, :cid, :post, 'assistant', :content, :lat)
                     """
                 ),
-                {"id": mid, "cid": conversation_id, "content": content, "lat": latency_ms},
+                {
+                    "id": mid,
+                    "cid": conversation_id,
+                    "post": post_id,
+                    "content": content,
+                    "lat": latency_ms,
+                },
             )
             for rank, c in enumerate(citations, 1):
                 conn.execute(
@@ -190,23 +200,59 @@ class PgConversationStore:
                 {"status": status, "error": error, "id": job_id},
             )
 
-    def record_delivery(
-        self, job_id: str, channel_id: str, *, attempt: int, status: str, http_status: int | None
-    ) -> None:
+
+class PgChatPostStore:
+    """chat_posts 의 placeholder Bot Post 최종 갱신 (chat-gateway 가 생성한 행)."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+
+    def update_bot_post(
+        self, post_id: str, *, message: str, blocks: list[dict[str, Any]], props: dict[str, Any]
+    ) -> PostRow | None:
         with self._engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO mattermost_deliveries
-                        (id, chat_job_id, channel_id, attempt, status, http_status)
-                    VALUES (gen_random_uuid(), :job, :chan, :attempt, :status, :http)
-                    """
-                ),
-                {
-                    "job": job_id,
-                    "chan": channel_id,
-                    "attempt": attempt,
-                    "status": status,
-                    "http": http_status,
-                },
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        UPDATE chat_posts p
+                        SET message = :message,
+                            blocks = CAST(:blocks AS jsonb),
+                            props = p.props || CAST(:props AS jsonb)
+                        FROM chat_users u
+                        WHERE p.id = CAST(:id AS uuid) AND p.delete_at IS NULL
+                          AND u.id = p.user_id
+                        RETURNING p.id, p.channel_id, p.root_id, p.type, p.message, p.blocks,
+                                  p.props, p.created_at, p.edit_at,
+                                  u.id AS user_id, u.display_name, u.avatar_url, u.is_bot
+                        """
+                    ),
+                    {
+                        "id": post_id,
+                        "message": message,
+                        "blocks": json.dumps(blocks, ensure_ascii=False),
+                        "props": json.dumps(props, ensure_ascii=False),
+                    },
+                )
+                .mappings()
+                .first()
             )
+        if row is None:
+            return None
+        return PostRow(
+            id=str(row["id"]),
+            channel_id=str(row["channel_id"]),
+            root_id=str(row["root_id"]) if row["root_id"] else None,
+            type=row["type"],
+            message=row["message"],
+            blocks=row["blocks"],
+            props=row["props"] or {},
+            created_at=row["created_at"],
+            edit_at=row["edit_at"],
+            user=UserBrief(
+                id=str(row["user_id"]),
+                display_name=row["display_name"],
+                avatar_url=row["avatar_url"],
+                is_bot=row["is_bot"],
+            ),
+        )

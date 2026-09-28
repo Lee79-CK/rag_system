@@ -10,8 +10,8 @@ from rag_schemas.chat import ConversationMode
 
 
 class ChannelMode(StrEnum):
-    DEDICATED_CHANNEL = "DEDICATED_CHANNEL"
-    TRIGGER_WORD = "TRIGGER_WORD"
+    DEDICATED_CHANNEL = "DEDICATED_CHANNEL"  # 모든 top-level 메시지/답글에 응답
+    TRIGGER_WORD = "TRIGGER_WORD"  # trigger_word 로 시작하는 메시지에만 응답
 
 
 class KnowledgeScope(BaseModel):
@@ -23,8 +23,7 @@ class KnowledgeScope(BaseModel):
 
 class ChannelBinding(BaseModel):
     id: str
-    team_id: str
-    channel_id: str
+    channel_id: str  # chat_channels.id — Qdrant allowed_channel_ids 와 동일 값
     channel_name: str
     mode: ChannelMode
     trigger_word: str | None = None
@@ -32,7 +31,6 @@ class ChannelBinding(BaseModel):
     conversation_mode: ConversationMode = ConversationMode.CHANNEL
     history_turns: int = 8
     knowledge_scope: KnowledgeScope = Field(default_factory=KnowledgeScope)
-    incoming_webhook_secret_ref: str  # K8s Secret 이름. URL 자체 아님
     mention_user: bool = True
     ack_message_enabled: bool = True
     feedback_enabled: bool = True  # v1.1 — Channel별 피드백 on/off
@@ -42,9 +40,11 @@ def scope_key(binding: ChannelBinding, root_id: str | None, post_id: str) -> str
     """PRD §18.3 Conversation Scope Key."""
     match binding.conversation_mode:
         case ConversationMode.CHANNEL:
-            return f"{binding.team_id}:{binding.channel_id}"
+            return binding.channel_id
         case ConversationMode.THREAD:
             rid = root_id or post_id  # thread 시작 메시지는 자기 post_id가 root
-            return f"{binding.team_id}:{binding.channel_id}:{rid}"
+            return f"{binding.channel_id}:{rid}"
         case ConversationMode.STATELESS:
-            return f"{binding.team_id}:{binding.channel_id}:{post_id}"
+            return f"{binding.channel_id}:{post_id}"
+        case _:
+            raise ValueError(f"unknown conversation_mode: {binding.conversation_mode}")

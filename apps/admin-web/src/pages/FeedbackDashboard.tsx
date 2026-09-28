@@ -18,6 +18,7 @@ import { PageHeader } from '../components/PageHeader';
 import { QueryState, errorMessage } from '../components/QueryState';
 import { BarChart, type BarDatum } from '../components/BarChart';
 import { useFeedbackByChannel, useFeedbackMessages, useFeedbackSummary } from '../api/feedback';
+import { useChannels } from '../api/channels';
 import { usePromoteCandidate } from '../api/evaluation';
 import type { FeedbackByChannel, FeedbackMessage } from '../types';
 
@@ -27,13 +28,19 @@ export function FeedbackDashboard() {
   const { message } = App.useApp();
   const summary = useFeedbackSummary();
   const byChannel = useFeedbackByChannel();
+  const channels = useChannels();
+  // channel_id(chat_channels.id) → #name 표시. 삭제/과거 채널은 id 앞 8자리
+  const chName = (id: string) => {
+    const c = channels.data?.find((x) => x.id === id);
+    return c ? `#${c.name}` : `${id.slice(0, 8)}…`;
+  };
   const downMessages = useFeedbackMessages('DOWN');
   const promote = usePromoteCandidate();
 
   const ratio = summary.data?.satisfaction_ratio ?? null;
 
   const chartData: BarDatum[] = (byChannel.data ?? []).map((c: FeedbackByChannel) => ({
-    label: c.channel_id,
+    label: chName(c.channel_id),
     value: c.up,
     secondary: c.down,
     caption:
@@ -50,7 +57,7 @@ export function FeedbackDashboard() {
   };
 
   const channelCols: ColumnsType<FeedbackByChannel> = [
-    { title: 'Channel', dataIndex: 'channel_id', render: (v: string) => <code>{v}</code> },
+    { title: 'Channel', dataIndex: 'channel_id', render: (v: string) => <code title={v}>{chName(v)}</code> },
     { title: '👍', dataIndex: 'up', width: 80 },
     { title: '👎', dataIndex: 'down', width: 80 },
     { title: '합계', dataIndex: 'total', width: 80 },
@@ -188,7 +195,7 @@ export function FeedbackDashboard() {
                       <Tag color="volcano">DOWN</Tag>
                       <code>{m.message_id.slice(0, 8)}…</code>{' '}
                       <Text type="secondary" style={{ fontSize: 12 }}>
-                        channel {m.channel_id} ·{' '}
+                        channel {chName(m.channel_id)} ·{' '}
                         {m.created_at ? new Date(m.created_at).toLocaleString() : ''}
                       </Text>
                     </span>

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 {{/* Ingress — Mattermost Callback(/integrations) · Admin API(/api) · Admin Web(/).
      appServices 에 존재하는 서비스만 라우팅한다(admin-web 미정의 시 / 경로 생략).
      ⚠ admin-api 는 X-Auth-User 헤더를 신뢰한다(DEC-003). 운영에서는 이 Ingress 앞에 인증 프록시
@@ -13,10 +14,19 @@
 {{- end }}
 {{- end }}
 {{- range $ns, $entries := $byNs }}
+=======
+{{/*
+Web Chat / Admin Ingress (§14.1, §22.1) — ingress.enabled=true 일 때만 렌더.
+chat host : /api/v1, /ws → chat-gateway · / → chat-web  (동일 출처 → refresh 쿠키 SameSite=Strict, WS Origin 검사 통과)
+admin host: /api → admin-api · / → admin-web(별도 배포 시)
+*/}}
+{{- if .Values.ingress.enabled }}
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+<<<<<<< HEAD
   name: rag-platform
   namespace: {{ $ns }}
   labels:
@@ -46,5 +56,57 @@ spec:
                 port:
                   number: {{ $e.port }}
           {{- end }}
+=======
+  name: rag-chat
+  namespace: rag-app
+  labels:
+    {{- include "rag.labels" (dict "name" "rag-chat" "root" $) | nindent 4 }}
+  annotations:
+    # socket.io websocket: 장시간 연결 유지 (nginx 기본 60s → 1h). Upgrade 헤더는 ingress-nginx 가 자동 처리
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tlsSecretName }}
+  tls:
+    - hosts: [{{ .Values.ingress.chatHost | quote }}]
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.chatHost | quote }}
+      http:
+        paths:
+          - path: /api/v1
+            pathType: Prefix
+            backend: { service: { name: chat-gateway, port: { number: 8001 } } }
+          - path: /ws
+            pathType: Prefix
+            backend: { service: { name: chat-gateway, port: { number: 8001 } } }
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: chat-web, port: { number: 3000 } } }
+{{- if .Values.ingress.adminHost }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rag-admin
+  namespace: rag-app
+  labels:
+    {{- include "rag.labels" (dict "name" "rag-admin" "root" $) | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.adminHost | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend: { service: { name: admin-api, port: { number: 8003 } } }
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 {{- end }}
 {{- end }}

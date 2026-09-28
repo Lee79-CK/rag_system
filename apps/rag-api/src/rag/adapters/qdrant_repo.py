@@ -18,15 +18,16 @@ class QdrantRepo:
     async def search(
         self, query_vector: list[float], qdrant_filter: Any, top_k: int
     ) -> list[RetrievedChunk]:
-        points = await self._client.search(
+        # qdrant-client ≥1.13: search() 제거 → query_points() (filter 는 동일하게 강제 주입)
+        res = await self._client.query_points(
             collection_name=self._collection,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=qdrant_filter,
             limit=top_k,
             with_payload=True,
         )
         out: list[RetrievedChunk] = []
-        for p in points:
+        for p in res.points:
             payload = QdrantChunkPayload.model_validate(p.payload or {})
             out.append(RetrievedChunk(payload=payload, score=float(p.score)))
         return out

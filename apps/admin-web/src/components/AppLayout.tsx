@@ -98,7 +98,8 @@ const NAV: NavGroup[] = [
   {
     group: '서비스 운영',
     items: [
-      { path: '/channels', label: '채널 연동', icon: 'channels', title: '채널 연동', roles: ['SYS_ADMIN', 'DOC_ADMIN'] },
+      { path: '/channels', label: '채널 관리', icon: 'channels', title: 'Web Chat 채널 · Binding · 멤버', roles: ['SYS_ADMIN', 'DOC_ADMIN'] },
+      { path: '/chat-users', label: '채팅 사용자', icon: 'chat', title: '채팅 사용자', roles: ['SYS_ADMIN'] },
       { path: '/chat-jobs', label: '대화 작업', icon: 'chat', title: '대화 작업', roles: ['SYS_ADMIN', 'QUALITY_EVALUATOR', 'DOC_ADMIN'], badge: 'dead' },
     ],
   },

@@ -15,16 +15,15 @@ class ConversationMode(StrEnum):
 
 
 class ChatRequest(BaseModel):
-    """내부 표준 요청. Mattermost 종속성 제거 완료 상태 (NFR-MAINT-006)."""
+    """내부 표준 요청. UI(Web Chat) 종속성 제거 완료 상태 (NFR-MAINT-006)."""
 
-    source: Literal["mattermost", "admin_console"]
-    team_id: str
-    channel_id: str
-    channel_name: str
-    user_id: str
-    user_name: str
-    post_id: str
-    root_id: str | None = None
+    source: Literal["web", "admin_console"]
+    channel_id: str  # chat_channels.id
+    user_id: str  # chat_users.id
+    user_name: str  # display_name
+    post_id: str  # 질문 Post (chat_posts.id)
+    root_id: str | None = None  # thread root post id (top-level이면 None)
+    bot_post_id: str  # 스트리밍 대상 Bot Post (placeholder, chat_posts.id)
     message: str  # Trigger word 제거 완료된 순수 질문
     trace_id: str
 
@@ -33,8 +32,7 @@ class ChatJobStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
-    DELIVERY_PENDING = "DELIVERY_PENDING"
-    DELIVERY_FAILED = "DELIVERY_FAILED"  # Dead Letter
+    DELIVERY_FAILED = "DELIVERY_FAILED"  # 답변 생성 완료, Post 갱신/Emit 실패
     FAILED = "FAILED"
 
 

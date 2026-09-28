@@ -331,8 +331,8 @@ export function Documents() {
               loading={channels.isLoading}
               placeholder="허용 Channel을 명시 선택하세요"
               options={(channels.data ?? []).map((c) => ({
-                label: `${c.channel_name} (${c.channel_id})`,
-                value: c.channel_id,
+                label: `#${c.name} · ${c.display_name}`,
+                value: c.id, // chat_channels.id = Qdrant allowed_channel_ids (Channel 격리 키)
               }))}
             />
           </Form.Item>

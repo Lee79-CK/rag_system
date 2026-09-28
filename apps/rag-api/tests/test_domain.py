@@ -18,13 +18,11 @@ from rag_schemas import ChannelBinding, ChannelMode, KnowledgeScope, QdrantChunk
 def _binding(**scope) -> ChannelBinding:
     return ChannelBinding(
         id="b1",
-        team_id="team-001",
         channel_id="channel-001",
         channel_name="rag-cloud-ops",
         mode=ChannelMode.DEDICATED_CHANNEL,
         enabled=True,
         knowledge_scope=KnowledgeScope(**scope),
-        incoming_webhook_secret_ref="ref",
     )
 
 
@@ -120,3 +118,50 @@ def test_citation_excerpt_truncated_to_200():
     assert len(cites[0].excerpt) <= 200
     assert cites[0].score == 0.88
     assert cites[0].chunk_id == "v1-00001"
+
+
+# ---------------------------------------------------------------- streaming (ADR-001 개정)
+async def test_pipeline_streaming_delivers_deltas_in_order():
+    from rag.domain.pipeline import PipelineConfig, RagPipeline
+    from rag.domain.ports import LLMStreamEvent, RetrievedChunk
+    from rag.domain.tokens import HeuristicTokenCounter
+
+    class Emb:
+        async def embed(self, texts):
+            return [[0.0] * 4 for _ in texts]
+
+    class Ret:
+        async def search(self, v, f, k):
+            return [RetrievedChunk(payload=_payload(1), score=0.9)]
+
+    class Rr:
+        async def rerank(self, q, docs, n):
+            return [(0, 0.9)]
+
+    class StreamLLM:
+        async def complete(self, *a, **k):
+            raise AssertionError("streaming path must not call complete()")
+
+        async def stream(self, messages, *, max_tokens, temperature):
+            for t in ["가", "나", "다"]:
+                yield LLMStreamEvent(delta=t)
+            yield LLMStreamEvent(usage={"completion_tokens": 3})
+
+    got: list[str] = []
+
+    async def on_delta(d: str) -> None:
+        got.append(d)
+
+    pipe = RagPipeline(
+        embedding=Emb(),
+        retrieval=Ret(),
+        reranker=Rr(),
+        llm=StreamLLM(),
+        token_counter=HeuristicTokenCounter(),
+        config=PipelineConfig(),
+    )
+    out = await pipe.run(question="q", binding=_binding(), on_delta=on_delta)
+    assert got == ["가", "나", "다"]
+    assert out.answer == "가나다"
+    assert out.usage["completion_tokens"] == 3
+    assert "llm_first_token_ms" in out.usage

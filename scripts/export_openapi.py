@@ -11,7 +11,7 @@ from pathlib import Path
 
 # (service 이름, "module:factory_or_app") — factory가 있으면 호출, 아니면 app 속성 사용
 SERVICES = [
-    ("mattermost-bridge", "bridge.main"),
+    ("chat-gateway", "gateway.main"),
     ("rag-api", "rag.main"),
     ("admin-api", "admin.main"),
     ("embedding-api", "embedding.main"),

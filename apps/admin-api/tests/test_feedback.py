@@ -7,9 +7,7 @@ from admin.db.models import ChannelConversation, Message, MessageFeedbackRow
 
 def _seed_feedback(TestSession, up: int, down: int, channel_id: str = "c1") -> str:
     with TestSession() as s:
-        conv = ChannelConversation(
-            scope_key=f"t1:{channel_id}", team_id="t1", channel_id=channel_id, mode="CHANNEL"
-        )
+        conv = ChannelConversation(scope_key=channel_id, channel_id=channel_id, mode="CHANNEL")
         s.add(conv)
         s.flush()
         msg = Message(conversation_id=conv.id, role="assistant", content="답변입니다.")
@@ -19,7 +17,7 @@ def _seed_feedback(TestSession, up: int, down: int, channel_id: str = "c1") -> s
             s.add(
                 MessageFeedbackRow(
                     message_id=msg.id,
-                    mattermost_user_id=f"up-{i}",
+                    user_id=f"up-{i}",
                     value="UP",
                     channel_id=channel_id,
                 )
@@ -28,7 +26,7 @@ def _seed_feedback(TestSession, up: int, down: int, channel_id: str = "c1") -> s
             s.add(
                 MessageFeedbackRow(
                     message_id=msg.id,
-                    mattermost_user_id=f"down-{i}",
+                    user_id=f"down-{i}",
                     value="DOWN",
                     channel_id=channel_id,
                 )

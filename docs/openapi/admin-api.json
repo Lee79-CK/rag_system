@@ -152,6 +152,7 @@
           "documents"
         ],
         "summary": "Upload Document",
+        "description": "업로드 + Channel ACL(document_channel_acl) 등록.\n\nallowed_channel_ids = chat_channels.id — parser-indexer 가 Qdrant payload\n`allowed_channel_ids` 로 복사하며 build_filter() 격리의 근거가 된다 (§6.3).",
         "operationId": "upload_document_api_v1_documents_post",
         "parameters": [
           {
@@ -559,13 +560,13 @@
         }
       }
     },
-    "/api/v1/mattermost/channels": {
+    "/api/v1/chat/channels": {
       "post": {
         "tags": [
           "channels"
         ],
         "summary": "Create Channel",
-        "operationId": "create_channel_api_v1_mattermost_channels_post",
+        "operationId": "create_channel_api_v1_chat_channels_post",
         "parameters": [
           {
             "name": "X-Auth-User",
@@ -602,7 +603,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Create Channel Api V1 Mattermost Channels Post"
+                  "title": "Response Create Channel Api V1 Chat Channels Post"
                 }
               }
             }
@@ -624,7 +625,7 @@
           "channels"
         ],
         "summary": "List Channels",
-        "operationId": "list_channels_api_v1_mattermost_channels_get",
+        "operationId": "list_channels_api_v1_chat_channels_get",
         "parameters": [
           {
             "name": "X-Auth-User",
@@ -651,7 +652,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response List Channels Api V1 Mattermost Channels Get"
+                  "title": "Response List Channels Api V1 Chat Channels Get"
                 }
               }
             }
@@ -669,13 +670,13 @@
         }
       }
     },
-    "/api/v1/mattermost/channels/{channel_id}": {
+    "/api/v1/chat/channels/{channel_id}": {
       "get": {
         "tags": [
           "channels"
         ],
         "summary": "Get Channel",
-        "operationId": "get_channel_api_v1_mattermost_channels__channel_id__get",
+        "operationId": "get_channel_api_v1_chat_channels__channel_id__get",
         "parameters": [
           {
             "name": "channel_id",
@@ -712,7 +713,76 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Get Channel Api V1 Mattermost Channels  Channel Id  Get"
+                  "title": "Response Get Channel Api V1 Chat Channels  Channel Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Update Channel",
+        "operationId": "update_channel_api_v1_chat_channels__channel_id__put",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Channel Id"
+            }
+          },
+          {
+            "name": "X-Auth-User",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Auth-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Channel Api V1 Chat Channels  Channel Id  Put"
                 }
               }
             }
@@ -730,13 +800,13 @@
         }
       }
     },
-    "/api/v1/mattermost/channels/{channel_id}/bindings": {
+    "/api/v1/chat/channels/{channel_id}/bindings": {
       "post": {
         "tags": [
           "channels"
         ],
         "summary": "Create Binding",
-        "operationId": "create_binding_api_v1_mattermost_channels__channel_id__bindings_post",
+        "operationId": "create_binding_api_v1_chat_channels__channel_id__bindings_post",
         "parameters": [
           {
             "name": "channel_id",
@@ -783,7 +853,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Create Binding Api V1 Mattermost Channels  Channel Id  Bindings Post"
+                  "title": "Response Create Binding Api V1 Chat Channels  Channel Id  Bindings Post"
                 }
               }
             }
@@ -801,13 +871,13 @@
         }
       }
     },
-    "/api/v1/mattermost/bindings/{binding_id}": {
+    "/api/v1/chat/bindings/{binding_id}": {
       "put": {
         "tags": [
           "channels"
         ],
         "summary": "Update Binding",
-        "operationId": "update_binding_api_v1_mattermost_bindings__binding_id__put",
+        "operationId": "update_binding_api_v1_chat_bindings__binding_id__put",
         "parameters": [
           {
             "name": "binding_id",
@@ -854,7 +924,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Update Binding Api V1 Mattermost Bindings  Binding Id  Put"
+                  "title": "Response Update Binding Api V1 Chat Bindings  Binding Id  Put"
                 }
               }
             }
@@ -872,13 +942,13 @@
         }
       }
     },
-    "/api/v1/mattermost/bindings/{binding_id}/enable": {
+    "/api/v1/chat/bindings/{binding_id}/enable": {
       "post": {
         "tags": [
           "channels"
         ],
         "summary": "Enable Binding",
-        "operationId": "enable_binding_api_v1_mattermost_bindings__binding_id__enable_post",
+        "operationId": "enable_binding_api_v1_chat_bindings__binding_id__enable_post",
         "parameters": [
           {
             "name": "binding_id",
@@ -915,7 +985,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Enable Binding Api V1 Mattermost Bindings  Binding Id  Enable Post"
+                  "title": "Response Enable Binding Api V1 Chat Bindings  Binding Id  Enable Post"
                 }
               }
             }
@@ -933,13 +1003,13 @@
         }
       }
     },
-    "/api/v1/mattermost/bindings/{binding_id}/disable": {
+    "/api/v1/chat/bindings/{binding_id}/disable": {
       "post": {
         "tags": [
           "channels"
         ],
         "summary": "Disable Binding",
-        "operationId": "disable_binding_api_v1_mattermost_bindings__binding_id__disable_post",
+        "operationId": "disable_binding_api_v1_chat_bindings__binding_id__disable_post",
         "parameters": [
           {
             "name": "binding_id",
@@ -976,7 +1046,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Disable Binding Api V1 Mattermost Bindings  Binding Id  Disable Post"
+                  "title": "Response Disable Binding Api V1 Chat Bindings  Binding Id  Disable Post"
                 }
               }
             }
@@ -994,14 +1064,72 @@
         }
       }
     },
-    "/api/v1/mattermost/channels/{channel_id}/secret": {
+    "/api/v1/chat/channels/{channel_id}/members": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "List Members",
+        "operationId": "list_members_api_v1_chat_channels__channel_id__members_get",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Channel Id"
+            }
+          },
+          {
+            "name": "X-Auth-User",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Auth-User"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Members Api V1 Chat Channels  Channel Id  Members Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "channels"
         ],
-        "summary": "Update Secret",
-        "description": "Channel의 binding에 secret_ref를 등록/갱신한다.\n\n실제 값(Incoming Webhook URL)은 K8s Secret으로만 관리하며 DB에 저장하지 않는다.\n응답에는 secret_ref와 secret_updated_at만 포함한다 (값 반환 금지).",
-        "operationId": "update_secret_api_v1_mattermost_channels__channel_id__secret_post",
+        "summary": "Add Members",
+        "operationId": "add_members_api_v1_chat_channels__channel_id__members_post",
         "parameters": [
           {
             "name": "channel_id",
@@ -1035,20 +1163,20 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SecretUpdate"
+                "$ref": "#/components/schemas/MemberAdd"
               }
             }
           }
         },
         "responses": {
-          "200": {
+          "201": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Update Secret Api V1 Mattermost Channels  Channel Id  Secret Post"
+                  "title": "Response Add Members Api V1 Chat Channels  Channel Id  Members Post"
                 }
               }
             }
@@ -1066,14 +1194,13 @@
         }
       }
     },
-    "/api/v1/mattermost/channels/{channel_id}/test": {
-      "post": {
+    "/api/v1/chat/channels/{channel_id}/members/{user_id}": {
+      "delete": {
         "tags": [
           "channels"
         ],
-        "summary": "Test Channel",
-        "description": "Incoming Webhook으로 테스트 메시지를 게시하고 결과를 반환한다 (§7.5).\n\n실제 게시는 mattermost_adapter.deliver()로 수행 — 폐쇄망/테스트에서는 mock/stub 가능.\nURL은 secret_ref → K8s Secret에서 로딩하며 로그/응답에 남기지 않는다.",
-        "operationId": "test_channel_api_v1_mattermost_channels__channel_id__test_post",
+        "summary": "Remove Member",
+        "operationId": "remove_member_api_v1_chat_channels__channel_id__members__user_id__delete",
         "parameters": [
           {
             "name": "channel_id",
@@ -1083,6 +1210,16 @@
               "type": "string",
               "format": "uuid",
               "title": "Channel Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
             }
           },
           {
@@ -1110,7 +1247,249 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Test Channel Api V1 Mattermost Channels  Channel Id  Test Post"
+                  "title": "Response Remove Member Api V1 Chat Channels  Channel Id  Members  User Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/users": {
+      "get": {
+        "tags": [
+          "chat-users"
+        ],
+        "summary": "List Users",
+        "operationId": "list_users_api_v1_chat_users_get",
+        "parameters": [
+          {
+            "name": "X-Auth-User",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Auth-User"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Users Api V1 Chat Users Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "chat-users"
+        ],
+        "summary": "Create User",
+        "operationId": "create_user_api_v1_chat_users_post",
+        "parameters": [
+          {
+            "name": "X-Auth-User",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Auth-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatUserCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create User Api V1 Chat Users Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/users/{user_id}": {
+      "put": {
+        "tags": [
+          "chat-users"
+        ],
+        "summary": "Update User",
+        "operationId": "update_user_api_v1_chat_users__user_id__put",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "X-Auth-User",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Auth-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatUserUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update User Api V1 Chat Users  User Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/users/{user_id}/reset-password": {
+      "post": {
+        "tags": [
+          "chat-users"
+        ],
+        "summary": "Reset Password",
+        "operationId": "reset_password_api_v1_chat_users__user_id__reset_password_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "X-Auth-User",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Auth-User"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Reset Password Api V1 Chat Users  User Id  Reset Password Post"
                 }
               }
             }
@@ -1178,68 +1557,6 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response List Chat Jobs Api V1 Chat Jobs Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/chat-jobs/{job_id}/retry-delivery": {
-      "post": {
-        "tags": [
-          "chat-jobs"
-        ],
-        "summary": "Retry Delivery",
-        "description": "Dead Letter된 delivery를 수동 재시도 대기 상태로 되돌린다 (stub, FR-MM-013).",
-        "operationId": "retry_delivery_api_v1_chat_jobs__job_id__retry_delivery_post",
-        "parameters": [
-          {
-            "name": "job_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Job Id"
-            }
-          },
-          {
-            "name": "X-Auth-User",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Auth-User"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Retry Delivery Api V1 Chat Jobs  Job Id  Retry Delivery Post"
                 }
               }
             }
@@ -1711,13 +2028,15 @@
         "properties": {
           "mode": {
             "type": "string",
+            "pattern": "^(DEDICATED_CHANNEL|TRIGGER_WORD)$",
             "title": "Mode",
             "default": "DEDICATED_CHANNEL"
           },
           "trigger_word": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 50
               },
               {
                 "type": "null"
@@ -1744,6 +2063,8 @@
           },
           "history_turns": {
             "type": "integer",
+            "maximum": 50.0,
+            "minimum": 0.0,
             "title": "History Turns",
             "default": 8
           },
@@ -1761,17 +2082,9 @@
             "type": "boolean",
             "title": "Feedback Enabled",
             "default": true
-          },
-          "secret_ref": {
-            "type": "string",
-            "title": "Secret Ref",
-            "description": "K8s Secret 이름만. URL 저장 금지."
           }
         },
         "type": "object",
-        "required": [
-          "secret_ref"
-        ],
         "title": "BindingCreate"
       },
       "BindingUpdate": {
@@ -1779,7 +2092,8 @@
           "mode": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "pattern": "^(DEDICATED_CHANNEL|TRIGGER_WORD)$"
               },
               {
                 "type": "null"
@@ -1824,7 +2138,9 @@
           "history_turns": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "maximum": 50.0,
+                "minimum": 0.0
               },
               {
                 "type": "null"
@@ -1915,6 +2231,7 @@
             "default": "INTERNAL"
           },
           "allowed_channel_ids": {
+<<<<<<< HEAD
             "anyOf": [
               {
                 "type": "string"
@@ -1931,6 +2248,13 @@
             "title": "Start Indexing",
             "description": "true 면 업로드 직후 색인 Job 생성",
             "default": false
+=======
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Channel Ids"
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
           }
         },
         "type": "object",
@@ -1941,48 +2265,156 @@
       },
       "ChannelCreate": {
         "properties": {
-          "team_id": {
+          "name": {
             "type": "string",
-            "title": "Team Id"
+            "title": "Name",
+            "description": "URL slug (소문자/숫자/-/_)"
           },
-          "channel_id": {
+          "display_name": {
             "type": "string",
-            "title": "Channel Id"
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Display Name"
           },
-          "channel_name": {
+          "type": {
             "type": "string",
-            "title": "Channel Name"
+            "pattern": "^(public|private)$",
+            "title": "Type",
+            "default": "public"
           },
-          "team_domain": {
+          "purpose": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Team Domain"
-          },
+            "title": "Purpose"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "display_name"
+        ],
+        "title": "ChannelCreate"
+      },
+      "ChannelUpdate": {
+        "properties": {
           "display_name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
               },
               {
                 "type": "null"
               }
             ],
             "title": "Display Name"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(public|private)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purpose"
+          }
+        },
+        "type": "object",
+        "title": "ChannelUpdate"
+      },
+      "ChatUserCreate": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "minLength": 3,
+            "pattern": "^[^@\\s]+@[^@\\s]+$",
+            "title": "Email"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "role": {
+            "type": "string",
+            "pattern": "^(user|admin)$",
+            "title": "Role",
+            "default": "user"
           }
         },
         "type": "object",
         "required": [
-          "team_id",
-          "channel_id",
-          "channel_name"
+          "email",
+          "display_name"
         ],
-        "title": "ChannelCreate"
+        "title": "ChatUserCreate"
+      },
+      "ChatUserUpdate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(user|admin)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          }
+        },
+        "type": "object",
+        "title": "ChatUserUpdate"
       },
       "FeedbackValue": {
         "type": "string",
@@ -2005,19 +2437,30 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
-      "SecretUpdate": {
+      "MemberAdd": {
         "properties": {
-          "secret_ref": {
+          "user_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "User Ids"
+          },
+          "role": {
             "type": "string",
-            "title": "Secret Ref",
-            "description": "K8s Secret 이름. 값(URL)은 K8s Secret으로만 관리."
+            "pattern": "^(member|channel_admin)$",
+            "title": "Role",
+            "default": "member"
           }
         },
         "type": "object",
         "required": [
-          "secret_ref"
+          "user_ids"
         ],
-        "title": "SecretUpdate"
+        "title": "MemberAdd"
       },
       "SettingUpdate": {
         "properties": {

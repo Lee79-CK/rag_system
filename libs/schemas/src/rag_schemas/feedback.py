@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+FEEDBACK_ACTION_UP = "feedback:up"
+FEEDBACK_ACTION_DOWN = "feedback:down"
 
 
 class FeedbackValue(StrEnum):
@@ -14,25 +16,17 @@ class FeedbackValue(StrEnum):
     DOWN = "DOWN"  # 👎 아쉬움
 
 
-class InteractiveActionContext(BaseModel):
-    """답변 Post의 버튼에 심는 context. Bridge가 서명하여 위·변조 방지."""
+class WidgetActionRequest(BaseModel):
+    """Web Chat 버튼 액션 POST /api/v1/actions body (aiops WidgetActionRequest 호환).
 
-    action: Literal["feedback"]
-    message_id: str  # messages.id (assistant 답변)
-    chat_job_id: str
-    value: FeedbackValue
-    sig: str  # HMAC-SHA256(FEEDBACK_SIGNING_KEY, f"{message_id}:{value}")
+    피드백 버튼은 `value` 에 Bot Post props 로 전달된 feedback_token 을 실어 보낸다.
+    token = HMAC-SHA256(FEEDBACK_SIGNING_KEY, f"{message_id}:{post_id}") — 위·변조 방지.
+    """
 
-
-class InteractiveActionRequest(BaseModel):
-    """Mattermost Interactive Message Action POST body (필요 필드만)."""
-
-    user_id: str
-    user_name: str | None = None
-    post_id: str  # 버튼이 달린 답변 Post의 id
-    channel_id: str
-    team_id: str | None = None
-    context: InteractiveActionContext
+    post_id: str = Field(min_length=1, max_length=64)
+    block_id: str = Field(min_length=1, max_length=64)
+    action_id: str = Field(min_length=1, max_length=64)
+    value: str | None = Field(default=None, max_length=256)
 
 
 class MessageFeedback(BaseModel):

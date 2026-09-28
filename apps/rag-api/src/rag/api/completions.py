@@ -13,7 +13,6 @@ router = APIRouter()
 
 
 class RagCompletionRequest(BaseModel):
-    team_id: str
     channel_id: str
     message: str
     history: list[tuple[str, str]] = Field(default_factory=list)
@@ -24,7 +23,7 @@ async def completions(body: RagCompletionRequest, request: Request) -> RagComple
     binding_reader = request.app.state.binding_reader
     pipeline = request.app.state.pipeline
 
-    binding = binding_reader.get_binding(body.team_id, body.channel_id)
+    binding = binding_reader.get_binding(body.channel_id)
     if binding is None:
         raise HTTPException(status_code=403, detail="CHANNEL_NOT_BOUND")
 

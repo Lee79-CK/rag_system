@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -34,6 +35,14 @@ class LLMResult:
     usage: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class LLMStreamEvent:
+    """스트리밍 이벤트 1건. delta(텍스트 조각) 또는 usage(마지막 1회) 중 하나를 채운다."""
+
+    delta: str = ""
+    usage: dict[str, Any] | None = None
+
+
 class EmbeddingPort(Protocol):
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
@@ -54,3 +63,9 @@ class LLMPort(Protocol):
     async def complete(
         self, messages: list[dict[str, str]], *, max_tokens: int, temperature: float
     ) -> LLMResult: ...
+
+    def stream(
+        self, messages: list[dict[str, str]], *, max_tokens: int, temperature: float
+    ) -> AsyncIterator[LLMStreamEvent]:
+        """토큰 스트리밍 (ADR-001 개정). async generator 로 구현한다."""
+        ...

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 
 class ErrorDetail(BaseModel):
-    code: str  # 예: "INVALID_TOKEN", "CHANNEL_NOT_BOUND", "DUPLICATE_EVENT"
+    code: str  # 예: "UNAUTHORIZED", "CHANNEL_NOT_FOUND", "RATE_LIMITED"
     message: str  # 사용자/운영자용 한국어 메시지
     request_id: str
     detail: dict | None = None  # 민감정보 금지

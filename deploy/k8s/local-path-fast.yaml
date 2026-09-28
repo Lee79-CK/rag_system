@@ -8,7 +8,7 @@
 # 적용 전 반드시 확인할 것
 #   1) 노드 이름: 아래 nodePathMap 의 "p3" 를 실제 노드 이름으로 바꾼다.
 #        kubectl get nodes -o name
-#        sed -i 's/"node": "p3"/"node": "<실제이름>"/' deploy/k8s/local-path-fast.yaml
+#        sed -i 's/"node": "rke2-master-01"/"node": "<실제이름>"/' deploy/k8s/local-path-fast.yaml
 #   2) 경로 준비 (P3 로컬):  sudo mkdir -p /data/fast && sudo chmod 0755 /data/fast
 #   3) 폐쇄망이면 두 이미지를 사내 레지스트리로 미러링 후 image 값을 교체:
 #        rancher/local-path-provisioner:v0.0.31 , busybox:1.36.1
@@ -74,7 +74,7 @@ data:
     {
       "nodePathMap": [
         {
-          "node": "p3",
+          "node": "rke2-master-01",
           "paths": ["/data/fast"]
         }
       ]

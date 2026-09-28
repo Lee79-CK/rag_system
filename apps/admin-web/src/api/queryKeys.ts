@@ -7,6 +7,8 @@ export const qk = {
   indexJobs: (status?: string) => ['indexJobs', status ?? 'all'] as const,
   channels: ['channels'] as const,
   channel: (id: string) => ['channels', id] as const,
+  channelMembers: (id: string) => ['channels', id, 'members'] as const,
+  chatUsers: ['chatUsers'] as const,
   chatJobs: (status?: string) => ['chatJobs', status ?? 'all'] as const,
   settings: ['settings'] as const,
   evaluationDatasets: ['evaluation', 'datasets'] as const,

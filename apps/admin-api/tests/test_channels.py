@@ -1,80 +1,118 @@
-"""Channel/Binding + secret 노출 금지 테스트 — FR-OPS-010, NFR-SEC-006."""
+"""Web Chat 채널/Binding/멤버 관리 테스트 — §7.5, FR-OPS-00x (Channel 격리 경계)."""
 
 from __future__ import annotations
 
-# 실제 Webhook URL을 흉내낸 sentinel — 어떤 GET 응답에도 등장해서는 안 된다.
-SECRET_URL_SENTINEL = "https://mattermost.internal.example/hooks/xxxxSECRETxxxx"
+from admin.db.models import ChatUser
 
 
-def _create_channel_with_binding(client, auth) -> tuple[str, str]:
+def _create_channel(client, auth, name: str = "rag-cloud-ops") -> str:
     ch = client.post(
-        "/api/v1/mattermost/channels",
-        json={"team_id": "t1", "channel_id": "c1", "channel_name": "general"},
+        "/api/v1/chat/channels",
+        json={"name": name, "display_name": "Cloud 운영 Q&A", "purpose": "운영 문서 질의"},
         headers=auth("sysadmin"),
     )
     assert ch.status_code == 201, ch.text
-    channel_id = ch.json()["data"]["id"]
+    return ch.json()["data"]["id"]
 
-    binding = client.post(
-        f"/api/v1/mattermost/channels/{channel_id}/bindings",
-        json={"secret_ref": "mm-incoming-webhook-secret", "enabled": True},
-        headers=auth("sysadmin"),
+
+def _create_binding(client, auth, channel_id: str, **over) -> str:
+    body = {"enabled": True, **over}
+    b = client.post(
+        f"/api/v1/chat/channels/{channel_id}/bindings", json=body, headers=auth("sysadmin")
     )
-    assert binding.status_code == 201, binding.text
-    return channel_id, binding.json()["data"]["id"]
+    assert b.status_code == 201, b.text
+    return b.json()["data"]["id"]
 
 
-def test_secret_value_never_in_get_responses(client, seed, auth):
+def test_channel_create_and_duplicate_name(client, seed, auth):
     seed({"sysadmin": ["SYS_ADMIN"]})
-    channel_id, binding_id = _create_channel_with_binding(client, auth)
-
-    # secret 등록: 값(URL)은 절대 저장하지 않으며 응답에도 없어야 한다.
-    sec = client.post(
-        f"/api/v1/mattermost/channels/{channel_id}/secret",
-        json={"secret_ref": "mm-incoming-webhook-secret"},
+    _create_channel(client, auth)
+    dup = client.post(
+        "/api/v1/chat/channels",
+        json={"name": "rag-cloud-ops", "display_name": "x"},
         headers=auth("sysadmin"),
     )
-    assert sec.status_code == 200, sec.text
-    sec_body = sec.json()
-    assert sec_body["data"]["secret_ref"] == "mm-incoming-webhook-secret"
-    assert sec_body["data"]["secret_updated_at"] is not None
-    # 등록 응답에도 URL/값이 없어야 한다.
-    assert SECRET_URL_SENTINEL not in sec.text
-    assert "webhook_url" not in sec.text.lower()
+    assert dup.status_code == 409
+    bad = client.post(
+        "/api/v1/chat/channels",
+        json={"name": "Bad Name!", "display_name": "x"},
+        headers=auth("sysadmin"),
+    )
+    assert bad.status_code == 422
 
-    # GET channel (bindings 포함) — secret_ref만 존재, 값 부재.
-    got = client.get(f"/api/v1/mattermost/channels/{channel_id}", headers=auth("sysadmin"))
-    assert got.status_code == 200, got.text
-    text = got.text
-    assert "secret_ref" in text
-    assert SECRET_URL_SENTINEL not in text
-    assert "webhook_url" not in text.lower()
-    assert "secret_value" not in text.lower()
 
-    binding_view = got.json()["data"]["bindings"][0]
-    # 어떤 필드도 실제 URL을 담지 않는다.
-    assert binding_view["secret_ref"] == "mm-incoming-webhook-secret"
-    assert "http" not in str(binding_view).lower()
+def test_binding_has_no_secret_fields(client, seed, auth):
+    """Mattermost 시절 secret_ref(Incoming Webhook) 개념은 완전히 제거되었다."""
+    seed({"sysadmin": ["SYS_ADMIN"]})
+    channel_id = _create_channel(client, auth)
+    _create_binding(client, auth, channel_id)
+    got = client.get(f"/api/v1/chat/channels/{channel_id}", headers=auth("sysadmin"))
+    assert got.status_code == 200
+    assert "secret" not in got.text.lower() and "webhook" not in got.text.lower()
+    assert got.json()["data"]["bindings"][0]["mode"] == "DEDICATED_CHANNEL"
+
+
+def test_trigger_word_mode_requires_trigger(client, seed, auth):
+    seed({"sysadmin": ["SYS_ADMIN"]})
+    channel_id = _create_channel(client, auth)
+    r = client.post(
+        f"/api/v1/chat/channels/{channel_id}/bindings",
+        json={"mode": "TRIGGER_WORD"},
+        headers=auth("sysadmin"),
+    )
+    assert r.status_code == 422
+    _create_binding(client, auth, channel_id, mode="TRIGGER_WORD", trigger_word="!rag")
 
 
 def test_binding_enable_disable(client, seed, auth):
     seed({"sysadmin": ["SYS_ADMIN"]})
-    _, binding_id = _create_channel_with_binding(client, auth)
+    channel_id = _create_channel(client, auth)
+    binding_id = _create_binding(client, auth, channel_id)
 
-    dis = client.post(f"/api/v1/mattermost/bindings/{binding_id}/disable", headers=auth("sysadmin"))
+    dis = client.post(f"/api/v1/chat/bindings/{binding_id}/disable", headers=auth("sysadmin"))
     assert dis.status_code == 200
     assert dis.json()["data"]["enabled"] is False
 
-    en = client.post(f"/api/v1/mattermost/bindings/{binding_id}/enable", headers=auth("sysadmin"))
+    en = client.post(f"/api/v1/chat/bindings/{binding_id}/enable", headers=auth("sysadmin"))
     assert en.status_code == 200
     assert en.json()["data"]["enabled"] is True
 
 
-def test_connection_test_stub(client, seed, auth):
+def test_members_add_list_remove(client, seed, auth, TestSession):
     seed({"sysadmin": ["SYS_ADMIN"]})
-    channel_id, _ = _create_channel_with_binding(client, auth)
-    resp = client.post(f"/api/v1/mattermost/channels/{channel_id}/test", headers=auth("sysadmin"))
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["ok"] is True
-    # 연결 테스트 응답에도 URL 노출 금지.
-    assert SECRET_URL_SENTINEL not in resp.text
+    channel_id = _create_channel(client, auth)
+    with TestSession() as s:
+        u = ChatUser(email="hong@example.com", display_name="홍길동")
+        bot = ChatUser(email="bot@local", display_name="RAG Assistant", is_bot=True)
+        s.add_all([u, bot])
+        s.commit()
+        uid, bot_id = str(u.id), str(bot.id)
+
+    add = client.post(
+        f"/api/v1/chat/channels/{channel_id}/members",
+        json={"user_ids": [uid]},
+        headers=auth("sysadmin"),
+    )
+    assert add.status_code == 201 and add.json()["data"]["added"] == 1
+    # Bot 계정은 멤버로 추가할 수 없다 (답변은 binding 으로만)
+    assert (
+        client.post(
+            f"/api/v1/chat/channels/{channel_id}/members",
+            json={"user_ids": [bot_id]},
+            headers=auth("sysadmin"),
+        ).status_code
+        == 404
+    )
+    members = client.get(
+        f"/api/v1/chat/channels/{channel_id}/members", headers=auth("sysadmin")
+    ).json()["data"]
+    assert [m["email"] for m in members] == ["hong@example.com"]
+    rm = client.delete(
+        f"/api/v1/chat/channels/{channel_id}/members/{uid}", headers=auth("sysadmin")
+    )
+    assert rm.status_code == 200
+
+
+def test_channel_api_requires_sys_admin(client, seed, auth):
+    seed({"docadmin": ["DOC_ADMIN"]})
+    assert client.get("/api/v1/chat/channels", headers=auth("docadmin")).status_code == 403

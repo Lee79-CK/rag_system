@@ -8,6 +8,7 @@ import { Documents } from './pages/Documents';
 import { IndexJobs } from './pages/IndexJobs';
 import { Channels } from './pages/Channels';
 import { ChatJobs } from './pages/ChatJobs';
+import { ChatUsers } from './pages/ChatUsers';
 import { Settings } from './pages/Settings';
 import { Evaluation } from './pages/Evaluation';
 import { AuditLogs } from './pages/AuditLogs';
@@ -61,6 +62,7 @@ export default function App() {
                 <Route path="documents" element={<Documents />} />
                 <Route path="index-jobs" element={<IndexJobs />} />
                 <Route path="channels" element={<Channels />} />
+                <Route path="chat-users" element={<ChatUsers />} />
                 <Route path="chat-jobs" element={<ChatJobs />} />
                 <Route path="settings" element={<Settings />} />
                 <Route path="evaluation" element={<Evaluation />} />

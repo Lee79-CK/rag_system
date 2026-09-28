@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from rag_schemas import ChannelBinding, Citation
@@ -24,6 +25,8 @@ from rag.domain.ports import (
 )
 from rag.domain.prompt import INSUFFICIENT_EVIDENCE_TEXT, SYSTEM_PROMPT, build_messages
 from rag.domain.retrieval import build_filter
+
+DeltaCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -72,7 +75,13 @@ class RagPipeline:
         question: str,
         binding: ChannelBinding,
         history: list[tuple[str, str]] | None = None,
+        on_delta: DeltaCallback | None = None,
     ) -> PipelineOutput:
+        """on_delta 가 주어지면 LLM 을 스트리밍 호출하고 토큰 조각마다 콜백한다.
+
+        근거 부족 시에는 LLM 을 호출하지 않으며 on_delta 도 호출하지 않는다
+        (최종 본문은 Worker 가 답변 갱신 시 한 번에 반영).
+        """
         history = history or []
         usage: dict[str, float | int] = {}
 
@@ -128,19 +137,36 @@ class RagPipeline:
             question=question, chunks=assembled.selected_chunks, history=assembled.history
         )
         t = time.perf_counter()
-        result = await self._llm.complete(
-            messages,
-            max_tokens=self._cfg.max_output_tokens,
-            temperature=self._cfg.temperature,
-        )
+        if on_delta is None:
+            result = await self._llm.complete(
+                messages,
+                max_tokens=self._cfg.max_output_tokens,
+                temperature=self._cfg.temperature,
+            )
+            answer = result.text
+            usage.update(result.usage)
+        else:
+            parts: list[str] = []
+            async for event in self._llm.stream(
+                messages,
+                max_tokens=self._cfg.max_output_tokens,
+                temperature=self._cfg.temperature,
+            ):
+                if event.delta:
+                    if not parts:
+                        usage["llm_first_token_ms"] = _ms(t)
+                    parts.append(event.delta)
+                    await on_delta(event.delta)
+                if event.usage:
+                    usage.update(event.usage)
+            answer = "".join(parts)
         usage["llm_ms"] = _ms(t)
-        usage.update(result.usage)
 
         # 12. Citation 생성
         citations = build_citations(assembled.selected_chunks)
 
         return PipelineOutput(
-            answer=result.text,
+            answer=answer,
             citations=citations,
             insufficient_evidence=False,
             usage=usage,

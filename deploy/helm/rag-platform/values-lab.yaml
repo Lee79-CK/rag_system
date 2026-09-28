@@ -90,15 +90,31 @@ modelStorage:
 # 서비스 URL / DB / Redis / Secret 경로는 values.yaml 의 dbEnv·redisEnv·bridgeSecrets·incomingSecrets 플래그와
 # extraEnv 기본값(in-cluster DNS)이 이미 채운다 — 여기서는 랩에서 달라지는 값만 override 한다 (리스트는 통째로 교체됨).
 appServices:
-  mattermost-bridge:
+  chat-gateway:
     replicas: 1
     pdbMinAvailable: null
     resources: { requests: { cpu: "250m", memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
     extraEnv:
+<<<<<<< HEAD
       - { name: BRIDGE_INTERNAL_URL, value: "http://mattermost-bridge.rag-app:8001" }
       - { name: LOG_LEVEL, value: "INFO" }
       # Mattermost(mock) Pod 네트워크 + 접속 PC 대역. 비우면 개방(allow-all) — 랩에서도 채워 둔다
       - { name: BRIDGE_ALLOWED_SOURCE_CIDRS, value: "10.42.0.0/16,192.168.0.0/16" }
+=======
+      - { name: REDIS_URL,     value: "redis://redis.rag-data:6379/0" }
+      - { name: POSTGRES_HOST, value: "postgresql.rag-data" }
+      - { name: JWT_SECRET_FILE,           value: /var/run/secrets/rag/jwt-secret }
+      - { name: PASSWORD_PEPPER_FILE,      value: /var/run/secrets/rag/password-pepper }
+      - { name: FEEDBACK_SIGNING_KEY_FILE, value: /var/run/secrets/rag/feedback-signing-key }
+      # 랩은 HTTP 로 접근할 수 있으나 prehash(WebCrypto) 는 HTTPS/localhost 에서만 동작 → TLS 권장
+      - { name: COOKIE_SECURE, value: "false" }
+      - { name: LOG_LEVEL,     value: "INFO" }
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
+
+  chat-web:
+    replicas: 1
+    pdbMinAvailable: null
+    resources: { requests: { cpu: "100m", memory: 256Mi }, limits: { cpu: "500m", memory: 512Mi } }
 
   rag-api:
     replicas: 1
@@ -110,8 +126,13 @@ appServices:
       - { name: RERANKER_API_URL,  value: "http://reranker-api.rag-ai:8005" }
       - { name: VLLM_API_URL,      value: "http://vllm-service.rag-ai:8000/v1" }
       - { name: LLM_SERVED_MODEL_NAME, value: "internal-rag-llm" }
+<<<<<<< HEAD
       - { name: BRIDGE_INTERNAL_URL,   value: "http://mattermost-bridge.rag-app:8001" }
       # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2)  ※ 코드가 아직 semaphore 로 강제하지 않음 — 리뷰 리포트 참조
+=======
+      - { name: FEEDBACK_SIGNING_KEY_FILE, value: /var/run/secrets/rag/feedback-signing-key }
+      # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2)
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
       - { name: CHAT_MAX_CONCURRENCY,  value: "8" }
       # tokenizer 는 LLM 노드(PGX)에만 있으므로 P3 의 rag-api 에서는 근사 카운팅 경로를 쓴다
       - { name: TOKENIZER_PATH,        value: "/models/llm/main" }
@@ -129,9 +150,13 @@ appServices:
     serviceAccountName: admin-api
     extraEnv:
       - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
+<<<<<<< HEAD
       - { name: BRIDGE_INTERNAL_URL,   value: "http://mattermost-bridge.rag-app:8001" }
       - { name: INDEX_JOB_TRIGGER,     value: "k8s" }        # 업로드/재색인 → parser-indexer Job 자동 생성
       - { name: INDEX_JOB_NAMESPACE,   value: "rag-ingestion" }
+=======
+      - { name: PASSWORD_PEPPER_FILE,  value: /var/run/secrets/rag/password-pepper }
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
       - { name: APP_ENV,   value: "lab" }
       - { name: LOG_LEVEL, value: "INFO" }
 
@@ -209,4 +234,28 @@ ingestion:
     - { name: OCR_ENABLED,       value: "0" }
 
 monitoring:
+<<<<<<< HEAD
   grafanaDashboards: false        # kube-prometheus-stack 설치 후 true (가이드 §9). true 면 monitoring NS 선재 필요
+=======
+  grafanaDashboards: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ chart 미지원 / 사전 준비 항목 (가이드 §4 참조)
+#
+# 1) Secret — `rag-chat-secrets`(키: jwt-secret, password-pepper, feedback-signing-key)를
+#    rag-app namespace 에 사전 생성한다. chart 는 appServices.<svc>.secretMount 로 파일 마운트만 한다.
+#
+# 2) Ingress — `ingress.enabled=true` + `ingress.chatHost` 로 chat-web/chat-gateway 동일 출처 라우팅.
+#    (/api/v1, /ws → chat-gateway · / → chat-web). admin-web 은 appServices 에 정의가 없다.
+#
+# 3) chat-web 이미지 — `apps/chat-web` 의 `next build` standalone 산출물(.next/standalone + .next/static
+#    + public)을 Node 22 런타임 이미지로 빌드해 Harbor 에 push 한다 (Containerfile 은 저장소 미포함).
+#
+# 4) POSTGRES_PASSWORD 등 DB 자격증명은 기본값(rag/rag-dev-only)을 그대로 쓴다.
+#    폐쇄망 랩 한정이며 PoC 이관 시 Secret 으로 전환할 것.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ---- NetworkPolicy — 브라우저 트래픽(chat-web/chat-gateway)을 허용할 Ingress Controller namespace ----
+networkPolicy:
+  ingressControllerNamespace: kube-system   # RKE2 번들 rke2-ingress-nginx 는 kube-system 에서 동작
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

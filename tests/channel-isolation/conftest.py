@@ -8,7 +8,7 @@ LLM payload capture)을 제공하고, 실제 Qdrant 검증은 test_ch_qdrant.py(
 from __future__ import annotations
 
 import pytest
-from rag.domain.ports import LLMResult, RetrievedChunk
+from rag.domain.ports import LLMResult, LLMStreamEvent, RetrievedChunk
 from rag_schemas import ChannelBinding, ChannelMode, ChatRequest, KnowledgeScope, QdrantChunkPayload
 
 
@@ -22,7 +22,6 @@ def make_binding(
 ) -> ChannelBinding:
     return ChannelBinding(
         id=f"binding-{channel_id}",
-        team_id="team-001",
         channel_id=channel_id,
         channel_name=f"ch-{channel_id}",
         mode=ChannelMode.DEDICATED_CHANNEL,
@@ -32,7 +31,6 @@ def make_binding(
             departments=departments or [],
             security_levels=security_levels or ["INTERNAL"],
         ),
-        incoming_webhook_secret_ref=f"secret-{channel_id}",
         feedback_enabled=True,
     )
 
@@ -58,14 +56,13 @@ def make_payload(chunk_id: str, channel_ids: list[str], text: str, **meta) -> Qd
 
 def make_request(channel_id: str, message: str, *, user_name: str = "user") -> ChatRequest:
     return ChatRequest(
-        source="mattermost",
-        team_id="team-001",
+        source="web",
         channel_id=channel_id,
-        channel_name=f"ch-{channel_id}",
         user_id="u1",
         user_name=user_name,
         post_id=f"post-{channel_id}",
         root_id=None,
+        bot_post_id=f"bot-post-{channel_id}",
         message=message,
         trace_id="t",
     )
@@ -117,6 +114,11 @@ class CapturingLLM:
     async def complete(self, messages, *, max_tokens, temperature):
         self.messages = messages
         return LLMResult(text="답변입니다. [1]", usage={})
+
+    async def stream(self, messages, *, max_tokens, temperature):
+        """Worker 운영 경로(스트리밍) — 동일하게 payload 를 캡처한다."""
+        self.messages = messages
+        yield LLMStreamEvent(delta="답변입니다. [1]")
 
 
 class FakeEmbedding:

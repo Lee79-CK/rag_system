@@ -1,6 +1,6 @@
 apiVersion: v2
 name: rag-platform
-description: Mattermost 기반 폐쇄형 Private Cloud RAG LLM 챗봇 (Umbrella Chart) — docs/TDD.md §14
+description: Web Chat(aiops_chatbot 이식) 기반 폐쇄형 Private Cloud RAG LLM 챗봇 (Umbrella Chart) — docs/TDD.md §14
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

@@ -51,6 +51,7 @@ def test_upload_rejects_bad_extension(client, seed, auth):
     assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
 
 
+<<<<<<< HEAD
 def test_fr_doc_004_upload_writes_channel_acl(client, seed, auth, TestSession):
     """allowed_channel_ids 가 document_channel_acl 로 저장되어야 색인 후 해당 채널에서 검색된다."""
     from admin.db.models import DocumentChannelAcl
@@ -133,3 +134,34 @@ def test_reindex_calls_trigger(client, seed, auth):
     assert resp.status_code == 202, resp.text
     assert calls == [resp.json()["data"]["index_job_id"]]
     assert resp.json()["data"]["trigger"] == "spy"
+=======
+def test_upload_registers_channel_acl(client, seed, auth, TestSession):
+    """allowed_channel_ids → document_channel_acl (Qdrant 격리 필터의 근거)."""
+    from admin.db.models import ChatChannel, DocumentChannelAcl
+
+    seed({"docadmin": ["DOC_ADMIN"]})
+    with TestSession() as s:
+        ch = ChatChannel(name="rag-hr", display_name="HR")
+        s.add(ch)
+        s.commit()
+        cid = str(ch.id)
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("acl.txt", b"acl body", "text/plain")},
+        data={"allowed_channel_ids": [cid]},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["data"]["allowed_channel_ids"] == [cid]
+    with TestSession() as s:
+        rows = s.query(DocumentChannelAcl).all()
+        assert [(r.channel_id, r.access_type) for r in rows] == [(cid, "ALLOW")]
+
+    bad = client.post(
+        "/api/v1/documents",
+        files={"file": ("acl2.txt", b"other body", "text/plain")},
+        data={"allowed_channel_ids": ["00000000-0000-0000-0000-000000000000"]},
+        headers=auth("docadmin"),
+    )
+    assert bad.status_code == 404
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

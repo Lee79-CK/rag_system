@@ -254,7 +254,8 @@ function KpiGauge({ label, note }: { label: string; note: string }) {
 }
 
 const SERVICES = [
-  { name: 'bridge', latency: '12ms' },
+  { name: 'chat-gateway', latency: '12ms' },
+  { name: 'chat-web', latency: '6ms' },
   { name: 'rag-worker', latency: '8ms' },
   { name: 'embedding', latency: '41ms' },
   { name: 'reranker', latency: '88ms' },

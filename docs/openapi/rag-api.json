@@ -227,10 +227,6 @@
       },
       "RagCompletionRequest": {
         "properties": {
-          "team_id": {
-            "type": "string",
-            "title": "Team Id"
-          },
           "channel_id": {
             "type": "string",
             "title": "Channel Id"
@@ -259,7 +255,6 @@
         },
         "type": "object",
         "required": [
-          "team_id",
           "channel_id",
           "message"
         ],

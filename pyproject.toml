@@ -3,19 +3,19 @@
 [project]
 name = "rag-platform"
 version = "0.1.0"
-description = "Mattermost 기반 폐쇄형 Private Cloud RAG LLM 챗봇 (monorepo root)"
+description = "Web Chat(aiops_chatbot 이식) 기반 폐쇄형 Private Cloud RAG LLM 챗봇 (monorepo root)"
 requires-python = ">=3.12,<3.13"
 
 [tool.uv.workspace]
 members = ["apps/*", "libs/*", "tools/*"]
-exclude = ["apps/admin-web"]  # React/Vite 앱 — Python 워크스페이스 멤버 아님
+exclude = ["apps/admin-web", "apps/chat-web"]  # React(Vite/Next) 앱 — Python 워크스페이스 멤버 아님
 
 # Intra-repo dependencies resolve to the workspace members (editable), never PyPI.
 [tool.uv.sources]
 rag-schemas = { workspace = true }
 rag-common = { workspace = true }
 rag-observability = { workspace = true }
-mattermost-adapter = { workspace = true }
+chat-adapter = { workspace = true }
 
 [dependency-groups]
 # Dev tooling shared across every member.

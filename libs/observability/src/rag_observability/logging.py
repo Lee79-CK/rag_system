@@ -1,6 +1,6 @@
 """structlog JSON 로깅 설정 (§12.2).
 
-`team_id/channel_id/mattermost_post_id/user_id/operation/duration_ms/status`는
+`channel_id/post_id/job_id/user_id/operation/duration_ms/status`는
 contextvars로 자동 포함된다. Secret은 masking processor로 제거된다.
 """
 

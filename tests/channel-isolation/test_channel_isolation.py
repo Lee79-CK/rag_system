@@ -76,7 +76,7 @@ class _FakeStore:
     def seed(self, sk, role, content):
         self.conv.setdefault(sk, []).append((role, content))
 
-    def upsert_conversation(self, *, scope_key, team_id, channel_id, root_id, mode):
+    def upsert_conversation(self, *, scope_key, channel_id, root_id, mode):
         self.conv.setdefault(scope_key, [])
         return scope_key
 
@@ -87,7 +87,7 @@ class _FakeStore:
         self.conv.setdefault(conversation_id, []).append(("user", content))
         return "uid"
 
-    def add_assistant_message(self, conversation_id, content, *, latency_ms, citations):
+    def add_assistant_message(self, conversation_id, content, *, post_id, latency_ms, citations):
         self.conv.setdefault(conversation_id, []).append(("assistant", content))
         return "aid"
 
@@ -97,27 +97,37 @@ class _FakeStore:
     def update_job_status(self, job_id, status, *, error=None, mark_started=False):
         pass
 
-    def record_delivery(self, job_id, channel_id, *, attempt, status, http_status):
+
+class _NullSink:
+    async def push(self, delta):
+        pass
+
+    async def flush(self):
         pass
 
 
 class _FakeDelivery:
+    """전달 계층 대체 — 격리 검증 대상은 LLM payload 이므로 결과만 기록한다."""
+
+    def __init__(self):
+        self.answers: list[tuple[str, str]] = []  # (channel_id, answer)
+
+    def open_stream(self, request):
+        return _NullSink()
+
     async def deliver_answer(self, *, binding, request, completion, chat_job_id):
-        from mattermost_adapter.delivery import DeliveryResult
+        self.answers.append((request.channel_id, completion.answer))
+        return True
 
-        return DeliveryResult(ok=True, attempts=1, http_status=200, posted_parts=1)
-
-    async def deliver_error(self, *, binding, request, text):
-        from mattermost_adapter.delivery import DeliveryResult
-
-        return DeliveryResult(ok=True, attempts=1, http_status=200, posted_parts=1)
+    async def deliver_error(self, *, request, text=""):
+        return True
 
 
 class _FixedBindingReader:
     def __init__(self, binding):
         self._b = binding
 
-    def get_binding(self, team_id, channel_id):
+    def get_binding(self, channel_id):
         return self._b
 
 

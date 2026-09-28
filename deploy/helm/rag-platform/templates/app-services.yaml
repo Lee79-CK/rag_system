@@ -77,7 +77,9 @@ spec:
           resources:
             {{- toYaml $svc.resources | nindent 12 }}
           {{- if gt (int $svc.port) 0 }}
+          {{- /* probePath 지정 시(예: Next.js chat-web) live/ready/startup 모두 해당 경로 사용 */}}
           livenessProbe:
+<<<<<<< HEAD
             httpGet: { path: {{ $svc.livenessPath | default "/health/live" }}, port: {{ $svc.port }} }
             periodSeconds: 10
           readinessProbe:
@@ -86,11 +88,27 @@ spec:
           startupProbe:
             httpGet: { path: {{ $svc.startupPath | default "/health/startup" }}, port: {{ $svc.port }} }
             failureThreshold: {{ $svc.startupFailureThreshold | default 60 }}
+=======
+            httpGet: { path: {{ $svc.probePath | default "/health/live" }}, port: {{ $svc.port }} }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: {{ $svc.probePath | default "/health/ready" }}, port: {{ $svc.port }} }
+            periodSeconds: 10
+          startupProbe:
+            httpGet: { path: {{ $svc.probePath | default "/health/startup" }}, port: {{ $svc.port }} }
+            failureThreshold: 60
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
             periodSeconds: 10
           {{- end }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if $svc.secretMount }}
+            # Secret 파일 마운트 (*_FILE env 가 가리키는 경로) — 값은 env/로그에 노출되지 않는다 (§3.2)
+            - name: secret-files
+              mountPath: {{ $svc.secretMount.mountPath | default "/var/run/secrets/rag" }}
+              readOnly: true
+            {{- end }}
             {{- if $svc.modelVolume }}
             - name: models
               mountPath: /models
@@ -116,6 +134,12 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if $svc.secretMount }}
+        - name: secret-files
+          secret:
+            secretName: {{ $svc.secretMount.secretName }}
+            defaultMode: 0400
+        {{- end }}
         {{- if $svc.modelVolume }}
         - name: models
           {{- if $.Values.modelStorage.hostPath }}

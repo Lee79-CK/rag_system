@@ -155,7 +155,7 @@ def message_feedback(
             "satisfaction_ratio": _ratio(up, down),
             "entries": [
                 {
-                    "user_id": r.mattermost_user_id,
+                    "user_id": r.user_id,
                     "value": r.value,
                     "channel_id": r.channel_id,
                     "created_at": r.created_at.isoformat() if r.created_at else None,

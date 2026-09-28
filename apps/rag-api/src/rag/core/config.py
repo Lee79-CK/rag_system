@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     reranker_api_url: str = "http://localhost:8005"
     vllm_api_url: str = "http://localhost:8010/v1"
     llm_served_model_name: str = "internal-rag-llm"
-    bridge_internal_url: str = "http://localhost:8001"
 
     # Retrieval / generation
     vector_top_k: int = 30
@@ -47,9 +46,6 @@ class Settings(BaseSettings):
     # Feedback (v1.1)
     feedback_enabled: bool = True
     feedback_signing_key_file: str = "./secrets/rag/feedback-signing-key"
-
-    # Incoming Webhook secret files (secret_ref → 파일) — §7.1.2
-    mattermost_secret_dir: str = "./secrets/mattermost"
 
     # Timeouts
     http_connect_timeout: float = 3.0

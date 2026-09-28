@@ -1,77 +1,91 @@
-"""Channel + Binding 관리 API — docs/TDD.md §7.5 (§9.6).
+"""Web Chat 채널 · Binding · 멤버 관리 API — docs/TDD.md §7.5 (§9.6).
 
-HARD RULE (FR-OPS-010, NFR-SEC-006): secret 값(Incoming Webhook URL)은 절대 저장/반환하지 않는다.
-DB·응답에는 `secret_ref`(K8s Secret 이름)와 `secret_updated_at`만 존재한다.
+채널은 chat-gateway 가 사용자에게 노출하는 대화 공간이며, Binding 은 해당 채널의
+RAG 응답 설정(모드/지식 범위/피드백)이다. 멤버십이 곧 Channel 격리 경계다.
 """
 
 from __future__ import annotations
 
+import re
 import uuid
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, Field
-from rag_schemas import IncomingWebhookMessage
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from admin.api.responses import api_error, envelope
 from admin.core.rbac import SYS_ADMIN, Principal, require_roles
-from admin.db.models import MattermostChannel, MattermostChannelBinding
+from admin.db.models import ChannelBindingRow, ChatChannel, ChatChannelMember, ChatUser
 from admin.db.session import get_db
 
-router = APIRouter(prefix="/api/v1/mattermost", tags=["channels"])
+router = APIRouter(prefix="/api/v1/chat", tags=["channels"])
+
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
 
 
 # ----- Request models (admin-only local contracts) -----
 class ChannelCreate(BaseModel):
-    team_id: str
-    channel_id: str
-    channel_name: str
-    team_domain: str | None = None
-    display_name: str | None = None
+    name: str = Field(..., description="URL slug (소문자/숫자/-/_)")
+    display_name: str = Field(..., min_length=1, max_length=200)
+    type: str = Field(default="public", pattern="^(public|private)$")
+    purpose: str | None = Field(default=None, max_length=500)
+
+    @field_validator("name")
+    @classmethod
+    def _slug(cls, v: str) -> str:
+        if not _SLUG.match(v):
+            raise ValueError("name must be a lowercase slug")
+        return v
+
+
+class ChannelUpdate(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    type: str | None = Field(default=None, pattern="^(public|private)$")
+    purpose: str | None = Field(default=None, max_length=500)
 
 
 class BindingCreate(BaseModel):
-    mode: str = "DEDICATED_CHANNEL"
-    trigger_word: str | None = None
+    mode: str = Field(default="DEDICATED_CHANNEL", pattern="^(DEDICATED_CHANNEL|TRIGGER_WORD)$")
+    trigger_word: str | None = Field(default=None, max_length=50)
     enabled: bool = False
     knowledge_scope_id: uuid.UUID | None = None
-    history_turns: int = 8
+    history_turns: int = Field(default=8, ge=0, le=50)
     mention_user: bool = True
     ack_message_enabled: bool = True
     feedback_enabled: bool = True
-    secret_ref: str = Field(..., description="K8s Secret 이름만. URL 저장 금지.")
 
 
 class BindingUpdate(BaseModel):
-    mode: str | None = None
+    mode: str | None = Field(default=None, pattern="^(DEDICATED_CHANNEL|TRIGGER_WORD)$")
     trigger_word: str | None = None
     enabled: bool | None = None
     knowledge_scope_id: uuid.UUID | None = None
-    history_turns: int | None = None
+    history_turns: int | None = Field(default=None, ge=0, le=50)
     mention_user: bool | None = None
     ack_message_enabled: bool | None = None
     feedback_enabled: bool | None = None
 
 
-class SecretUpdate(BaseModel):
-    secret_ref: str = Field(..., description="K8s Secret 이름. 값(URL)은 K8s Secret으로만 관리.")
+class MemberAdd(BaseModel):
+    user_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=500)
+    role: str = Field(default="member", pattern="^(member|channel_admin)$")
 
 
-# ----- Views (secret 값 노출 금지) -----
-def _channel_view(c: MattermostChannel) -> dict:
+# ----- Views -----
+def _channel_view(c: ChatChannel) -> dict:
     return {
         "id": str(c.id),
-        "team_id": c.team_id,
-        "team_domain": c.team_domain,
-        "channel_id": c.channel_id,
-        "channel_name": c.channel_name,
+        "name": c.name,
         "display_name": c.display_name,
+        "type": c.type,
+        "purpose": c.purpose,
+        "archived": c.archived_at is not None,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
     }
 
 
-def _binding_view(b: MattermostChannelBinding) -> dict:
+def _binding_view(b: ChannelBindingRow) -> dict:
     return {
         "id": str(b.id),
         "channel_ref": str(b.channel_ref),
@@ -83,10 +97,33 @@ def _binding_view(b: MattermostChannelBinding) -> dict:
         "mention_user": b.mention_user,
         "ack_message_enabled": b.ack_message_enabled,
         "feedback_enabled": b.feedback_enabled,
-        # secret_ref는 이름일 뿐 값이 아니다. 값(URL)은 어떤 응답에도 포함하지 않는다.
-        "secret_ref": b.secret_ref,
-        "secret_updated_at": b.secret_updated_at.isoformat() if b.secret_updated_at else None,
     }
+
+
+def _member_view(m: ChatChannelMember) -> dict:
+    return {
+        "user_id": str(m.user_id),
+        "email": m.user.email,
+        "display_name": m.user.display_name,
+        "role": m.role,
+        "joined_at": m.joined_at.isoformat() if m.joined_at else None,
+    }
+
+
+def _get_channel(db: Session, channel_id: uuid.UUID) -> ChatChannel:
+    channel = db.get(ChatChannel, channel_id)
+    if channel is None:
+        raise api_error("NOT_FOUND", "Channel을 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
+    return channel
+
+
+def _validate_binding(mode: str | None, trigger_word: str | None) -> None:
+    if mode == "TRIGGER_WORD" and not (trigger_word or "").strip():
+        raise api_error(
+            "TRIGGER_WORD_REQUIRED",
+            "TRIGGER_WORD 모드는 trigger_word 가 필요합니다.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
 
 
 # ----- Channel CRUD -----
@@ -96,15 +133,12 @@ def create_channel(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN)),
 ) -> dict:
-    dup = db.execute(
-        select(MattermostChannel).where(
-            MattermostChannel.team_id == body.team_id,
-            MattermostChannel.channel_id == body.channel_id,
-        )
-    ).scalar_one_or_none()
+    dup = db.execute(select(ChatChannel).where(ChatChannel.name == body.name)).scalar_one_or_none()
     if dup is not None:
-        raise api_error("DUPLICATE_CHANNEL", "이미 등록된 Channel입니다.", status.HTTP_409_CONFLICT)
-    channel = MattermostChannel(**body.model_dump())
+        raise api_error(
+            "DUPLICATE_CHANNEL", "이미 사용 중인 채널 이름입니다.", status.HTTP_409_CONFLICT
+        )
+    channel = ChatChannel(**body.model_dump())
     db.add(channel)
     db.commit()
     return envelope(_channel_view(channel))
@@ -115,7 +149,7 @@ def list_channels(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN)),
 ) -> dict:
-    rows = db.execute(select(MattermostChannel)).scalars().all()
+    rows = db.execute(select(ChatChannel).order_by(ChatChannel.name)).scalars().all()
     return envelope([_channel_view(c) for c in rows], count=len(rows))
 
 
@@ -125,19 +159,38 @@ def get_channel(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN)),
 ) -> dict:
-    channel = db.get(MattermostChannel, channel_id)
-    if channel is None:
-        raise api_error("NOT_FOUND", "Channel을 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
+    channel = _get_channel(db, channel_id)
     bindings = (
-        db.execute(
-            select(MattermostChannelBinding).where(
-                MattermostChannelBinding.channel_ref == channel_id
-            )
-        )
+        db.execute(select(ChannelBindingRow).where(ChannelBindingRow.channel_ref == channel_id))
         .scalars()
         .all()
     )
-    return envelope({**_channel_view(channel), "bindings": [_binding_view(b) for b in bindings]})
+    members = (
+        db.execute(select(ChatChannelMember).where(ChatChannelMember.channel_id == channel_id))
+        .scalars()
+        .all()
+    )
+    return envelope(
+        {
+            **_channel_view(channel),
+            "bindings": [_binding_view(b) for b in bindings],
+            "member_count": len(members),
+        }
+    )
+
+
+@router.put("/channels/{channel_id}")
+def update_channel(
+    channel_id: uuid.UUID,
+    body: ChannelUpdate,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles(SYS_ADMIN)),
+) -> dict:
+    channel = _get_channel(db, channel_id)
+    for key, value in body.model_dump(exclude_unset=True).items():
+        setattr(channel, key, value)
+    db.commit()
+    return envelope(_channel_view(channel))
 
 
 # ----- Binding CRUD -----
@@ -148,10 +201,9 @@ def create_binding(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN)),
 ) -> dict:
-    channel = db.get(MattermostChannel, channel_id)
-    if channel is None:
-        raise api_error("NOT_FOUND", "Channel을 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
-    binding = MattermostChannelBinding(channel_ref=channel_id, **body.model_dump())
+    _get_channel(db, channel_id)
+    _validate_binding(body.mode, body.trigger_word)
+    binding = ChannelBindingRow(channel_ref=channel_id, **body.model_dump())
     db.add(binding)
     db.commit()
     return envelope(_binding_view(binding))
@@ -164,10 +216,14 @@ def update_binding(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN)),
 ) -> dict:
-    binding = db.get(MattermostChannelBinding, binding_id)
+    binding = db.get(ChannelBindingRow, binding_id)
     if binding is None:
         raise api_error("NOT_FOUND", "Binding을 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
-    for key, value in body.model_dump(exclude_unset=True).items():
+    patch = body.model_dump(exclude_unset=True)
+    _validate_binding(
+        patch.get("mode", binding.mode), patch.get("trigger_word", binding.trigger_word)
+    )
+    for key, value in patch.items():
         setattr(binding, key, value)
     db.commit()
     return envelope(_binding_view(binding))
@@ -192,7 +248,7 @@ def disable_binding(
 
 
 def _set_enabled(db: Session, binding_id: uuid.UUID, enabled: bool) -> dict:
-    binding = db.get(MattermostChannelBinding, binding_id)
+    binding = db.get(ChannelBindingRow, binding_id)
     if binding is None:
         raise api_error("NOT_FOUND", "Binding을 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
     binding.enabled = enabled
@@ -200,79 +256,63 @@ def _set_enabled(db: Session, binding_id: uuid.UUID, enabled: bool) -> dict:
     return envelope(_binding_view(binding))
 
 
-# ----- Secret 등록 (값 반환 절대 금지, FR-OPS-010) -----
-@router.post("/channels/{channel_id}/secret")
-def update_secret(
-    channel_id: uuid.UUID,
-    body: SecretUpdate,
-    db: Session = Depends(get_db),
-    principal: Principal = Depends(require_roles(SYS_ADMIN)),
-) -> dict:
-    """Channel의 binding에 secret_ref를 등록/갱신한다.
-
-    실제 값(Incoming Webhook URL)은 K8s Secret으로만 관리하며 DB에 저장하지 않는다.
-    응답에는 secret_ref와 secret_updated_at만 포함한다 (값 반환 금지).
-    """
-    binding = _binding_for_channel(db, channel_id)
-    binding.secret_ref = body.secret_ref
-    binding.secret_updated_at = datetime.now(UTC)
-    db.commit()
-    return envelope(
-        {
-            "channel_id": str(channel_id),
-            "binding_id": str(binding.id),
-            "secret_ref": binding.secret_ref,
-            "secret_updated_at": binding.secret_updated_at.isoformat(),
-        }
-    )
-
-
-# ----- 연결 테스트 (FR-MM-017) -----
-@router.post("/channels/{channel_id}/test")
-async def test_channel(
+# ----- Members (Channel 격리 경계) -----
+@router.get("/channels/{channel_id}/members")
+def list_members(
     channel_id: uuid.UUID,
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN)),
 ) -> dict:
-    """Incoming Webhook으로 테스트 메시지를 게시하고 결과를 반환한다 (§7.5).
-
-    실제 게시는 mattermost_adapter.deliver()로 수행 — 폐쇄망/테스트에서는 mock/stub 가능.
-    URL은 secret_ref → K8s Secret에서 로딩하며 로그/응답에 남기지 않는다.
-    """
-    binding = _binding_for_channel(db, channel_id)
-    result = await _run_connection_test(binding)
-    return envelope(
-        {
-            "channel_id": str(channel_id),
-            "secret_ref": binding.secret_ref,
-            "ok": result["ok"],
-            "detail": result.get("detail"),
-        }
+    _get_channel(db, channel_id)
+    rows = (
+        db.execute(select(ChatChannelMember).where(ChatChannelMember.channel_id == channel_id))
+        .scalars()
+        .all()
     )
+    return envelope([_member_view(m) for m in rows], count=len(rows))
 
 
-async def _run_connection_test(binding: MattermostChannelBinding) -> dict:
-    """연결 테스트 stub. 폐쇄망 전제상 외부 호출 없이 구성 유효성만 확인한다.
-
-    운영에서는 secret_ref로 URL 로딩 후 mattermost_adapter.deliver(test_message)를 호출한다.
-    """
-    _ = IncomingWebhookMessage(channel="test", text="RAG 연결 테스트 메시지입니다.")
-    if not binding.secret_ref:
-        return {"ok": False, "detail": "secret_ref 미등록"}
-    return {"ok": True, "detail": "구성 확인 완료 (stub)"}
-
-
-def _binding_for_channel(db: Session, channel_id: uuid.UUID) -> MattermostChannelBinding:
-    channel = db.get(MattermostChannel, channel_id)
-    if channel is None:
-        raise api_error("NOT_FOUND", "Channel을 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
-    binding = db.execute(
-        select(MattermostChannelBinding).where(MattermostChannelBinding.channel_ref == channel_id)
-    ).scalar_one_or_none()
-    if binding is None:
+@router.post("/channels/{channel_id}/members", status_code=status.HTTP_201_CREATED)
+def add_members(
+    channel_id: uuid.UUID,
+    body: MemberAdd,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles(SYS_ADMIN)),
+) -> dict:
+    _get_channel(db, channel_id)
+    users = db.execute(select(ChatUser).where(ChatUser.id.in_(body.user_ids))).scalars().all()
+    found = {u.id for u in users if not u.is_bot}
+    missing = [str(u) for u in body.user_ids if u not in found]
+    if missing:
         raise api_error(
-            "BINDING_NOT_FOUND",
-            "해당 Channel에 Binding이 없습니다. 먼저 Binding을 생성하세요.",
-            status.HTTP_409_CONFLICT,
+            "USER_NOT_FOUND",
+            "존재하지 않거나 추가할 수 없는 사용자입니다.",
+            status.HTTP_404_NOT_FOUND,
+            user_ids=missing,
         )
-    return binding
+    added = 0
+    for uid in found:
+        m = db.get(ChatChannelMember, (channel_id, uid))
+        if m is None:
+            db.add(ChatChannelMember(channel_id=channel_id, user_id=uid, role=body.role))
+            added += 1
+        else:
+            m.role = body.role
+    db.commit()
+    return envelope({"channel_id": str(channel_id), "added": added})
+
+
+@router.delete("/channels/{channel_id}/members/{user_id}", status_code=status.HTTP_200_OK)
+def remove_member(
+    channel_id: uuid.UUID,
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles(SYS_ADMIN)),
+) -> dict:
+    m = db.get(ChatChannelMember, (channel_id, user_id))
+    if m is None:
+        raise api_error("NOT_FOUND", "멤버가 아닙니다.", status.HTTP_404_NOT_FOUND)
+    db.delete(m)
+    db.commit()
+    # 연결 중인 socket 은 다음 ack/subscribe(재연결 포함) 시 room 에서 제거된다 (§7.1.2).
+    return envelope({"channel_id": str(channel_id), "user_id": str(user_id), "removed": True})

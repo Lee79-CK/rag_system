@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from chat_adapter import redis_emitter
 from sqlalchemy import create_engine
 
-from rag.adapters.delivery_adapter import DeliveryDeps, MattermostDelivery
 from rag.adapters.embedding_client import EmbeddingClient
 from rag.adapters.llm_client import LLMClient
-from rag.adapters.pg_repo import PgBindingReader, PgConversationStore
+from rag.adapters.pg_repo import PgBindingReader, PgChatPostStore, PgConversationStore
 from rag.adapters.qdrant_repo import QdrantRepo
 from rag.adapters.reranker_client import RerankerClient
+from rag.adapters.webchat_delivery import DeliveryDeps, WebChatDelivery
 from rag.core.config import Settings, get_settings
 from rag.domain.context import BudgetConfig
 from rag.domain.pipeline import PipelineConfig, RagPipeline
@@ -63,11 +64,11 @@ def build_pipeline(settings: Settings) -> RagPipeline:
 def build_worker_deps() -> WorkerDeps:
     settings = get_settings()
     engine = create_engine(settings.sqlalchemy_url, pool_pre_ping=True)
-    delivery = MattermostDelivery(
+    delivery = WebChatDelivery(
         DeliveryDeps(
-            secret_dir=settings.mattermost_secret_dir,
+            posts=PgChatPostStore(engine),
+            emitter=redis_emitter(settings.redis_url),
             signing_key=_read_key(settings.feedback_signing_key_file),
-            action_url=f"{settings.bridge_internal_url}/integrations/mattermost/v1/actions",
         )
     )
     return WorkerDeps(

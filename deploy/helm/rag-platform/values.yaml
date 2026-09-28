@@ -5,6 +5,7 @@ global:
   imageRegistry: harbor.internal
   imageTag: "0.1.0"          # --set global.imageTag=<git-sha> 로 override
   imagePullPolicy: IfNotPresent
+<<<<<<< HEAD
   # ---- 사전 생성 K8s Secret (§3.4, §14.2 existingSecret 패턴 — Helm 값에 secret 값 미포함) ----
   # rag-bridge-secrets: keys `outgoing-token`, `feedback-signing-key` → 파일로 마운트(secretMounts.bridgeSecretsPath)
   bridgeSecretName: rag-bridge-secrets
@@ -16,6 +17,11 @@ global:
     db: rag
     existingSecret: rag-postgresql-secret
   redisUrl: redis://redis.rag-data:6379/0
+=======
+  # 사전 생성 K8s Secret (§3.4, §14.2) — Helm 값에 secret 값 미포함
+  # rag-chat-secrets 키: jwt-secret, password-pepper, feedback-signing-key (파일 마운트)
+  chatSecretName: rag-chat-secrets
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
   offlineEnv:
     HF_HUB_OFFLINE: "1"
     TRANSFORMERS_OFFLINE: "1"
@@ -91,9 +97,25 @@ migration:
 # 플래그: dbEnv(POSTGRES_*) · redisEnv(REDIS_URL/RQ_REDIS_URL) · bridgeSecrets(토큰/서명키 파일)
 #        · incomingSecrets(Incoming Webhook URL 디렉터리) · modelVolume(/models RO) · documentVolume(문서 PVC RW)
 appServices:
-  mattermost-bridge:
+  chat-gateway:                             # Web Chat 백엔드 (REST + socket.io /ws) — TDD §7.1
+    namespace: rag-app
+    replicas: 2                             # socket.io Redis manager 로 replica 간 브로드캐스트 (sticky 불필요)
+    image: rag/chat-gateway
+    port: 8001
+    command: ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips=*"]
+    resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "4", memory: 8Gi } }
+    secretMount: { secretName: rag-chat-secrets, mountPath: /var/run/secrets/rag }
+    extraEnv:
+      - { name: JWT_SECRET_FILE, value: /var/run/secrets/rag/jwt-secret }
+      - { name: PASSWORD_PEPPER_FILE, value: /var/run/secrets/rag/password-pepper }
+      - { name: FEEDBACK_SIGNING_KEY_FILE, value: /var/run/secrets/rag/feedback-signing-key }
+      - { name: COOKIE_SECURE, value: "true" }
+      - { name: CHAT_CORS_ORIGINS, value: "" }   # 동일 출처(Ingress) 는 자동 허용
+    pdbMinAvailable: 1
+  chat-web:                                 # Web Chat UI (aiops_chatbot 이식, Next.js standalone) — TDD §7.8
     namespace: rag-app
     replicas: 2
+<<<<<<< HEAD
     image: rag/mattermost-bridge
     port: 8001
     command: ["uvicorn", "bridge.main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips", "*"]
@@ -101,6 +123,17 @@ appServices:
     dbEnv: true
     redisEnv: true
     bridgeSecrets: true
+=======
+    image: rag/chat-web
+    port: 3000
+    command: ["node", "server.js"]
+    probePath: /health/live
+    resources: { requests: { cpu: "500m", memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
+    extraEnv:
+      - { name: HOSTNAME, value: "0.0.0.0" }
+      - { name: PORT, value: "3000" }
+      - { name: NEXT_TELEMETRY_DISABLED, value: "1" }
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
     pdbMinAvailable: 1
     extraEnv:
       - { name: BRIDGE_INTERNAL_URL, value: "http://mattermost-bridge.rag-app:8001" }
@@ -131,10 +164,16 @@ appServices:
     port: 0
     command: ["rq", "worker", "rag-chat"]  # Redis 주소는 RQ_REDIS_URL(redisEnv)
     resources: { requests: { cpu: "4", memory: 8Gi }, limits: { cpu: "6", memory: 12Gi } }
+<<<<<<< HEAD
     dbEnv: true
     redisEnv: true
     bridgeSecrets: true
     incomingSecrets: true
+=======
+    secretMount: { secretName: rag-chat-secrets, mountPath: /var/run/secrets/rag }
+    extraEnv:
+      - { name: FEEDBACK_SIGNING_KEY_FILE, value: /var/run/secrets/rag/feedback-signing-key }
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
     pdbMinAvailable: 1
     extraEnv: *ragApiEnv
   admin-api:
@@ -144,9 +183,15 @@ appServices:
     port: 8003
     command: ["uvicorn", "admin.main:app", "--host", "0.0.0.0", "--port", "8003", "--proxy-headers", "--forwarded-allow-ips", "*"]
     resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "3", memory: 6Gi } }
+<<<<<<< HEAD
     dbEnv: true
     documentVolume: true       # 업로드 원본 저장 (DOCUMENT_STORAGE_PATH)
     serviceAccountName: ""     # serviceAccounts.adminApi.create=true 면 "admin-api"
+=======
+    secretMount: { secretName: rag-chat-secrets, mountPath: /var/run/secrets/rag }
+    extraEnv:
+      - { name: PASSWORD_PEPPER_FILE, value: /var/run/secrets/rag/password-pepper }   # 채팅 사용자 임시 비밀번호 발급
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
     pdbMinAvailable: 1
     extraEnv:
       - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
@@ -177,6 +222,15 @@ appServices:
     pdbMinAvailable: 1
     extraEnv:
       - { name: RERANKER_MODEL_PATH, value: "/models/reranker/bge-reranker-v2-m3" }
+
+# ---- Ingress (선택) — chat host 는 chat-web + chat-gateway 동일 출처 필수 (§14.1) ----
+ingress:
+  enabled: false
+  className: nginx
+  chatHost: chat.rag.internal
+  adminHost: ""            # 지정 시 /api → admin-api Ingress 추가
+  tlsSecretName: ""        # 운영 필수: HTTPS 가 아니면 브라우저 WebCrypto(prehash) 사용 불가
+  annotations: {}
 
 # ---- vLLM (GPU) — ADR-009: GPU 1장 = Replica 1 ----
 vllm:
@@ -247,4 +301,11 @@ ingestion:
 
 monitoring:
   grafanaDashboards: true
+<<<<<<< HEAD
   namespace: monitoring   # ★ ConfigMap 이 이 NS 에 생성된다 — 미존재 시 helm install 실패
+=======
+
+# ---- NetworkPolicy — 브라우저 트래픽(chat-web/chat-gateway)을 허용할 Ingress Controller namespace ----
+networkPolicy:
+  ingressControllerNamespace: ingress-nginx   # 표준 ingress-nginx 설치
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

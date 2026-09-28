@@ -1,11 +1,18 @@
 # 로컬 2-Node RKE2 클러스터 테스트 가이드 — RAG Platform
 
+<<<<<<< HEAD
 > 문서 ID: GUIDE-LOCAL-K8S-TEST-001 (**v1.2 — 2026-09-10 코드 리뷰 반영**)
 > 기준: TDD-RAG-CHATBOT-POC-001 v1.2 + **현행 구현 기준** — 전 서비스 Python 3.12 (uv workspace), Helm chart `deploy/helm/rag-platform`
 > v1.2 변경 요지 (상세: `docs/code-review-2026-09-10.md` §6):
 > - v1.1 이 전제하던 **Containerfile · mock-mattermost · `samples/` · `scripts/sign_feedback.py` 가 리포에 추가**되어 §3/§5 절차가 실제로 실행된다.
 > - chart 가 **Secret 파일 마운트 · PostgreSQL 자격증명 · documents-pvc 마운트 · Ingress · Alembic hook · admin-api RBAC** 를 렌더한다 (v1.1 은 이 항목들이 없어 배포가 성립하지 않았다).
 > - 업로드 API 필드(`meta` 파트 없음), 색인 트리거(`INDEX_JOB_TRIGGER=k8s`), 평가 runner 실체(6문항·judge 없음), `make test-integration` 대상 등 사실과 다른 기술을 정정했다.
+=======
+> 문서 ID: GUIDE-LOCAL-K8S-TEST-001 (v2.0 — Web Chat 전환: Mattermost 제거 / v1.1 — P3 디스크 2개 구성 반영)
+> 기준: TDD-RAG-CHATBOT-POC-001 + **현행 구현 기준** — 전 백엔드 Python 3.12 (uv workspace), 사용자 UI `apps/chat-web`(Next.js standalone)
+> 변경(v2.0): 사용자 접점이 Mattermost 에서 **Web Chat(chat-web + chat-gateway)** 으로 바뀌었습니다. Mattermost 서버/Outgoing Webhook 설정, mock-mattermost, `rag-bridge-secrets` 는 더 이상 필요 없고, 대신 **`rag-chat-secrets` + Ingress(TLS)** 를 준비합니다. (Mattermost 는 v2.0 에서 제거)
+> 정정(v1.1): TDD v1.3 문서는 admin-api를 Java 21 Spring Boot로 기술하지만, **구현된 `apps/admin-api` 는 Python(FastAPI + SQLAlchemy + Alembic)** 입니다. 이 가이드는 구현을 따릅니다.
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 > 대상 환경:
 > - **Master(P3)**: Lenovo ThinkStation P3 Tower Gen 2 — Core Ultra 7 265 (x86_64), RAM 128GB, RTX A400 4GB, **NVMe 1TB(OS+RKE2+fast PVC) + HDD 4TB(bulk)**, Ubuntu 24.04
 > - **Worker(PGX)**: Lenovo ThinkStation PGX (NVIDIA DGX Spark OEM) — GB10 Grace Blackwell (**ARM64/aarch64**), 통합 메모리 128GB, SSD 4TB
@@ -17,11 +24,20 @@
 
 | 검증 항목 | 가능 여부 | 비고 |
 |---|---|---|
+<<<<<<< HEAD
 | Helm 배포 / NetworkPolicy / Ingress / Probe / Secret 마운트 등 K8s 매니페스트 전체 | ✅ | **PoC 배포와 동일 chart·동일 방식** — 이 환경의 최대 가치 |
 | RAG 파이프라인 전체 (E2E, Ingress 경유) | ✅ | 업로드 → K8s 색인 Job → 질문 → mock-mattermost 게시 → 피드백 |
 | **답변 품질 (Qwen3-32B 실물)** | ✅ | PGX 통합 메모리 128GB — 32B FP8/4bit 여유 구동 |
 | `make evaluate` 품질 평가 | ⚠️ 부분 | **현재 데이터셋 6문항**(`tests/evaluation/dataset/q001~q006`), 지표 4종(Recall@10 · Citation Precision · 무근거 안전응답 · 근거 응답률). **Faithfulness/LLM-judge 는 미구현** — 100문항·judge 는 작성 과제 |
 | Channel 격리 (CH-001~010) | ✅ | `make test-isolation` 은 **클러스터와 무관한 로컬 pytest**(in-memory fake). 실 Qdrant 검증(`test_ch_qdrant.py`)은 Docker(testcontainers) 필요 — P3 에서 실행 |
+=======
+| Helm 배포 / NetworkPolicy / Probe 등 K8s 매니페스트 전체 | ✅ | **PoC 배포와 동일 방식** — 이 환경의 최대 가치 |
+| RAG 파이프라인 전체 (E2E) | ✅ | Ingress 경유 — 브라우저 Web Chat (로그인 → 스트리밍 답변 → 피드백) |
+| Web Chat WebSocket(socket.io `/ws`) Ingress 경유 동작 | ✅ | ingress-nginx websocket + timeout annotation, TLS |
+| **답변 품질 평가 (Qwen3-32B)** | ✅ | PGX 통합 메모리 128GB — 32B FP8/4bit 여유 구동 |
+| `make evaluate` 100문항 | ✅ | LLM-judge 포함 |
+| Channel 격리 (CH-001~010) | ✅ | 클러스터 내 실행 |
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 | 성능 목표 수치 (p95 30s @ 동시 10~15) | ⚠️ 참고치 | GB10 메모리 대역폭(~273GB/s) 특성상 decode 속도는 운영 GPU(H100 등)와 다름. **동시 4~8 기준 경향 측정** |
 | GPU 2장 이중화 (vLLM ×2) | ❌ | GPU 노드 1대 — replica 1로 축소 |
 
@@ -30,7 +46,11 @@
 | 구분 | 배치 노드 | 이유 |
 |---|---|---|
 | vLLM (Qwen3-32B) | **PGX (arm64)** | GPU/통합 메모리. NVIDIA ARM64 컨테이너 사용 |
+<<<<<<< HEAD
 | 그 외 전부 (bridge, rag-api/worker, admin-api/web, embedding, reranker, mock-mattermost, qdrant, pg, redis, indexer Job) | **P3 (amd64)** | x86 단일 아키텍처로 이미지 빌드 단순화. Core Ultra 7 + 128GB로 충분 |
+=======
+| 그 외 전부 (chat-gateway, chat-web, rag, admin, embedding, reranker, qdrant, pg, redis, indexer) | **P3 (amd64)** | x86 단일 아키텍처로 이미지 빌드 단순화. Core Ultra 7 + 128GB로 충분 |
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 | P3의 RTX A400 4GB | **미사용** | LLM 부적합(4GB). GPU Operator 설치 대상에서 제외 |
 
 > 이 배치 전략 덕분에 **multi-arch 이미지 빌드가 불필요**합니다. 앱 이미지는 amd64만 빌드하고, vLLM은 NVIDIA 제공 arm64 이미지를 그대로 사용합니다. (추후 PGX의 Grace CPU를 embedding 등에 활용하려면 buildx multi-arch로 확장 — §9)
@@ -271,6 +291,7 @@ cd ~/work/rag-platform
 export TAG=$(git rev-parse --short HEAD)
 export REG=registry.local:5000
 
+<<<<<<< HEAD
 # 8종 빌드 + push (Makefile 변수 REG/TAG). 베이스 이미지(python:3.12-slim, ghcr.io/astral-sh/uv, node:20-alpine, nginx:1.27-alpine)
 # 는 개발망에서 pull 된다. 완전 폐쇄망이면 --build-arg PYTHON_IMAGE/UV_IMAGE/NODE_IMAGE/NGINX_IMAGE/UV_INDEX_URL 로 내부 미러를 지정한다.
 make build-images REG=$REG TAG=$TAG
@@ -278,6 +299,27 @@ make push-images  REG=$REG TAG=$TAG
 ```
 
 > **torch 휠 크기**: embedding/reranker 이미지는 torch(CPU) 포함 시 2~3GB 입니다. 두 이미지가 HDD 레지스트리와 P3 containerd 캐시(NVMe) 양쪽에 올라간다는 점을 §1.4.1 용량 계산에 반영하세요.
+=======
+# Python 서비스 6종 (amd64 — P3 로컬 빌드이므로 자동)
+# admin-api·chat-gateway 도 Python(FastAPI)이라 다른 서비스와 완전히 동일한 절차다 — 별도 JVM 빌드 단계 없음
+for app in chat-gateway rag-api admin-api embedding-api reranker-api parser-indexer; do
+  docker build -f apps/$app/Containerfile -t $REG/rag/$app:$TAG . && docker push $REG/rag/$app:$TAG
+done
+
+# chat-web (Next.js 15 — uv workspace 제외, npm). output: standalone → `node server.js` 단일 산출물
+make chat-web-build          # = cd apps/chat-web && npm run typecheck && npm run build
+#   산출물: apps/chat-web/.next/standalone/(server.js 포함) + .next/static (+ public 이 있으면 함께)
+#   NEXT_PUBLIC_WS_URL 은 비운 채로 빌드한다 (운영/랩 = Ingress same-origin). NEXT_PUBLIC_WORKSPACE_SLUG 기본 rag
+docker build -f apps/chat-web/Containerfile -t $REG/rag/chat-web:$TAG apps/chat-web && \
+  docker push $REG/rag/chat-web:$TAG
+
+# admin-web (React/Vite — uv workspace 제외). ※ chart 의 appServices 에는 admin-web 이 없다 — §7.1 참고
+docker build -f apps/admin-web/Containerfile -t $REG/rag/admin-web:$TAG apps/admin-web && \
+  docker push $REG/rag/admin-web:$TAG
+```
+
+> **선행 조건 — Containerfile이 아직 리포에 없습니다.** `apps/*/Containerfile` 은 현재 미작성 상태라 위 `docker build` 는 그대로는 실패합니다. Python 서비스의 빌드 컨텍스트는 monorepo 루트(uv workspace 해석 때문)이며, 각 서비스는 `uv sync --frozen --package <pkg>` 후 해당 entrypoint(§4 values의 `command`)를 실행하는 형태가 됩니다. `rag-api` 이미지는 rag-worker와 공유합니다(DEC-017 — entrypoint만 다름). **chat-web** 은 `.next/standalone` + `.next/static`(+`public`)을 **Node 22 런타임 이미지**에 복사하고 `node server.js`(:3000, `HOSTNAME=0.0.0.0` — values 에 이미 지정)로 실행하는 형태입니다. 이미지 안에서 `npm install` 을 하지 않으므로 폐쇄망에서도 재현됩니다.
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 vLLM 은 빌드하지 않고 **NVIDIA 제공 arm64 이미지**를 미러링합니다:
 
@@ -299,7 +341,21 @@ done
 
 ## 4. 배포 (Helm, values-lab.yaml)
 
+<<<<<<< HEAD
 `deploy/helm/rag-platform/values-lab.yaml` 은 `values.yaml`(기본) → `values-poc.yaml`(운영 override) 위에 겹쳐 쓰는 **랩 override** 입니다. 운영과 달라지는 지점은 파일 주석에 근거를 남겼습니다.
+=======
+**`deploy/helm/rag-platform/values-lab.yaml` 가 리포지토리에 포함되어 있습니다.** `values-poc.yaml` 위에 겹쳐 쓰는 override 전용 파일이며, 단독으로는 사용하지 않습니다.
+
+```bash
+helm upgrade --install rag-platform deploy/helm/rag-platform \
+  -f deploy/helm/rag-platform/values-poc.yaml \
+  -f deploy/helm/rag-platform/values-lab.yaml \
+  --set global.imageTag=$TAG
+#   Web Chat 을 브라우저로 쓰려면 Ingress/TLS 플래그를 더한다 — 전체 명령은 §4.1
+```
+
+담고 있는 내용 — 운영(PoC)과 달라지는 지점은 전부 파일 주석에 근거를 남겼습니다.
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 | 항목 | 운영(values-poc) | 랩(values-lab) | 이유 |
 |---|---|---|---|
@@ -309,6 +365,7 @@ done
 | vLLM replica / 배치 | `[llm-0, llm-1]` | `[llm-0]` + `nodeSelector tier=llm` + `dedicated=llm` toleration | GPU 노드 1대, 이기종 배치 |
 | `--max-num-seqs` | 16 | 8 | GB10 대역폭 |
 | 모델 볼륨 | `models-pvc` | **hostPath** (`/data/bulk/models`, vLLM은 `/models`) | GPU 노드와 앱 노드가 달라 단일 PVC 공유 불가 |
+<<<<<<< HEAD
 | 데이터 계층 | qdrant 500Gi / pg 200Gi / redis 20Gi | 50 / 20 / 10Gi + `local-fast` | NVMe 1TB 공유 (§1.4.1) |
 | `documents-pvc` | 1Ti (default SC=NFS) | 500Gi + `local-bulk` | HDD |
 | Ingress Controller NS | `ingress-nginx` | `kube-system` + podSelector `rke2-ingress-nginx` | RKE2 내장 컨트롤러 위치 |
@@ -316,6 +373,12 @@ done
 | 색인 트리거 | `INDEX_JOB_TRIGGER=none` | `k8s` + ServiceAccount/RBAC + apiserver egress | 업로드 → Job 자동 생성 검증 |
 | Grafana 대시보드 ConfigMap | on (`monitoring` NS) | **off** | kube-prometheus-stack 미설치 전제 (§9) |
 | admin-web / mock-mattermost | 미포함 | appServices 로 추가 | Ingress `/`, E2E 게시 확인 |
+=======
+| 데이터 계층 | qdrant 500Gi / pg 200Gi | 50 / 20 / 10Gi + `local-fast` | NVMe 1TB 공유 (§1.4.1) |
+| 서비스 URL | (미지정 = localhost) | `extraEnv` 로 in-cluster DNS 주입 | chart 기본값이 localhost |
+| chat-gateway `COOKIE_SECURE` | `true` | `false` | 랩은 HTTP 접근 가능성을 남김 — TLS 로 접속한다면 `true` 권장 (§4.3) |
+| Ingress | `ingress.enabled` 기본 `false` | `--set ingress.enabled=true ...` 로 켬 | §4.3 |
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 chart 가 **코드가 기대하는 경로/키를 책임지고 채우는** 항목(v1.2 에서 추가됨 — 사용자는 Secret 만 만들면 됩니다):
 
@@ -339,6 +402,7 @@ for ns in rag-app rag-ai rag-data rag-ingestion; do
   kubectl label ns $ns rag-platform=true --overwrite
 done
 
+<<<<<<< HEAD
 # 2) 로컬 secret 파일 (노트북 가이드 §3 와 동일 규약 — sign_feedback.py 가 같은 파일을 읽는다)
 mkdir -p secrets/mattermost secrets/rag
 echo -n "lab-outgoing-token" > secrets/mattermost/outgoing-token
@@ -361,6 +425,27 @@ kubectl -n rag-app create secret generic mattermost-incoming-rag-cloud-ops \
   --from-literal=url='http://mock-mattermost.rag-app:9099/hooks/cloud-ops'
 kubectl -n rag-app create secret generic mattermost-incoming-rag-hr \
   --from-literal=url='http://mock-mattermost.rag-app:9099/hooks/hr'
+=======
+# Web Chat Secret 3종 — 파일로 만들어 두고(§4.2 seed-users 가 같은 pepper 파일을 다시 쓴다) Secret 으로 등록
+mkdir -p secrets/rag
+openssl rand -hex 32 > secrets/rag/jwt-secret
+openssl rand -hex 32 > secrets/rag/password-pepper
+openssl rand -hex 32 > secrets/rag/feedback-signing-key
+chmod 600 secrets/rag/*
+
+kubectl create secret generic rag-chat-secrets -n rag-app \
+  --from-file=jwt-secret=secrets/rag/jwt-secret \
+  --from-file=password-pepper=secrets/rag/password-pepper \
+  --from-file=feedback-signing-key=secrets/rag/feedback-signing-key
+#   chart 는 이 Secret 을 chat-gateway·rag-worker·admin-api 에 /var/run/secrets/rag 로 파일 마운트(0400)만 한다
+#   (global.chatSecretName: rag-chat-secrets, appServices.<svc>.secretMount). 값은 Helm values 에 넣지 않는다
+
+# (TLS — §4.3) chat host 용 인증서 Secret. 사내 CA 발급본이 있으면 그것을, 없으면 랩용 자체 서명
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout secrets/chat.key -out secrets/chat.crt \
+  -subj "/CN=chat.rag.lab.local" -addext "subjectAltName=DNS:chat.rag.lab.local"
+kubectl -n rag-app create secret tls rag-chat-tls --cert=secrets/chat.crt --key=secrets/chat.key
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 kubectl get secret -A | grep -E "rag-bridge|rag-postgresql|mattermost-incoming"   # 6개
 ```
@@ -379,17 +464,34 @@ helm upgrade --install rag-platform deploy/helm/rag-platform \
   -f deploy/helm/rag-platform/values-poc.yaml \
   -f deploy/helm/rag-platform/values-lab.yaml \
   --set global.imageTag=$TAG \
+<<<<<<< HEAD
   --set "networkPolicy.apiServer.cidrs={${P3_IP}/32}"   # admin-api → kube-apiserver(6443) egress. values-lab 의 예시 IP 를 실제 값으로
 # `helm dependency update` 는 필요 없다 — Chart.yaml 에 dependencies 가 없다(데이터 계층도 이 chart 의 StatefulSet)
+=======
+  --set ingress.enabled=true \
+  --set ingress.chatHost=chat.rag.lab.local \
+  --set ingress.adminHost=admin.rag.lab.local \
+  --set ingress.tlsSecretName=rag-chat-tls
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 # 상태 확인 — vLLM 은 32B 로딩에 최대 10분(startupProbe 60×10s), embedding/reranker 는 HDD 로딩 최대 15분(90×10s)
 kubectl get pods -A -l app.kubernetes.io/part-of=rag-platform -o wide
 kubectl -n rag-ai logs -f deploy/vllm-llm-0 | grep -i "loading\|ready\|error"
 ```
 
+<<<<<<< HEAD
 `-o wide` 로 **배치 검증**: vLLM 만 pgx, 나머지 전부 p3 에 스케줄되었는지 확인합니다. 마이그레이션 hook Job 은 `helm upgrade` 가 끝날 때 완료되어 있어야 하며(실패 시 helm 자체가 실패), 성공하면 `hook-delete-policy` 로 삭제됩니다.
 
 ### 4.3 배포 후 검증 (필수 8종)
+=======
+`-o wide`로 **배치 검증**: vLLM만 pgx, 나머지 전부(chat-gateway·chat-web 포함) p3에 스케줄되었는지 확인합니다. `rag-chat-secrets` 가 없으면 chat-gateway·rag-worker·admin-api Pod 가 `ContainerCreating`(Secret volume mount 실패)에 머뭅니다.
+
+### 4.2 DB Migration / Seed / Qdrant 초기화
+
+스키마 소유자는 **admin-api의 Alembic** 입니다 (`apps/admin-api/src/admin/db/migrations`, 리비전 `0001_initial` → `0002_feedback_enabled` → `0003_webchat`).
+
+> ⚠️ **자동 실행되지 않습니다.** `admin/main.py` 에는 기동 시 마이그레이션 훅이 없습니다 — Pod가 Running이어도 테이블은 비어 있을 수 있습니다. 아래를 **명시적으로 1회** 실행하세요. (반복 배포를 자동화하려면 Helm `pre-install/pre-upgrade` hook Job으로 감싸는 것이 다음 과제입니다.)
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 ```bash
 # ① 마이그레이션 — hook Job 이 지웠으므로 admin-api Pod 에서 리비전 확인 (Containerfile WORKDIR=/app)
@@ -397,6 +499,7 @@ kubectl -n rag-app exec deploy/admin-api -- \
   alembic -c /app/apps/admin-api/src/admin/db/migrations/alembic.ini current
 # → 0002_feedback_enabled (head)
 
+<<<<<<< HEAD
 # ② Secret 파일이 실제로 마운트되었는지 (v1.1 배포의 최대 함정 — 없으면 모든 질문이 401)
 kubectl -n rag-app exec deploy/mattermost-bridge -- ls -l /var/run/secrets/rag
 kubectl -n rag-app exec deploy/rag-worker -- ls -l /var/run/secrets/mattermost
@@ -432,6 +535,27 @@ df -h / /data/fast /data/bulk    # NVMe 사용률 70% 미만
 ### 4.4 Seed / Qdrant 초기화
 
 seed(`scripts/seed_dev.sql`) 는 관리자 2명(`cklee`=SYS_ADMIN, `docadmin`=DOC_ADMIN), 채널 2개(`channel-001` rag-cloud-ops 전용 / `channel-002` rag-hr `!rag` 트리거), 지식범위, binding, 문서 메타 1건을 넣습니다.
+=======
+# 적용 결과 확인
+kubectl -n rag-app exec deploy/admin-api -- \
+  alembic -c src/admin/db/migrations/alembic.ini current
+# 0003_webchat (head) 가 나와야 정상
+
+# 2) Seed + 채팅 사용자 + Qdrant collection (port-forward 경유, 로컬 make 사용)
+kubectl -n rag-data port-forward svc/postgresql 5432:5432 &
+kubectl -n rag-data port-forward svc/qdrant 6333:6333 &
+make seed                                   # 채널 rag-cloud-ops / rag-hr + Binding + 지식 범위 + 관리자
+# ★ 클러스터 Secret 과 "같은" pepper 파일로 해시해야 gateway 로그인이 된다 (§4.1 에서 만든 파일)
+PASSWORD_PEPPER_FILE=./secrets/rag/password-pepper make seed-users   # hong(두 채널, admin) / kim(rag-hr)
+make qdrant-init
+```
+
+> 데모 비밀번호 `Rag!Assistant2026` 은 로컬/랩 전용입니다. 랩을 여러 사람이 쓰면 `CHAT_DEMO_PASSWORD=... make seed-users` 로 바꾸거나, admin-web **채팅 사용자** 메뉴의 임시 비밀번호 발급을 사용하세요.
+>
+> **v1.x(Mattermost) 데이터가 있던 DB 를 `0003_webchat` 으로 올린 경우**: 문서 ACL 의 채널 참조가 `chat_channels.id` 로 재매핑되므로 **전 문서 재색인이 필요**합니다 (Qdrant `allowed_channel_ids` 갱신). 새로 구축한 랩이면 해당 없음.
+
+`alembic.ini` 경로는 이미지의 WORKDIR 기준 상대 경로입니다 — Containerfile 작성 시 확정되므로, 컨테이너에서 한 번 `find / -name alembic.ini` 로 확인해 두면 이후가 편합니다. Pod 내 실행이 막히면(readOnlyRootFilesystem 등) port-forward 상태에서 로컬로 대체할 수 있습니다:
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 ```bash
 # PostgreSQL Pod 안에서 psql 로 적용 (호스트에 psql 불필요, NetworkPolicy 무관)
@@ -446,12 +570,47 @@ kubectl -n rag-ingestion run qdrant-init --rm -i --restart=Never \
   --command -- python -m ingestion.tools.qdrant_init
 ```
 
+<<<<<<< HEAD
 > `make seed`/`make qdrant-init` 을 **port-forward 로 로컬에서** 실행하는 방법도 있지만, default-deny NetworkPolicy 환경에서 port-forward 트래픽은 CNI 구현에 따라 차단될 수 있어 위처럼 클러스터 안에서 실행하는 쪽이 확실합니다. seed 의 문서 1건(`장애대응매뉴얼`)은 **파일 실체가 없는 메타데이터**이므로 색인 대상이 아닙니다 — 실제 문서는 §5 에서 업로드합니다.
+=======
+### 4.3 Ingress (RKE2 내장 ingress-nginx) + TLS
+
+chart 의 `templates/ingress.yaml` 은 `ingress.enabled=true` 일 때만 렌더됩니다 (§4.1 helm 명령의 `--set ingress.*`).
+
+| Ingress | host | 경로 → 백엔드 |
+|---|---|---|
+| `rag-chat` | `ingress.chatHost` (예: `chat.rag.lab.local`) | `/api/v1`, `/ws` → `chat-gateway:8001` · `/` → `chat-web:3000` |
+| `rag-admin` (`ingress.adminHost` 지정 시) | `admin.rag.lab.local` | `/api` → `admin-api:8003` |
+
+```bash
+kubectl -n rag-app get ingress
+# rag-chat    chat.rag.lab.local    (TLS: rag-chat-tls)
+# rag-admin   admin.rag.lab.local
+echo "192.168.x.10 chat.rag.lab.local admin.rag.lab.local" | sudo tee -a /etc/hosts   # 접속 PC에도 등록
+```
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
+
+- **same-origin 필수**: chat-web 과 chat-gateway 가 같은 host 로 묶여야 refresh 쿠키(`rag_rt`, SameSite=Strict)와 WS Origin 검사(same-origin 자동 허용, `CHAT_CORS_ORIGINS` 는 비움)가 동작합니다. chat-web 이미지를 `NEXT_PUBLIC_WS_URL` 없이 빌드하는 이유입니다.
+- **HTTPS 필수(실질)**: 로그인 prehash 는 브라우저 WebCrypto 를 쓰며 **HTTPS 또는 localhost 에서만** 동작합니다. `http://chat.rag.lab.local` 로는 로그인할 수 없으므로 `ingress.tlsSecretName` 을 지정하고, 자체 서명 인증서라면 **접속 PC 에 `secrets/chat.crt` 를 신뢰 인증서로 등록**하세요. TLS 로만 접속한다면 values-lab 의 chat-gateway `COOKIE_SECURE` 를 `"true"` 로 바꾸는 것을 권장합니다.
+- **WebSocket 타임아웃**: 템플릿이 `nginx.ingress.kubernetes.io/proxy-read-timeout`/`proxy-send-timeout: "3600"` 을 넣습니다(nginx 기본 60s 면 유휴 WS 가 1분마다 끊김). Upgrade 헤더는 ingress-nginx 가 자동 처리합니다. 추가 annotation 은 `ingress.annotations` 로.
+- **NetworkPolicy**: `allow-ingress-to-chat` 은 `networkPolicy.ingressControllerNamespace` 의 Ingress Controller → chat-gateway:8001 / chat-web:3000 만 허용합니다. RKE2 번들 ingress-nginx 는 **`kube-system`** 에서 돌므로 `values-lab.yaml` 은 `kube-system` 으로 설정되어 있습니다(기본 values 는 `ingress-nginx`). 불일치하면 502/504 — `kubectl get pods -A | grep ingress-nginx` 로 확인 후 `--set networkPolicy.ingressControllerNamespace=<ns>`.
+- **admin-web**: chart 에 admin-web 배포 정의가 없고 `rag-admin` Ingress 는 `/api` 만 라우팅합니다. 랩에서는 admin-web 을 P3/접속 PC 에서 dev 서버로 띄우고(`vite.config.ts` 의 `/api` 프록시 target 을 `http://admin.rag.lab.local` 로 조정하거나 `kubectl -n rag-app port-forward svc/admin-api 8003:8003`) 사용하는 것이 가장 간단합니다.
+
+스모크:
+
+```bash
+curl -s --cacert secrets/chat.crt https://chat.rag.lab.local/health/live      # chat-web (/ → chat-web)
+curl -s --cacert secrets/chat.crt https://chat.rag.lab.local/api/v1/auth/me    # chat-gateway 경유 — 토큰 없으면 401 이 정상
+curl -s -H 'X-Auth-User: cklee' http://admin.rag.lab.local/api/v1/chat/channels | jq '.data[].name'
+```
+
+> Ingress 경로는 `/api/v1`·`/ws`·`/` 뿐이므로 chat-gateway 의 `/health/*` 는 Ingress 로 노출되지 않습니다 (K8s probe 전용). gateway 자체 상태는 `kubectl -n rag-app port-forward svc/chat-gateway 8001:8001` 후 `curl localhost:8001/health/ready`.
 
 ---
 
 ## 5. E2E 기능 테스트 (Ingress 경유)
 
+<<<<<<< HEAD
 노트북 가이드 §5 와 동일 시나리오를 **클러스터 외부(접속 PC)에서** 수행합니다 — NetworkPolicy·Ingress·Secret 마운트·K8s Job 트리거까지 함께 검증됩니다.
 
 ### 5.1 문서 업로드 → 색인 Job → 질문 → 게시 확인
@@ -532,6 +691,36 @@ curl -s $RAG/api/v1/feedback/summary -H 'X-Auth-User: cklee' | jq .
 - 우상단 사용자 버튼에서 `X-Auth-User` 를 `cklee` 로 설정(localStorage) — 랩은 인증 프록시가 없어 **클라이언트가 보낸 헤더를 그대로 신뢰**합니다(DEC-003). 운영 이관 시 oauth2-proxy 등이 헤더를 주입·덮어써야 하며, 이 상태로 외부에 노출하면 안 됩니다.
 - 문서 관리(업로드/재색인) · 채널 · 대화 작업(단계별 latency) · 피드백(5.2 반영) 확인. Index Jobs/Audit Logs 화면은 admin-api 에 조회 API 가 없어 빈 상태로 표시됩니다(`apps/admin-web/README.md` 참조).
 - 채널 "연결 테스트"는 **stub**(항상 성공) — 실제 게시 검증은 5.1 의 mock-mattermost 로 대신합니다.
+=======
+노트북 가이드 §5와 동일 시나리오를 **클러스터 외부(접속 PC 브라우저)에서** 수행합니다 — 이 환경에서는 Ingress·TLS·WebSocket·NetworkPolicy 경로까지 함께 검증됩니다. Mattermost 서버나 Outgoing Webhook 설정은 필요 없습니다.
+
+```bash
+# 1) 샘플 문서 업로드 — ACL 은 채널 UUID (rag-cloud-ops = c0000000-0000-0000-0000-000000000001)
+#    파일 예시는 노트북 가이드 §5.1 의 장애대응매뉴얼.md
+DOC_ID=$(curl -s -X POST http://admin.rag.lab.local/api/v1/documents -H 'X-Auth-User: cklee' \
+  -F 'file=@/tmp/ragdoc/장애대응매뉴얼.md' \
+  -F 'title=장애대응매뉴얼' -F 'category=장애대응' -F 'department=Cloud운영팀' \
+  -F 'security_level=INTERNAL' \
+  -F 'allowed_channel_ids=c0000000-0000-0000-0000-000000000001' | jq -r '.data.document.id')
+JOB_ID=$(curl -s -X POST http://admin.rag.lab.local/api/v1/documents/$DOC_ID/reindex \
+  -H 'X-Auth-User: cklee' | jq -r '.data.index_job_id')
+
+# 2) 색인 Job 실행 — admin-api 의 K8s Job 트리거는 아직 stub(index_jobs 행만 생성)이므로
+#    chart 가 배포한 Job 템플릿 ConfigMap 을 인스턴스화해 수동 실행한다 (generateName → create)
+kubectl -n rag-ingestion get cm parser-indexer-job-template -o jsonpath='{.data.job\.yaml}' \
+  | sed "s/__INDEX_JOB_ID__/$JOB_ID/" | kubectl create -f -
+kubectl -n rag-ingestion get jobs -w    # parser-indexer Job COMPLETED 확인
+```
+
+3) **브라우저**: `https://chat.rag.lab.local` → hong@example.com / `Rag!Assistant2026` 로그인 → `#rag-cloud-ops` 에 `장애 등급별 대응 절차를 알려주세요.`
+   - 접수 안내 2초 내 → THREAD 모드라 **스레드 자동 오픈** → 토큰 **스트리밍** → 근거 문서 표 + 👍/👎
+   - 브라우저 개발자도구 Network → WS 탭에서 `wss://chat.rag.lab.local/ws/...` 가 101 Switching Protocols 로 유지되는지 확인 (60초 이상 유휴 후에도 끊기지 않아야 annotation 정상)
+4) 후속 질문(같은 스레드) / `#rag-hr` 의 `!rag` 트리거 · 일반 메시지 무응답 — 노트북 가이드 §5.2·§5.3 과 동일
+5) 피드백 👍/👎 + admin 피드백 대시보드 반영, 위조 토큰 401 — 노트북 가이드 §5.4·§5.5 (스크립트의 `BASE` 를 `https://chat.rag.lab.local` 로. 자체 서명이면 `SSL_CERT_FILE=secrets/chat.crt` 지정)
+6) 부정 케이스 — kim@example.com 로그인 시 `rag-cloud-ops` 비노출, `/ch/rag-cloud-ops` 직접 접근 시 "채널을 찾을 수 없거나 접근 권한이 없습니다." (노트북 가이드 §5.5)
+
+**32B 실물이므로 답변 품질을 직접 확인**: 근거 citation 정합성, 한국어 자연스러움, 무근거 질문의 안전 응답을 수동 채점해 두면 §7 자동 평가와 대조할 수 있습니다.
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 ---
 
@@ -547,12 +736,21 @@ make test-integration          # Docker 필요(P3): testcontainers 실 Qdrant �
 
 | 항목 | 방법 | 기대 |
 |---|---|---|
+<<<<<<< HEAD
 | NetworkPolicy default-deny | `kubectl -n rag-app run np-probe --rm -it --restart=Never --image=$REG/library/busybox:1.36.1 --overrides='{"spec":{"nodeSelector":{"kubernetes.io/arch":"amd64"}}}' -- wget -qO- -T3 http://qdrant.rag-data:6333/collections` | **타임아웃**(part-of 라벨 없는 Pod). 같은 명령에 `--labels=app.kubernetes.io/part-of=rag-platform` 를 주면 **성공** |
 | NS 라벨 의존성 | `kubectl label ns rag-data rag-platform-` 후 질문 → 복구 `kubectl label ns rag-data rag-platform=true` | 라벨 제거 중 FAILED 오류 게시(⚠️ 답변 생성 중 오류) → 복구 후 정상. (admin-api→qdrant 는 설계상 **허용** 경로 — 서비스별 세분화는 후속 과제) |
 | vLLM 재기동 복원력 | `kubectl -n rag-ai rollout restart deploy/vllm-llm-0` 후 질문 | 로딩 중 FAILED 오류 게시 → 복구 후 정상 |
 | Worker 장애 | 처리 중 `kubectl -n rag-app delete pod -l app.kubernetes.io/name=rag-worker` | RQ 가 job 을 재큐잉하되 `claim_job` 멱등 가드로 **중복 게시 없음**(mock-mattermost 수신 1건) |
 | 노드 격리 | PGX cordon 후 앱 재배포 | 앱은 전부 P3 에서 정상 (vLLM 만 Pending) |
 | 색인 Job 격리 | 대용량 문서 색인 중 질문 | 질문 지연 없음 (rag-ingestion NS 별도, NFR-PERF-007) |
+=======
+| NetworkPolicy default-deny | `kubectl -n rag-app exec deploy/admin-api -- curl -m3 qdrant.rag-data:6333` | **차단** (admin-api→qdrant는 비허용 경로) |
+| vLLM 재기동 복원력 | `kubectl -n rag-ai rollout restart deploy/vllm-llm-0` 후 질문 | 로딩 중 Bot Post 가 오류 안내로 갱신(Job FAILED) → 복구 후 정상 |
+| Worker 장애 | worker pod 삭제 → 처리 중 Job | RQ 재큐잉으로 재처리, 중복 게시 없음 |
+| 노드 격리 | PGX cordon 후 앱 재배포 | 앱은 전부 P3에서 정상 (vLLM만 Pending) |
+| chat-gateway 재기동 중 WS | `kubectl -n rag-app rollout restart deploy/chat-gateway` 중 브라우저 유지 | socket.io 자동 재연결 후 `ready` 재수신, 누락 답변은 채널 재조회로 수렴 (Bot Post 가 SSOT) |
+| gateway 내부 경로 비노출 | 클러스터 밖에서 `https://chat.rag.lab.local/metrics` | Ingress 상 `/` → chat-web 로 라우팅되어 404 — gateway `/metrics`·`/health/*` 는 외부 비노출 (probe/Prometheus 내부 전용) |
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 ---
 
@@ -568,20 +766,41 @@ RAG_API_URL=http://localhost:8002 make evaluate
 # → reports/evaluation_report.md  (Recall@10 ≥85%, Citation Precision ≥90%, 무근거 안전응답 ≥90%, 근거 응답률)
 ```
 
+<<<<<<< HEAD
 > - 데이터셋은 6문항이며 `q001` 은 `장애대응매뉴얼.pdf` 를 기대 문서로 둡니다 — §5 에서 `.md` 로 업로드했다면 문서명 매칭(`removesuffix(".pdf")` 부분 일치)은 통과합니다. PRD §25.6 의 100문항/유형 비율은 작성 과제입니다.
 > - **Faithfulness/LLM-judge 와 격리 정확도는 리포트에 없습니다.** 격리는 §6 의 `make test-isolation` 이 담당합니다.
 > - port-forward 가 default-deny 에 막히면 임시 정책: `kubectl -n rag-app apply -f - <<< '{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"tmp-allow-rag-api"},"spec":{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"rag-api"}},"ingress":[{}]}}'` 후 평가, 끝나면 삭제.
 > - **`SIMILARITY_THRESHOLD` 튜닝**(TDD §7.2.3 숙제): 현재 값은 rag-api/rag-worker 의 **env** 로만 반영됩니다(`values-lab.yaml` `extraEnv` 에 추가 → `helm upgrade`). Admin Web Settings 화면의 값은 `settings` 테이블에만 저장되고 파이프라인에는 연동되지 않습니다(리뷰 리포트 §3-4, P0 후속). README §8.3 의 `scripts/eval_diff.py` 도 아직 없습니다 — 리포트 파일을 날짜별로 복사해 두고 `diff` 로 비교하세요.
+=======
+파라미터 튜닝 루프(README §8.3)를 이 클러스터에서 그대로 수행합니다. Admin Web(§4.3 — dev 서버 + admin-api `admin.rag.lab.local`) Settings 변경 → 재평가 → diff. **`SIMILARITY_THRESHOLD` 확정을 이 환경에서 완료**하는 것을 권장합니다 (TDD §7.2.3의 숙제).
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 ### 7.2 성능 — 해석 주의
 
 ```bash
+<<<<<<< HEAD
 # ACK p95 ≤ 2s — 이 환경에서도 그대로 유효한 목표. ★ MM_OUTGOING_TOKEN 이 없으면 locust 가 "dev-token" 을 보내 전부 401 이 된다
 MM_OUTGOING_TOKEN=lab-outgoing-token BRIDGE_URL=http://rag.lab.local make perf-webhook-burst   # -u 50 -r 50 -t 10s
 
 # 동시 6 부하 — locust 인자를 직접 지정
 MM_OUTGOING_TOKEN=lab-outgoing-token uv run locust -f tests/performance/locustfile.py --headless -u 6 -r 6 -t 5m --host http://rag.lab.local
+=======
+# ACK p95 ≤ 2s — 이 환경에서도 그대로 유효한 목표. GATEWAY_URL 로 Ingress(chat host)를 가리킨다
+# locust 는 데모 계정으로 로그인 → POST /api/v1/posts ACK 를 측정한다
+# 자체 서명 인증서면 REQUESTS_CA_BUNDLE 로 신뢰 지정
+REQUESTS_CA_BUNDLE=secrets/chat.crt \
+CHAT_EMAIL=hong@example.com CHAT_PASSWORD='Rag!Assistant2026' \
+GATEWAY_URL=https://chat.rag.lab.local make perf-chat-burst
+
+# 동시 6 부하는 별도 make 타깃이 없다 — locust 인자를 직접 지정 (Makefile의 perf-chat-burst와 동일 파일)
+REQUESTS_CA_BUNDLE=secrets/chat.crt \
+CHAT_EMAIL=hong@example.com CHAT_PASSWORD='Rag!Assistant2026' \
+uv run locust -f tests/performance/locustfile.py --headless -u 6 -r 6 -t 5m \
+  --host https://chat.rag.lab.local
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 ```
+
+> ⚠️ **rate limit 조정 필수**: 단일 계정으로 부하를 주므로 gateway 의 `RATE_LIMIT_PER_USER_PER_MIN`(기본 10)·`RATE_LIMIT_PER_CHANNEL_PER_MIN`(30)에 곧바로 걸려 429 가 실패로 집계됩니다. 50명 동시 로그인이면 `RATE_LIMIT_LOGIN_PER_MIN`(10)도 걸립니다. 시험 동안 values-lab 의 `appServices.chat-gateway.extraEnv` 에 해당 값을 올려 `helm upgrade` 하고, 시험 후 원복하세요.
 
 | 지표 | 목표(운영) | 이 환경 해석 |
 |---|---|---|
@@ -596,6 +815,7 @@ MM_OUTGOING_TOKEN=lab-outgoing-token uv run locust -f tests/performance/locustfi
 
 | 증상 | 조치 |
 |---|---|
+<<<<<<< HEAD
 | `helm install` 이 `namespaces "monitoring" not found` | `monitoring.grafanaDashboards=true` 인데 NS 가 없음 — values-lab 기본은 false. kube-prometheus-stack 설치 후 켤 것 |
 | `helm install` 이 hook Job `rag-db-migrate` 실패로 종료 | PostgreSQL 이 5분 내 준비되지 않음(이미지 pull/PVC Pending) 또는 `rag-postgresql-secret` 누락. `kubectl -n rag-app logs job/rag-db-migrate`, `kubectl -n rag-data describe pod postgresql-0`. 원인 해결 후 `helm upgrade` 재실행 |
 | PostgreSQL `CrashLoopBackOff`, 로그 `Database is uninitialized and superuser password is not specified` | `rag-postgresql-secret`(rag-data) 누락 — §4.1 ④ |
@@ -624,6 +844,30 @@ MM_OUTGOING_TOKEN=lab-outgoing-token uv run locust -f tests/performance/locustfi
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, `/etc/hosts` 의 `registry.local` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 | grep Speed`, MTU 불일치 |
 | `make perf-webhook-burst` 가 전부 401 | `MM_OUTGOING_TOKEN` 미설정(기본 `dev-token`) — §7.2 |
+=======
+| Pod `exec format error` CrashLoop | amd64 이미지가 PGX에, 또는 반대로 스케줄됨 — nodeSelector 누락 확인, `kubectl get pod -o wide`로 노드 확인 |
+| vLLM Pod가 P3로 스케줄 시도 | taint/toleration·nodeSelector 확인. P3에는 nvidia.com/gpu 리소스가 없어 Pending이 정상 |
+| PGX에서 `nvidia.com/gpu: 0` | GPU Operator toolkit Pod(pgx) 로그 확인, containerd 재시작. driver.enabled=false 유지 |
+| vLLM OOM/성능 급락 | 통합 메모리를 OS·타 프로세스와 공유 — PGX에 다른 워크로드 금지(taint 유지), `gpu-memory-utilization` 0.85로 하향 |
+| Qdrant 검색 1s 초과 | PVC가 local-bulk(HDD)에 생성됨 — `kubectl get pvc -n rag-data`로 StorageClass 확인 후 local-fast로 재생성 |
+| PVC가 계속 `Pending` | ① `deploy/k8s/local-path-*.yaml` 의 nodePathMap 노드 이름 불일치(§1.4.3 sed 누락) — provisioner 로그 확인: `kubectl -n local-path-storage logs deploy/local-path-provisioner-fast` ② `WaitForFirstConsumer` 라 소비 Pod가 스케줄되기 전엔 정상적으로 Pending ③ Pod가 pgx로 갔다면 nodePathMap에 없어 실패 — nodeSelector 확인 |
+| PVC Pending + helper-pod `ImagePullBackOff` | 폐쇄망에서 `busybox:1.36.1` pull 실패 — ConfigMap `helperPod.yaml` 과 Deployment `--helper-image` 를 `registry.local:5000/library/busybox:1.36.1` 로 교체 후 provisioner 재시작 |
+| **NVMe 용량 부족 / 노드 `DiskPressure`, Pod 무더기 Evicted** | 2-디스크 구성의 핵심 리스크. `df -h / /data/fast` → NVMe 소진. 원인 1순위는 **PVC가 default SC(local-fast)로 새어 문서/모델이 NVMe에 적재**된 것 — §4 경고의 `storageClassName` 검증 명령 실행. 즉시 조치: 해당 PVC 삭제 후 local-bulk로 재생성, `sudo crictl rmi --prune` 로 미사용 이미지 정리 |
+| `/data/bulk` 가 비어 있는데 NVMe만 참 | HDD 마운트 전에 디렉터리/registry/PVC를 만든 케이스 — `findmnt /data/bulk` 로 확인. 마운트가 나중에 되면 기존 데이터가 가려짐. 마운트 해제 → 루트 FS의 `/data/bulk` 잔여물 삭제 → 재마운트 |
+| 색인 Job이 평소보다 훨씬 느림 | HDD 4TB 한 대에 문서 원본 + registry + 모델이 공존 — 이미지 push/pull, 다중 색인 Job 동시 실행을 피하고 순차 실행. `iostat -x 2 /dev/sda` 로 `%util` 확인 |
+| PVC 삭제 후에도 HDD 용량 미반환 | `local-bulk` 는 `reclaimPolicy: Retain` — `kubectl get pv \| grep Released` 확인 후 `sudo rm -rf /data/bulk/pvc/pvc-<uid>` 수동 정리 |
+| embedding/reranker 최초 기동 CrashLoop | HDD에서 모델 로드가 느려 startupProbe 초과 — `failureThreshold` 상향 또는 모델을 `/data/fast/models` 로 이동(NVMe 여유 확인 후) |
+| PGX가 이미지 pull 실패 | PGX의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작 |
+| 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |
+| 테이블 없음 / admin-api 500 (`relation ... does not exist`) | Alembic이 **자동 실행되지 않는다** — §4.2의 `alembic upgrade head` 를 돌렸는지 확인. `alembic current` 가 비어 있으면 미적용 |
+| `alembic upgrade` 가 DB 연결 실패 | Pod env의 `POSTGRES_HOST` 확인(`kubectl -n rag-app exec deploy/admin-api -- env \| grep POSTGRES`). values-lab의 `extraEnv` 누락이면 기본값 localhost로 붙는다 |
+| chat-gateway/rag-worker/admin-api `ContainerCreating` 에서 멈춤 | `rag-chat-secrets` 미생성 또는 키 이름 불일치 — `kubectl -n rag-app describe pod <pod>` 의 `MountVolume.SetUp failed`. 키는 정확히 `jwt-secret`, `password-pepper`, `feedback-signing-key` |
+| 브라우저 로그인 버튼이 동작하지 않음 / crypto 오류 | HTTP 로 접속함 — WebCrypto 는 HTTPS/localhost 전용. `ingress.tlsSecretName` 지정 + `https://` 접속, 자체 서명이면 접속 PC 에 인증서 신뢰 등록 |
+| 올바른 비밀번호인데 로그인 401 | `make seed-users` 가 클러스터 Secret 과 다른 pepper 파일로 해시함 — §4.1 에서 Secret 으로 등록한 `secrets/rag/password-pepper` 로 재실행 |
+| 질문은 게시되는데 답변이 실시간으로 안 뜸(새로고침하면 보임) | WS 실패 — ① chat-web 을 `NEXT_PUBLIC_WS_URL` 을 채운 채 빌드(교차 출처로 연결 → Origin 거부) ② Ingress 에 `/ws` 경로 누락 ③ `networkPolicy.ingressControllerNamespace` 와 실제 ingress-nginx namespace 불일치(§4.3) |
+| WS 가 약 60초마다 끊겼다 재연결 | `proxy-read-timeout`/`proxy-send-timeout` annotation 미적용 — `kubectl -n rag-app get ingress rag-chat -o yaml` 확인 |
+| 로그인이 새로고침마다 풀림 | refresh 쿠키 미전송 — chat-web 과 chat-gateway 가 서로 다른 host 로 노출됨(SameSite=Strict), 또는 `COOKIE_SECURE=true` 인데 HTTP 접속 |
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 | RKE2 재부팅 후 워크로드 미복귀 | `systemctl status rke2-server`(P3)/`rke2-agent`(PGX), PGX 절전 설정 비활성 |
 
 ---
@@ -640,6 +884,7 @@ MM_OUTGOING_TOKEN=lab-outgoing-token uv run locust -f tests/performance/locustfi
 
 ## 10. 검증 완료 체크리스트
 
+<<<<<<< HEAD
 - [ ] 노드 2대 Ready, 라벨/테인트 적용 (`tier=app`/`tier=llm`), PGX `nvidia.com/gpu: 1`
 - [ ] HDD `/data/bulk` 마운트(`findmnt`), NVMe `/data/fast` 준비, StorageClass Bound 테스트 통과(§1.4.3), nodePathMap 치환
 - [ ] 이미지 8종 + vLLM arm64 + data 3종 + busybox 레지스트리 push, manifest arch 확인
@@ -653,7 +898,29 @@ MM_OUTGOING_TOKEN=lab-outgoing-token uv run locust -f tests/performance/locustfi
 - [ ] NetworkPolicy 차단/허용 확인(np-probe), NS 라벨 제거 실험, vLLM 재기동 복원, worker 삭제 시 중복 게시 없음
 - [ ] `make lint && make test` green(133), `make test-isolation` green, `make test-integration`(Docker) green
 - [ ] `make evaluate` → `reports/evaluation_report.md` 생성, 4지표 목표 대비 판정 기록 (6문항 한계 명시)
+=======
+- [ ] 노드 2대 Ready, 라벨/테인트 적용 (`tier=app`/`tier=llm`)
+- [ ] PGX `nvidia.com/gpu: 1` allocatable
+- [ ] HDD 4TB `/data/bulk` 마운트 확인 (`findmnt /data/bulk`), NVMe `/data/fast` 준비
+- [ ] StorageClass `local-fast`/`local-bulk` Bound 테스트 통과 (§1.4.3), nodePathMap 노드 이름 치환 완료
+- [ ] **전 PVC의 StorageClass 검증** — DB류=local-fast, documents/models=local-bulk (§4 경고)
+- [ ] 배포 후 `df -h / /data/fast /data/bulk` — NVMe 사용률 70% 미만
+- [ ] amd64 앱 이미지(chat-gateway·chat-web 포함) + arm64 vLLM 이미지 레지스트리 push, manifest arch 확인
+- [ ] `rag-chat-secrets`(jwt-secret / password-pepper / feedback-signing-key) + TLS Secret 생성
+- [ ] Helm 배포 — vLLM만 pgx, 나머지 p3 배치 확인 (`-o wide`)
+- [ ] **Qwen3-32B 로딩 완료** (startupProbe 내), `/v1/models` 응답
+- [ ] **Alembic `upgrade head` 수동 실행** + `alembic current` = `0003_webchat` 확인, seed + seed-users(동일 pepper) + qdrant-init
+- [ ] Ingress(HTTPS) 경유 브라우저 E2E: 로그인→질문→스트리밍 답변(+근거 표·피드백 버튼)→피드백 👍/👎/위조 401, 비멤버 채널 차단
+- [ ] WebSocket 60초 이상 유휴 유지(timeout annotation), `curl https://chat.rag.lab.local/health/live` 200
+- [ ] NetworkPolicy 차단 경로 확인, vLLM 재기동 복원 확인
+- [ ] `make test-isolation` green
+- [ ] **`make evaluate` 리포트 생성 — 품질 5지표 목표 대비 판정, SIMILARITY_THRESHOLD 확정**
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 - [ ] ACK p95 ≤ 2s / 검색 p95 ≤ 1s 판정, 생성 성능은 참고치 기록
 - [ ] 운영과의 의도적 차이(replica, PDB, hostPath, vLLM podSecurityContext 예외, X-Auth-User 클라이언트 신뢰) 리포트 기록
 
+<<<<<<< HEAD
 > 이 클러스터에서 green 이면 PoC 환경 이관 시 남는 변수는 사실상 "운영 GPU 성능", "실 Mattermost 연동(Incoming URL·Source CIDR)", "인증 프록시(X-Auth-User 주입)" 셋입니다.
+=======
+> 이 클러스터에서 green이면 PoC 환경 이관 시 남는 변수는 사실상 "운영 GPU 성능"과 "사내 TLS 인증서·DNS·인증 프록시(admin X-Auth-User) 연동" 둘뿐입니다.
+>>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

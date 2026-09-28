@@ -33,8 +33,19 @@ class Settings(BaseSettings):
     document_storage_path: str = Field(default="/data/documents", alias="DOCUMENT_STORAGE_PATH")
     max_upload_bytes: int = Field(default=100 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
 
-    # --- Feedback / 내부 URL (연결 테스트에 사용) ---
-    bridge_internal_url: str = Field(default="http://localhost:8001", alias="BRIDGE_INTERNAL_URL")
+    # --- Web Chat 사용자 관리 (chat-gateway 와 동일 값이어야 로그인 가능) ---
+    chat_workspace_slug: str = Field(default="rag", alias="CHAT_WORKSPACE_SLUG")
+    password_pepper_file: str = Field(default="", alias="PASSWORD_PEPPER_FILE")
+
+    def password_pepper(self) -> bytes:
+        """chat-gateway 와 공유하는 pepper (Secret file). 값은 로그/응답 노출 금지."""
+        import os
+        from pathlib import Path
+
+        path = self.password_pepper_file
+        if path and os.path.isfile(path):
+            return Path(path).read_text(encoding="utf-8").strip().encode("utf-8")
+        return b""
 
     # --- 색인 Job 트리거 (ADR-008, §7.5) ---
     # none: index_jobs 행만 생성(로컬/CLI 실행) · k8s: kube-apiserver 로 parser-indexer Job 생성

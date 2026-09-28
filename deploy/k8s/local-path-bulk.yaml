@@ -74,7 +74,7 @@ data:
     {
       "nodePathMap": [
         {
-          "node": "p3",
+          "node": "rke2-master-01",
           "paths": ["/data/bulk/pvc"]
         }
       ]

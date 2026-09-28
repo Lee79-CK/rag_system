@@ -99,21 +99,21 @@ def test_ch_001_real_qdrant_channel_filter(qdrant_url):
     _seed(client)
 
     # Channel B는 A 전용 문서 X를 절대 검색하지 못한다
-    res_b = client.search(
+    res_b = client.query_points(
         COLLECTION,
-        query_vector=[0.1] * 1024,
+        query=[0.1] * 1024,
         query_filter=build_filter(make_binding(CHANNEL_B)),
         limit=10,
-    )
+    ).points
     ids_b = {p.payload["chunk_id"] for p in res_b}
     assert "x" not in ids_b
 
     # Channel A는 자신의 문서만 본다
-    res_a = client.search(
+    res_a = client.query_points(
         COLLECTION,
-        query_vector=[0.1] * 1024,
+        query=[0.1] * 1024,
         query_filter=build_filter(make_binding(CHANNEL_A)),
         limit=10,
-    )
+    ).points
     ids_a = {p.payload["chunk_id"] for p in res_a}
     assert ids_a == {"x"}
