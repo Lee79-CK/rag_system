@@ -119,6 +119,8 @@ appServices:
       - { name: RERANKER_API_URL,  value: "http://reranker-api.rag-ai:8005" }
       - { name: VLLM_API_URL,      value: "http://vllm-service.rag-ai:8000/v1" }
       - { name: LLM_SERVED_MODEL_NAME, value: "internal-rag-llm" }
+      # Qwen3.8 은 thinking 기본 on → RAG 는 요청마다 chat_template_kwargs.enable_thinking=false (첫 토큰 지연 방지)
+      - { name: LLM_ENABLE_THINKING,   value: "false" }
       # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2) ※ 코드가 아직 semaphore 로 강제하지 않음 — 실효 동시성은 rag-worker replica 수
       - { name: CHAT_MAX_CONCURRENCY,  value: "8" }
       # tokenizer 는 LLM 노드(PGX)에만 있으므로 P3 의 rag-api 에서는 근사 카운팅 경로를 쓴다
@@ -175,6 +177,7 @@ vllm:
   replicas: [llm-0]               # 운영 [llm-0, llm-1] → GPU 노드 1대이므로 1개
   image: ai/vllm-arm64            # 미러링 시 $TAG 로 태깅할 것 (rag.image 헬퍼가 global.imageTag 사용):
                                   #   docker tag nvcr.io/nvidia/vllm:<tag> $REG/ai/vllm-arm64:$TAG
+                                  # ★ Qwen3.8-27B(qwen3_5 hybrid attention) 는 vLLM ≥ 0.17.0 필요 — 태그의 vLLM 버전 확인 (가이드 §3)
   nodeSelector:
     ragplatform.io/tier: llm      # 가이드 §1.2 라벨
   tolerations:
@@ -184,14 +187,19 @@ vllm:
   # NGC vLLM 이미지가 비루트(10001) 기동에 실패하면 아래 주석을 풀어 예외를 명시한다 (§22.4 — 리포트에 기록)
   podSecurityContext: {}
   # podSecurityContext: { runAsNonRoot: false, runAsUser: 0 }
+  # 랩 LLM = Qwen/Qwen3.8-27B-FP8 (dense 27B, FP8 ~31GB, 네이티브 262K ctx, vision-language + thinking 기본 on)
+  #   → /models/llm/main 에 배치 (가이드 §2.1). served-model-name 은 그대로라 앱 설정 변경 없음.
   args:
     - --model=/models/llm/main
     - --served-model-name=internal-rag-llm
-    - --max-model-len=16384
+    - --max-model-len=16384           # RAG 예산(MAX_CONTEXT_TOKENS 8192 + 출력 1024)에 충분. 네이티브 262K 까지 가능
     - --gpu-memory-utilization=0.90   # 통합 메모리 공유 — OOM 시 0.85 로 하향 (가이드 §8)
     - --dtype=auto
     - --max-num-seqs=8                # 운영 16 → GB10 대역폭 고려
+    - --language-model-only           # 텍스트 RAG — vision tower 미적재로 메모리/KV cache 확보
+    - --reasoning-parser=qwen3        # thinking 이 켜져도 <think> 추론이 content 가 아닌 reasoning_content 로 분리
     - --disable-log-requests
+    # (선택) 내장 MTP draft head 로 디코드 가속: --speculative-config={"method":"qwen3_5_mtp","num_speculative_tokens":3}
   # 통합 메모리(128GB) 구조상 memory limit 을 걸면 KV cache 할당과 충돌할 수 있어 requests 만 둔다
   resources:
     requests: { cpu: "8", memory: 32Gi }

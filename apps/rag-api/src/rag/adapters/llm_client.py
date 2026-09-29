@@ -17,9 +17,18 @@ class LLMClient:
         *,
         api_key: str = "internal",
         timeout: float = 120.0,
+        enable_thinking: bool | None = False,
     ):
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
         self._model = model
+        # vLLM OpenAI 서버는 extra_body.chat_template_kwargs 를 chat template 에 전달한다.
+        # None 이면 전송하지 않음(모델 기본값). thinking 이 켜진 경우에도 vLLM `--reasoning-parser` 가
+        # 추론 텍스트를 reasoning_content 로 분리하므로 본문(content)에는 답변만 담긴다.
+        self._extra_body: dict | None = (
+            None
+            if enable_thinking is None
+            else {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+        )
 
     async def complete(
         self, messages: list[dict[str, str]], *, max_tokens: int, temperature: float
@@ -29,6 +38,7 @@ class LLMClient:
             messages=messages,  # type: ignore[arg-type]
             max_tokens=max_tokens,
             temperature=temperature,
+            extra_body=self._extra_body,
         )
         text = resp.choices[0].message.content or ""
         usage: dict = {}
@@ -50,6 +60,7 @@ class LLMClient:
             temperature=temperature,
             stream=True,
             stream_options={"include_usage": True},
+            extra_body=self._extra_body,
         )
         async for chunk in resp:
             if chunk.choices:

@@ -18,7 +18,7 @@ TDD §15 로드맵 **M1–M12 구현 완료** (M12 = Web Chat 전환). 로컬은
 
 | 지표 | 결과 |
 |---|---|
-| Python 테스트 | **182 passed** (`make test` = testpaths `libs`·`apps`·`tests`, Docker 가용 시 실 Qdrant 격리 테스트 포함 · Docker 없으면 181 passed, 1 skipped) · `tools/*` 7건은 `uv run pytest tools` 로 별도 실행 |
+| Python 테스트 | **183 passed** (`make test` = testpaths `libs`·`apps`·`tests`, Docker 가용 시 실 Qdrant 격리 테스트 포함 · Docker 없으면 182 passed, 1 skipped) · `tools/*` 7건은 `uv run pytest tools` 로 별도 실행 |
 | Lint | `ruff check .` / `ruff format --check .` clean |
 | Helm | `helm lint` clean (values / values-poc / values-lab) |
 | admin-web | `npm run build` (tsc + vite) OK |
@@ -36,7 +36,7 @@ TDD §15 로드맵 **M1–M12 구현 완료** (M12 = Web Chat 전환). 로컬은
 | admin-web (M8) | `apps/admin-web` (React + Vite) | build |
 | Channel 격리 Gate (M9) | `tests/channel-isolation` (CH-001~010) | 12 |
 | Helm/NetworkPolicy/Ingress/모니터링 (M10) | `deploy/helm/rag-platform` | helm lint |
-| 평가 runner + perf (M11) | `tools/evaluation`·`tools/mock-llm`, `tests/performance`, `tests/contract` | 8 (tools 7 + contract 1) |
+| 평가 runner + perf (M11) | `tools/evaluation`·`tools/mock-llm`, `tests/performance`, `tests/contract` | 9 (tools 7 + contract 2) |
 | **Web Chat UI (M12)** | `apps/chat-web` (Next.js 15, aiops_chatbot 이식) | typecheck/build |
 
 **로컬 실행 캐비엇**: 이 저장소는 Intel macOS(GPU 없음)에서 개발되어 실 모델 의존성(`torch`/`FlagEmbedding`)은
@@ -501,7 +501,7 @@ API 만으로 확인하려면 `tests/performance/locustfile.py` 의 로그인/�
 
 ```bash
 make lint              # ruff + mypy (py312 타깃)
-make test              # 전체 테스트 (182 passed; Docker 없으면 181 passed, 1 skipped)
+make test              # 전체 테스트 (183 passed; Docker 없으면 182 passed, 1 skipped)
 make test-integration  # tests/contract(mock-llm SSE ↔ openai SDK LLMClient.stream 계약) + test_ch_qdrant.py(실 Qdrant)
 make test-isolation    # ★ CH-001~010 Channel 격리 — 배포 차단 Gate
 make chat-web-build    # chat-web typecheck + next build (standalone)

@@ -19,7 +19,7 @@
 | Helm 배포 / NetworkPolicy / Ingress / Probe / Secret 마운트 / hook Job / RBAC 등 K8s 매니페스트 전체 | ✅ | **PoC 배포와 동일 chart·동일 방식** — 이 환경의 최대 가치 |
 | RAG 파이프라인 전체 (E2E) | ✅ | Ingress 경유 — 업로드 → K8s 색인 Job → 브라우저 Web Chat (로그인 → 스트리밍 답변 → 피드백) |
 | Web Chat WebSocket(socket.io `/ws`) Ingress 경유 동작 | ✅ | ingress-nginx websocket + timeout annotation, TLS |
-| **답변 품질 (Qwen3-32B 실물)** | ✅ | PGX 통합 메모리 128GB — 32B FP8/4bit 여유 구동 |
+| **답변 품질 (Qwen3.8-27B 실물)** | ✅ | PGX 통합 메모리 128GB — 27B FP8(~31GB) 여유 구동, KV cache 공간 충분 |
 | `make evaluate` 품질 평가 | ⚠️ 부분 | **현재 데이터셋 6문항**(`tests/evaluation/dataset/q001~q006`), 지표 4종(Recall@10 · Citation Precision · 무근거 안전응답 · 근거 응답률). **Faithfulness/LLM-judge 는 미구현** — 100문항·judge 는 작성 과제 |
 | Channel 격리 (CH-001~010) | ✅ | `make test-isolation` 은 **클러스터와 무관한 로컬 pytest**(in-memory fake). 실 Qdrant 검증(`test_ch_qdrant.py`)은 Docker(testcontainers) 필요 — P3 에서 `make test-integration` |
 | 성능 목표 수치 (p95 30s @ 동시 10~15) | ⚠️ 참고치 | GB10 메모리 대역폭(~273GB/s) 특성상 decode 속도는 운영 GPU(H100 등)와 다름. **동시 4~8 기준 경향 측정** |
@@ -29,7 +29,7 @@
 
 | 구분 | 배치 노드 | 이유 |
 |---|---|---|
-| vLLM (Qwen3-32B) | **PGX (arm64)** | GPU/통합 메모리. NVIDIA ARM64 컨테이너 사용 |
+| vLLM (Qwen3.8-27B-FP8) | **PGX (arm64)** | GPU/통합 메모리. NVIDIA ARM64 컨테이너 사용 (vLLM ≥ 0.17.0) |
 | 그 외 전부 (chat-gateway, chat-web, rag-api/worker, admin-api/web, embedding, reranker, qdrant, pg, redis, indexer Job) | **P3 (amd64)** | x86 단일 아키텍처로 이미지 빌드 단순화. Core Ultra 7 + 128GB로 충분 |
 | P3의 RTX A400 4GB | **미사용** | LLM 부적합(4GB). GPU Operator 설치 대상에서 제외 |
 
@@ -227,16 +227,30 @@ echo "${P3_IP} registry.local" | sudo tee -a /etc/hosts   # 양쪽 노드 + 접�
 
 ## 2. 모델 아티팩트 배치
 
-### 2.1 PGX — LLM (Qwen3-32B 실물 구동)
+### 2.1 PGX — LLM (Qwen3.8-27B 실물 구동)
 
-통합 메모리 128GB이므로 32B FP8(~34GB) 또는 AWQ 4bit(~20GB)가 KV cache 포함 여유 있게 적재됩니다. **TDD §8.2 운영 인자를 그대로 사용할 수 있는 것이 이 환경의 최대 장점입니다.**
+랩 LLM 은 **`Qwen/Qwen3.8-27B-FP8`** (Apache-2.0) 입니다. dense 27B · FP8 체크포인트 ~31GB 로 통합 메모리 128GB 에 KV cache 포함 여유 있게 적재됩니다.
+
+| 항목 | 값 | 랩 설정에 미치는 영향 |
+|---|---|---|
+| 아키텍처 | `Qwen3_5ForConditionalGeneration` (`qwen3_5`) — 64층 중 48층 linear attention 하이브리드 | **vLLM ≥ 0.17.0 필요** (§3 이미지 태그 확인). 구버전은 `architecture not supported` 로 기동 실패 |
+| 모달리티 | vision-language (이미지/비디오 입력 가능) | 텍스트 RAG 이므로 `--language-model-only` 로 vision tower 미적재 → 메모리·KV cache 확보 |
+| thinking | **기본 on** (`<think>…</think>` 후 답변) | 앱이 요청마다 `chat_template_kwargs.enable_thinking=false` 전송(`LLM_ENABLE_THINKING=false`, 기본값) + vLLM `--reasoning-parser=qwen3` 로 혹시 켜져도 추론이 `content` 에 섞이지 않게 분리 |
+| 컨텍스트 | 네이티브 262,144 (YaRN 으로 1M) | 랩은 `--max-model-len=16384` — RAG 예산(MAX_CONTEXT_TOKENS 8192 + 출력 1024)에 충분 |
+| 서빙 이름 | `--served-model-name=internal-rag-llm` (변경 없음) | rag-api/worker 설정 변경 불필요 — 모델 교체는 `/models/llm/main` 내용 교체만으로 끝난다 |
 
 ```bash
 # PGX에서
 sudo mkdir -p /models/llm && sudo chown $USER /models
-hf download Qwen/Qwen3-32B-FP8 --local-dir /models/llm/main   # 또는 반입 아티팩트 복사
+hf download Qwen/Qwen3.8-27B-FP8 --local-dir /models/llm/main   # ~31GB. 폐쇄망은 해시 검증된 반입 아티팩트 복사
 sudo chmod -R a+rX /models      # Pod(runAsUser 10001) 읽기 권한 — hostPath 에는 fsGroup 이 적용되지 않는다
+
+# 기존 Qwen3-32B 가 있던 자리라면 디렉터리를 비우고 받는다 (혼재 시 config/토크나이저 불일치로 기동 실패)
+#   rm -rf /models/llm/main && hf download ...
 ```
+
+> **샘플링**: 모델 권장값(non-thinking)은 `temperature=0.7, top_p=0.8, presence_penalty=1.5` 이지만, RAG 는 근거 충실도를 우선해 앱 기본 `LLM_TEMPERATURE=0.2` 를 유지합니다. 답변이 반복적이면 `LLM_TEMPERATURE` 를 0.5~0.7 로 올려 §7 평가로 비교하세요.
+> **토크나이저**: rag-api/worker 는 P3 에서 돌고 모델 파일은 PGX 에만 있으므로 토큰 수는 근사 카운터로 계산됩니다(기존과 동일). 정확한 예산이 필요하면 토크나이저 파일(`tokenizer.json` 등)만 P3 `/data/bulk/models/llm/main` 에 복사하세요.
 
 ### 2.2 P3 — Embedding / Reranker (CPU, amd64)
 
@@ -284,6 +298,8 @@ vLLM 은 빌드하지 않고 **NVIDIA 제공 arm64 이미지**를 미러링합�
 
 ```bash
 # DGX Spark 지원 vLLM 이미지 (NGC) — arm64 태그 확인 후 미러. chart 의 rag.image 헬퍼가 global.imageTag 를 붙이므로 앱과 동일 $TAG 로 태깅
+# ★ Qwen3.8-27B(qwen3_5) 는 vLLM ≥ 0.17.0 필요 — 태그의 vLLM 버전을 먼저 확인:
+#   docker run --rm --entrypoint python nvcr.io/nvidia/vllm:<tag> -c "import vllm; print(vllm.__version__)"
 docker pull --platform linux/arm64 nvcr.io/nvidia/vllm:<tag>
 docker tag nvcr.io/nvidia/vllm:<tag> $REG/ai/vllm-arm64:$TAG
 docker push $REG/ai/vllm-arm64:$TAG
@@ -309,6 +325,7 @@ done
 | rag-worker | 2 | 2 (유지) | 큐 재처리 시나리오(§6) 검증 |
 | vLLM replica / 배치 | `[llm-0, llm-1]` | `[llm-0]` + `nodeSelector tier=llm` + `dedicated=llm` toleration | GPU 노드 1대, 이기종 배치 |
 | `--max-num-seqs` | 16 | 8 | GB10 대역폭 |
+| LLM 모델 | 운영 모델(TDD §8) | **`Qwen/Qwen3.8-27B-FP8`** + `--language-model-only` `--reasoning-parser=qwen3`, rag-api/worker `LLM_ENABLE_THINKING=false` | §2.1 — thinking 기본 on 모델, 텍스트 전용 RAG |
 | 모델 볼륨 | `models-pvc` | **hostPath** (`/data/bulk/models`, vLLM은 `/models`) | GPU 노드와 앱 노드가 달라 단일 PVC 공유 불가 |
 | 데이터 계층 | qdrant 500Gi / pg 200Gi / redis 20Gi | 50 / 20 / 10Gi + `local-fast` | NVMe 1TB 공유 (§1.4.1) |
 | `documents-pvc` | 1Ti (default SC=NFS) | 500Gi + `local-bulk` | HDD |
@@ -391,7 +408,7 @@ helm upgrade --install rag-platform deploy/helm/rag-platform \
   --set "networkPolicy.apiServer.cidrs={${P3_IP}/32}"   # admin-api → kube-apiserver(6443) egress. values-lab 의 예시 IP 를 실제 값으로
 # `helm dependency update` 는 필요 없다 — Chart.yaml 에 dependencies 가 없다(데이터 계층도 이 chart 의 StatefulSet)
 
-# 상태 확인 — vLLM 은 32B 로딩에 최대 10분(startupProbe 60×10s), embedding/reranker 는 HDD 로딩 최대 15분(90×10s)
+# 상태 확인 — vLLM 은 27B 로딩에 최대 10분(startupProbe 60×10s), embedding/reranker 는 HDD 로딩 최대 15분(90×10s)
 kubectl get pods -A -l app.kubernetes.io/part-of=rag-platform -o wide
 kubectl -n rag-ai logs -f deploy/vllm-llm-0 | grep -i "loading\|ready\|error"
 ```
@@ -574,10 +591,10 @@ kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
 ```bash
 kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
   "SELECT status, completed_at - started_at AS dur FROM chat_jobs ORDER BY queued_at DESC LIMIT 3;"
-# → COMPLETED, 32B 기준 수 초~수십 초
+# → COMPLETED, 27B(thinking off) 기준 수 초~수십 초
 ```
 
-**32B 실물이므로 답변 품질을 직접 확인**: 근거 citation 정합성, 한국어 자연스러움, 무근거 질문의 안전 응답을 수동 채점해 두면 §7 자동 평가와 대조할 수 있습니다.
+**27B 실물이므로 답변 품질을 직접 확인**: 근거 citation 정합성, 한국어 자연스러움, 무근거 질문의 안전 응답을 수동 채점해 두면 §7 자동 평가와 대조할 수 있습니다. 답변 본문에 `<think>` 나 추론 문장이 보이면 §8 참고.
 
 ### 5.3 Admin Web (`https://rag.lab.local/`)
 
@@ -592,7 +609,7 @@ kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
 전 서비스가 Python 단일 스택이므로 admin-api 테스트도 루트 `make test` 에 포함됩니다 — 별도 빌드 도구 호출이 없습니다.
 
 ```bash
-make lint && make test         # ruff + mypy(경고성) + 전체 pytest (182 passed — Docker 없으면 181 passed, 1 skipped: test_ch_qdrant)
+make lint && make test         # ruff + mypy(경고성) + 전체 pytest (183 passed — Docker 없으면 182 passed, 1 skipped: test_ch_qdrant)
 make test-isolation            # ★ CH-001~010 — 배포 Gate. 로컬 fake 기반이라 클러스터 불필요
 make test-integration          # Docker 필요(P3): tests/contract(mock-llm SSE ↔ LLMClient) + 실 Qdrant 격리(test_ch_qdrant.py, testcontainers)
 ```
@@ -690,6 +707,8 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | Pod `exec format error` CrashLoop / vLLM Pod가 P3로 스케줄 시도 | amd64 이미지가 PGX 에, 또는 반대로 스케줄됨 — nodeSelector/toleration 확인, `kubectl get pod -o wide`. P3 에는 nvidia.com/gpu 리소스가 없어 vLLM Pending 이 정상 |
 | PGX에서 `nvidia.com/gpu: 0` | GPU Operator toolkit Pod(pgx) 로그 확인, containerd 재시작. `driver.enabled=false` 유지 |
 | vLLM OOM/성능 급락 | 통합 메모리를 OS·타 프로세스와 공유 — PGX 에 다른 워크로드 금지(taint 유지), `--gpu-memory-utilization` 0.85 로 하향 |
+| vLLM 기동 실패 `Qwen3_5ForConditionalGeneration ... not supported` / `qwen3_5` 인식 불가 | vLLM 이미지가 0.17.0 미만 — NGC 최신 arm64 태그로 교체(§3 버전 확인 명령). 모델 디렉터리에 이전 모델 파일이 섞여 있어도 발생 → `/models/llm/main` 비우고 재다운로드 |
+| 답변 본문에 `<think>` / 추론 과정이 섞임, 첫 토큰이 매우 늦음 | thinking 이 켜진 상태 — rag-api/worker env `LLM_ENABLE_THINKING=false` 확인, vLLM args 에 `--reasoning-parser=qwen3` 확인(`kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.spec.containers[0].args}'`) |
 | Qdrant 검색 1s 초과 | PVC 가 local-bulk(HDD)에 생성됨 — `kubectl get pvc -n rag-data` 로 SC 확인 후 local-fast 로 재생성 |
 | PVC가 계속 `Pending` | ① `deploy/k8s/local-path-*.yaml` 의 nodePathMap 노드 이름 불일치(§1.4.3 sed 누락) — `kubectl -n local-path-storage logs deploy/local-path-provisioner-fast` ② `WaitForFirstConsumer` 라 소비 Pod 스케줄 전엔 정상 ③ Pod 가 pgx 로 갔다면 nodePathMap 에 없어 실패 — nodeSelector 확인 |
 | PVC Pending + helper-pod `ImagePullBackOff` | 폐쇄망에서 `busybox:1.36.1` pull 실패 — §1.4.3 의 sed 로 미러 경로(`registry.local:5000/library/busybox:1.36.1`) 교체 후 provisioner 재시작 |
@@ -720,7 +739,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 - [ ] **이미지 8종**(chat-gateway · rag-api · admin-api · embedding-api · reranker-api · parser-indexer · chat-web · admin-web) + vLLM arm64 + data 3종 + busybox 레지스트리 push, manifest arch 확인
 - [ ] **NS 4종 + `rag-platform=true` 라벨**, Secret 5개(`rag-chat-secrets`, `rag-chat-tls`(SAN 두 호스트), `rag-postgresql-secret`×3)
 - [ ] `helm upgrade --install` 성공(hook `rag-db-migrate` 포함), `alembic current` = `0003_webchat (head)`
-- [ ] 배치 검증 — vLLM 만 pgx, 나머지(chat-gateway·chat-web 포함) p3 (`-o wide`), **Qwen3-32B 로딩 완료**(startupProbe 내)
+- [ ] 배치 검증 — vLLM 만 pgx, 나머지(chat-gateway·chat-web 포함) p3 (`-o wide`), **Qwen3.8-27B 로딩 완료**(startupProbe 내, `/v1/models` → `internal-rag-llm`)
 - [ ] §4.3 ①~⑧: alembic head, Secret 파일 마운트(gateway 3 / worker 1 / admin-api 1, `startup.*_missing` 0), PVC 티어(DB=local-fast, documents=local-bulk), 문서 볼륨 쓰기, **실엔진 기동(`-mock` 없음)**, `/v1/models`, Ingress(rag-chat/rag-admin)·NetPol(`allow-ingress-to-*` 4 + `allow-admin-api-to-apiserver`), NVMe 70% 미만
 - [ ] seed + qdrant-init + seed-users(동일 pepper) 완료
 - [ ] 업로드(`start_indexing=true`) → **K8s 색인 Job COMPLETED**, 문서 ACTIVE

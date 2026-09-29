@@ -56,6 +56,7 @@ def build_pipeline(settings: Settings) -> RagPipeline:
             settings.vllm_api_url,
             settings.llm_served_model_name,
             timeout=settings.llm_timeout_seconds,
+            enable_thinking=settings.llm_enable_thinking,
         ),
         token_counter=make_token_counter(settings.tokenizer_path),
         config=cfg,

@@ -35,6 +35,8 @@ class ChatCompletionRequest(BaseModel):
     temperature: float | None = None
     stream: bool = False
     stream_options: dict | None = None
+    # vLLM 확장 필드 — 실제 템플릿 적용은 하지 않고 수용만 한다 (enable_thinking 등)
+    chat_template_kwargs: dict | None = None
 
 
 def _mock_answer(messages: list[ChatMessage]) -> str:

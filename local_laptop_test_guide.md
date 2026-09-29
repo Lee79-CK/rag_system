@@ -448,7 +448,7 @@ PY
 
 ```bash
 make lint && make test                 # ruff + mypy, 전체 pytest
-# 기대: 182 passed (Docker 가용 시 실 Qdrant CH-001 포함). Docker 미기동이면 181 passed, 1 skipped (test_ch_qdrant.py)
+# 기대: 183 passed (Docker 가용 시 실 Qdrant CH-001 포함). Docker 미기동이면 182 passed, 1 skipped (test_ch_qdrant.py)
 
 make test-isolation                    # ★ CH-001~010 — tests/channel-isolation (in-memory fake + 실 Qdrant 1건). 로컬에서도 반드시 green
 make test-integration                  # tests/contract(mock-llm SSE ↔ LLMClient.stream 계약) + tests/channel-isolation/test_ch_qdrant.py
@@ -575,7 +575,7 @@ helm upgrade --install rag-platform deploy/helm/rag-platform \
 - [ ] `#rag-hr` `!rag` 트리거 / 일반 메시지 무응답
 - [ ] 피드백 👍/👎(의견 변경) 반영 + admin-web 피드백 대시보드 반영 / 위조 토큰 401
 - [ ] 부정 케이스 통과 (§5.5 — kim 비멤버 채널 비노출·직접 접근 차단, refresh 세션 유지)
-- [ ] `make lint`, `make test`(182 passed / Docker 없으면 181 passed, 1 skipped), `make test-integration`(Docker), `make chat-web-build` green
+- [ ] `make lint`, `make test`(183 passed / Docker 없으면 182 passed, 1 skipped), `make test-integration`(Docker), `make chat-web-build` green
 - [ ] **`make test-isolation` (CH-001~010) green**
 - [ ] Admin Web 수동 확인 (§5.6 — 채널 위저드·멤버 Drawer·채팅 사용자 임시 비밀번호·문서 ACL)
 

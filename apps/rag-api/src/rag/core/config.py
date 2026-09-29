@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     chat_max_concurrency: int = 15
     llm_temperature: float = 0.2
     llm_timeout_seconds: float = 120.0
+    # thinking(추론) 모델(Qwen3 / Qwen3.8 등) 제어 — chat_template_kwargs.enable_thinking 로 전달.
+    # RAG 답변은 근거 인용 중심의 짧은 응답이라 기본 off (첫 토큰 지연·출력 토큰 절약). 지원하지 않는 템플릿은 무시한다.
+    llm_enable_thinking: bool = False
 
     # Feedback (v1.1)
     feedback_enabled: bool = True

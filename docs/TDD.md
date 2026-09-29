@@ -15,7 +15,7 @@
 | v1.1 | 2026-07-11 | 답변 피드백(👍/👎) 기능 추가 — Interactive Message Actions 기반. §4.5, §5(message_feedback), §7.1.4, §7.2.5, §7.5, §7.8, §12, §13, §15(M6/M8), §16(DEC-018 확정), §18 갱신 |
 | v1.2 | 2026-07-11 | Python 3.11 → **3.12** 전환. §3.1(스택/툴링 버전), §3.4(cp312 휠 반입·sdist 빌드 금지 정책), §7.7(OCR 격리 fallback), §15(M1 DoD), §16(결정 근거) 갱신 |
 | v2.0 | 2026-09-28 | **Mattermost 완전 제거 → Web Chat 전환.** 사용자 UI = `apps/chat-web`(aiops_chatbot Next.js UI 이식, 원본 무수정), 백엔드 = `apps/chat-gateway`(FastAPI REST + python-socketio `/ws`, NestJS 미이식), 공유 lib `libs/chat-adapter`(`libs/mattermost-adapter` 대체). 답변 **토큰 스트리밍**(`llm.stream.delta`, ADR-001 개정), **prehash 로그인**(PBKDF2 prehash → 서버 scrypt+pepper, HS256 JWT access + HttpOnly refresh 쿠키 rotation), Channel 격리 키 = `chat_channels.id`(UUID) + 채널 멤버십, 피드백 토큰 = `HMAC(message_id:bot_post_id)`, Alembic `0003_webchat`(데이터 보존 — **업그레이드 후 전 문서 재색인 필요**), 요구사항 ID `FR-MM-*` → `FR-WEB-*`. 전 절(§1~§18) 갱신, §19(기존 결함 수정 기록) 신설. 검증: 159 passed · ruff/helm lint clean · admin-web/chat-web build OK |
-| v2.0.1 | 2026-09-29 | **병합 복구** — 2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md`, v1.x 기준) 수정 중 v2.0 에 유효한 것을 이월: Containerfile 8종 + `make build-images/push-images/helm-lint/helm-template`, admin-api 색인 트리거(`index_trigger.py`, 업로드 `start_indexing`), worker `claim_job` 멱등 가드, RQ `job_timeout`, chat-gateway Secret fail-closed(503 `AUTH_NOT_CONFIGURED`), 마스킹 값 패턴, `postgres_password` SecretStr, 단일 Helm chart(rbac/migration-job/namespaces, `secretMount.keys`, `networkPolicy.ingressController/exposedServices/apiServer`). §2, §7.1, §7.2.1, §7.5, §10~§14, §17, §19 갱신. 검증: 182 passed(Docker 없으면 181 passed, 1 skipped) · ruff clean · helm lint 3프로파일 clean |
+| v2.0.1 | 2026-09-29 | **병합 복구** — 2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md`, v1.x 기준) 수정 중 v2.0 에 유효한 것을 이월: Containerfile 8종 + `make build-images/push-images/helm-lint/helm-template`, admin-api 색인 트리거(`index_trigger.py`, 업로드 `start_indexing`), worker `claim_job` 멱등 가드, RQ `job_timeout`, chat-gateway Secret fail-closed(503 `AUTH_NOT_CONFIGURED`), 마스킹 값 패턴, `postgres_password` SecretStr, 단일 Helm chart(rbac/migration-job/namespaces, `secretMount.keys`, `networkPolicy.ingressController/exposedServices/apiServer`). §2, §7.1, §7.2.1, §7.5, §10~§14, §17, §19 갱신. 검증: 183 passed(Docker 없으면 182 passed, 1 skipped) · ruff clean · helm lint 3프로파일 clean |
 
 ---
 
@@ -1514,6 +1514,8 @@ env:
 
 - startupProbe: `/health`, failureThreshold=60, periodSeconds=10 (모델 로딩 최대 10분 허용, NFR-HA-008).
 - RAG API에서의 호출: `openai.AsyncOpenAI(base_url=VLLM_API_URL, api_key="internal")`, timeout=120s, `chat.completions.create(model="internal-rag-llm", ...)`. Worker 경로는 `stream=True, stream_options={"include_usage": True}`로 SSE 스트리밍 소비(마지막 chunk의 usage를 별도 이벤트로).
+- thinking(추론) 모델 제어: `LLMClient` 는 `extra_body={"chat_template_kwargs": {"enable_thinking": LLM_ENABLE_THINKING}}` 를 매 요청에 싣는다(기본 `false` — RAG 는 근거 인용 중심의 짧은 답변이라 첫 토큰 지연·출력 토큰을 줄인다). 템플릿이 지원하지 않는 모델은 무시된다. thinking 모델을 서빙할 때는 vLLM `--reasoning-parser` 도 켜서 혹시 켜진 추론 텍스트가 `content` 로 새지 않게 한다(스트리밍 소비는 `delta.content` 만 사용).
+- 랩(RKE2, values-lab) 모델: `Qwen/Qwen3.8-27B-FP8` — `qwen3_5` 하이브리드 어텐션 VLM 이라 vLLM ≥ 0.17.0, `--language-model-only`, `--reasoning-parser=qwen3` 적용 (rke2_two_node_test_guide.md §2.1). 운영 모델은 DEC-001 에 따른다.
 - 로컬 개발: `tools/mock-llm`(`make mock-llm`, :8010)이 `stream:true` OpenAI SSE(role chunk → content chunks → finish → usage chunk(include_usage 시) → `[DONE]`)를 제공한다. chunk 간 지연 `MOCK_LLM_STREAM_DELAY_MS`(기본 30).
 
 ---
@@ -1714,7 +1716,7 @@ PRD §23.4의 JSON 필드를 `libs/observability.configure_logging(service_name)
 | 성능 | `tests/performance` | locust — 로그인 → `POST /api/v1/posts` Burst/Peak/Soak (PRD §25.5), ACK p95 ≤ 2s (`make perf-chat-burst`, `GATEWAY_URL`/`CHAT_EMAIL`/`CHAT_PASSWORD`) | Phase 8 |
 | 품질 평가 | `tests/evaluation` | 100문항 데이터셋 runner → Recall@10, Faithfulness 등 리포트 | Phase 8 |
 
-v2.0 주요 테스트 (전체 결과: **182 passed** — `make test`(testpaths `libs`·`apps`·`tests`), Docker 미가용 시 CH-001 실 Qdrant 1 skipped → 181 passed. `tools/*` 7건은 `uv run pytest tools` 별도):
+v2.0 주요 테스트 (전체 결과: **183 passed** — `make test`(testpaths `libs`·`apps`·`tests`), Docker 미가용 시 CH-001 실 Qdrant 1 skipped → 182 passed. `tools/*` 7건은 `uv run pytest tools` 별도):
 
 | 영역 | 테스트 |
 |---|---|
@@ -1858,7 +1860,7 @@ deploy/helm/rag-platform/
 | **M9** | Channel 격리 테스트 CH-001~010 자동화 + 보안 체크리스트(§11) 적용 | tests/channel-isolation | 전부 green — **배포 차단 Gate** |
 | **M10** | Helm chart + NetworkPolicy + 모니터링 대시보드 | §14, §12 | poc namespace 배포, Grafana 대시보드 |
 | **M11** | 성능 테스트 + 평가 데이터셋 runner | §13 | PRD §8 지표 리포트 생성 |
-| **M12** (v2.0, **완료**) | **Web Chat 전환** — Mattermost 제거, `apps/chat-gateway`(REST + socket.io, prehash 인증, 피드백), `apps/chat-web`(aiops UI 이식), `libs/chat-adapter`, worker 토큰 스트리밍(`LLMPort.stream`, `WebChatDelivery`), Alembic `0003_webchat`, admin-api `/api/v1/chat/*`·채팅 사용자, admin-web 채널/멤버·채팅 사용자 페이지, Helm chat-gateway/chat-web/ingress/`allow-ingress-to-<svc>`, mock-llm SSE | §1.3, §4.1/4.6, §5, §7.1, §7.2, §7.8, §14 | **182 passed**(v2.0.1 병합 복구 기준, Docker 미가용 시 1 skipped — v2.0 시점 159) · ruff clean · `helm lint` 3종 clean · admin-web build OK · chat-web typecheck/build OK · CH-001~010 green · 수동 E2E(§13.4) 확인 |
+| **M12** (v2.0, **완료**) | **Web Chat 전환** — Mattermost 제거, `apps/chat-gateway`(REST + socket.io, prehash 인증, 피드백), `apps/chat-web`(aiops UI 이식), `libs/chat-adapter`, worker 토큰 스트리밍(`LLMPort.stream`, `WebChatDelivery`), Alembic `0003_webchat`, admin-api `/api/v1/chat/*`·채팅 사용자, admin-web 채널/멤버·채팅 사용자 페이지, Helm chat-gateway/chat-web/ingress/`allow-ingress-to-<svc>`, mock-llm SSE | §1.3, §4.1/4.6, §5, §7.1, §7.2, §7.8, §14 | **183 passed**(v2.0.1 병합 복구 기준, Docker 미가용 시 1 skipped — v2.0 시점 159) · ruff clean · `helm lint` 3종 clean · admin-web build OK · chat-web typecheck/build OK · CH-001~010 green · 수동 E2E(§13.4) 확인 |
 
 ---
 
