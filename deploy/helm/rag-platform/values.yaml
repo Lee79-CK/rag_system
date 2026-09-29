@@ -68,7 +68,8 @@ ingress:
   adminHost: ""                 # 지정 시 /api → admin-api · / → admin-web Ingress 추가 (X-Auth-User 인증 프록시 필수)
   tlsSecretName: ""             # 운영 필수: HTTPS 가 아니면 브라우저 WebCrypto(prehash) 사용 불가
   adminTlsSecretName: ""        # 비우면 tlsSecretName 사용
-  annotations: {}
+  adminProxyBodySize: 100m      # admin host 업로드 상한 (nginx 기본 1m) — admin-api MAX_UPLOAD_BYTES 와 맞춤
+  annotations: {}               # 두 Ingress 공통 추가 annotation (같은 키면 chart 기본값을 덮어씀)
 
 # admin-api 가 parser-indexer Job 을 만들 때 쓰는 ServiceAccount (templates/rbac.yaml)
 serviceAccounts:
@@ -249,6 +250,9 @@ ingestion:
     - { name: EMBEDDING_API_URL, value: "http://embedding-api.rag-ai:8004" }
     - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
     - { name: OCR_ENABLED,       value: "0" }
+    # CPU embedding: 64청크/요청이면 한글 문서에서 30s timeout 초과 → 작은 배치 + 넉넉한 timeout (가이드 §5.1.1)
+    - { name: EMBEDDING_MAX_BATCH, value: "8" }
+    - { name: EMBEDDING_TIMEOUT,   value: "120" }
 
 monitoring:
   grafanaDashboards: true

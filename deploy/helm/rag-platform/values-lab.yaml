@@ -212,6 +212,9 @@ ingestion:
     - { name: EMBEDDING_API_URL, value: "http://embedding-api.rag-ai:8004" }
     - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
     - { name: OCR_ENABLED,       value: "0" }
+    # CPU embedding: 64청크/요청이면 한글 문서에서 30s timeout 초과 → 작은 배치 + 넉넉한 timeout (가이드 §5.1.1)
+    - { name: EMBEDDING_MAX_BATCH, value: "8" }
+    - { name: EMBEDDING_TIMEOUT,   value: "120" }
 
 monitoring:
   grafanaDashboards: false        # kube-prometheus-stack 설치 후 true (가이드 §9). true 면 monitoring NS 선재 필요

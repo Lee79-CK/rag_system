@@ -578,6 +578,57 @@ kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
 >   | sed "s/__INDEX_JOB_ID__/$JOB_ID/" | kubectl create -f -
 > ```
 
+### 5.1.1 실제 PDF 문서 — 권장 용량·페이지 기준 (한글)
+
+샘플(`.md`) 대신 실제 PDF 를 색인할 때의 기준입니다. **P3 와 동일 사양(Core Ultra 7 265 / 128GB)에서 실측**한 값이며, embedding-api 는 values-lab 의 CPU limit 과 같은 6 스레드로 측정했습니다.
+
+**실측 (한글 텍스트 PDF, A4 10pt ≈ 1,800자/쪽)**
+
+| 단계 | 실측 | 비고 |
+|---|---|---|
+| 파싱 (PyMuPDF + pdfplumber 표 추출) | **22ms/쪽** (200쪽 4.4초) | 병목 아님 |
+| 청크 | **≈ 1.06개/쪽** (최대 800tok × 3.3자 = 2,640자, 문단 경계 분할로 평균 ≈ 1,600자) | 200쪽 → 212청크 |
+| 청크 실제 토큰 (bge-m3 토크나이저) | 최대 길이(2,640자) 청크: 순수 한글 **≈ 1,413 tok** · 한글+영문 기술문서 ≈ 906 tok | 한글은 1.87자/토큰 — 청커 근사치(3.3자/토큰)보다 청크가 실제로 약 1.8배 길다 |
+| **임베딩 (bge-m3, CPU 6코어) — 병목** | 최대 길이 청크: 순수 한글 **1.63초** · 혼합 1.20초 / 1,300자 청크: 0.71초 | **색인 시간 ≈ 1~1.7초/쪽** (1.7초 = 보수적 상한) |
+| Qdrant 저장 | ≈ 13KB/청크 (1024-dim float32 4KB + payload 원문) | 1,000쪽 ≈ 14MB — 랩 50Gi 기준 제약 아님 |
+
+**chart 에 반영된 설정 2가지 — 실제 PDF 용 (기본 적용됨, 배포 후 확인만)**
+
+1. **admin host 업로드 상한 100MB** — ingress-nginx 기본 업로드 제한은 **1MB** 라서, 글꼴이 임베드된 한글 PDF 는 10~50쪽만 돼도 **413 Request Entity Too Large** 로 거부됩니다. chart 는 `rag-admin` Ingress 에 `nginx.ingress.kubernetes.io/proxy-body-size: 100m`(values `ingress.adminProxyBodySize`, admin-api `MAX_UPLOAD_BYTES` 100MB 와 일치)을 붙이고, `rag-chat` 은 `1m` 을 유지합니다. `ingress.annotations` 에 같은 키를 넣으면 두 Ingress 모두 그 값으로 덮어씁니다.
+   ```bash
+   kubectl -n rag-app get ingress rag-admin -o jsonpath='{.metadata.annotations}'; echo   # proxy-body-size=100m
+   ```
+2. **임베딩 배치 8 · timeout 120초** — parser-indexer 코드 기본값(청크 **64개**/요청, **30초** timeout)으로는 한글 64청크가 ≈ 60~104초 걸려 **약 20~30쪽 초과 문서**가 `ReadTimeout` → 3회 재시도 → `index_jobs.stage=EMBEDDING, status=FAILED` 가 됩니다(끊긴 요청도 embedding-api 에서는 끝까지 계산되어 재시도마다 CPU 부하가 쌓임). chart 는 `ingestion.extraEnv` 에 `EMBEDDING_MAX_BATCH=8`(한글 8청크 ≈ 13초/요청), `EMBEDDING_TIMEOUT=120`(채팅 질의와 CPU 경합 여유)을 넣습니다. `ingestion.extraEnv` 를 override 할 때는 리스트가 통째로 교체되므로 이 두 항목을 함께 유지하세요.
+   ```bash
+   kubectl -n rag-ingestion get cm parser-indexer-job-template -o jsonpath='{.data.job\.yaml}' | grep -A1 EMBEDDING_   # MAX_BATCH 8 · TIMEOUT 120
+   ```
+
+**권장 기준 (위 설정 기준)**
+
+| 항목 | 권장 | 근거 |
+|---|---|---|
+| **페이지 수 (1차 기준)** | **파일당 300쪽 이하** 권장 (색인 ≈ 5~9분), 최대 500쪽 (≈ 8~15분) | 색인 시간 ≈ 1~1.7초/쪽. 실패 시 전체 재시도, 색인 중 채팅 질의 임베딩도 같은 CPU 를 공유해 응답이 느려짐 |
+| 파일 용량 | 텍스트 위주 한글 PDF: 쪽당 ≈ 50~100KB → **300쪽 ≈ 15~30MB 이하** | 용량은 보조 지표 — 이미지 비중이 크면 용량만 크고 색인 시간은 페이지 수(텍스트 양)에 비례 |
+| 절대 상한 | **100MB** (admin-api `MAX_UPLOAD_BYTES`, 초과 시 413 `FILE_TOO_LARGE`) | 업로드는 admin-api 메모리에 전체 적재(limit 2Gi) — 상향 비권장 |
+| 1,000쪽 이상 | 장/부 단위로 **분할 업로드** | 색인 ≈ 17~30분, 실패 시 재처리 비용 큼 |
+| 스캔본(이미지) PDF | **불가** | OCR 비활성(`OCR_ENABLED=0`, DEC-005) → `SCANNED_NO_OCR` 로 실패. 텍스트 레이어가 있는 PDF 만 |
+| 여러 문서 | **순차 색인** (한 번에 1개) | embedding-api replica 1 / CPU 6코어 공유. 대량 적재는 업무 시간 외 |
+
+업로드 전 사전 점검 (페이지 수·텍스트 레이어·예상 색인 시간):
+
+```bash
+uv run --package parser-indexer python - <<'EOF' manual.pdf
+import sys, fitz
+d = fitz.open(sys.argv[1]); n = d.page_count
+chars = sum(len(p.get_text()) for p in d)
+print(f"{n}쪽, 텍스트 {chars:,}자 ({chars/max(n,1):.0f}자/쪽)")
+print("⚠ 텍스트 거의 없음 — 스캔본(OCR 필요)" if chars / max(n, 1) < 100 else
+      f"예상 청크 ≈ {chars/1600:.0f}개, 예상 색인 ≈ {chars/1600*1.0/60:.1f}~{chars/1600*1.63/60:.1f}분 (한글 기준)")
+EOF
+```
+
+> **답변 쪽 여유**: rag-api 는 토크나이저 없이 3자/토큰으로 근사하지만 Qwen3.8 실측은 한글 1.74자/토큰입니다. 컨텍스트 예산 `MAX_CONTEXT_TOKENS=8192` 가 실제 ≈ 14,100 토큰이 되어 출력 1,024 를 더해도 vLLM `--max-model-len=16384` 안에 들어갑니다. **청크 크기(`CHUNK_SIZE`)나 `RERANK_TOP_N` 을 키우면 초과할 수 있으니** 함께 조정하세요.
+
 ### 5.2 브라우저 Web Chat E2E
 
 1) **브라우저**: `https://chat.rag.lab.local` → hong@example.com / `Rag!Assistant2026` 로그인 → `#rag-cloud-ops` 에 `장애 등급별 대응 절차를 알려주세요.`
@@ -700,6 +751,8 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | 업로드 500, admin-api 로그 `Read-only file system` | `documents-pvc` 미마운트 — `kubectl -n rag-app get deploy admin-api -o jsonpath='{.spec.template.spec.volumes[*].name}'` 에 documents 가 있는지, §4.3 ④ |
 | `index_jobs.error` 에 `TRIGGER_FAILED[k8s]: ... status=403` | admin-api ServiceAccount RBAC 누락(`serviceAccounts.adminApi.create`) 또는 `appServices.admin-api.serviceAccountName` 미지정 — `kubectl -n rag-ingestion get role,rolebinding rag-index-job-creator` |
 | `index_jobs.error` 에 `TRIGGER_FAILED[k8s]: ... ConnectError` | admin-api → apiserver egress 차단 — `networkPolicy.apiServer.cidrs` 가 P3 IP 가 아님 (`--set` 확인, `kubectl -n rag-app get netpol allow-admin-api-to-apiserver -o yaml`) |
+| PDF 업로드가 `413 Request Entity Too Large` (HTML 응답) | `rag-admin` Ingress 에 `proxy-body-size: 100m` annotation 이 없음(구 chart 로 배포 / 다른 IngressClass) → 최신 chart 로 `helm upgrade` 또는 `ingress.adminProxyBodySize` 확인 (§5.1.1). JSON `FILE_TOO_LARGE` 면 admin-api 100MB 상한 초과 → 파일 분할 |
+| 긴 PDF 색인이 `stage=EMBEDDING`, `FAILED` (Job 로그 `ReadTimeout`) | `ingestion.extraEnv` override 로 `EMBEDDING_MAX_BATCH=8`·`EMBEDDING_TIMEOUT=120` 이 빠져 코드 기본값(64청크/30초)으로 동작 → 두 항목 복원 후 재배포 (§5.1.1) |
 | 색인 Job 은 성공했는데 질문에 "근거를 찾지 못했습니다" | 업로드 시 `allowed_channel_ids` 를 비웠거나 다른 채널 UUID 지정 → `document_channel_acl` 없음 → 검색 필터에 절대 매칭 안 됨. `psql -c "select * from document_channel_acl"` 확인 후 재업로드(같은 내용은 409 → 파일 한 글자 수정) |
 | embedding/reranker 가 뜨긴 했는데 답변이 엉뚱함 | 모델 경로 미마운트로 **mock 엔진**으로 기동 — `engine_ready` 로그에 `-mock`. hostPath `/data/bulk/models/{embedding,reranker}/...` 와 `chmod a+rX` 확인 (§4.3 ⑤) |
 | embedding/reranker 최초 기동 CrashLoop | HDD 로딩이 15분(90×10s) 초과 — `appServices.<svc>.startupFailureThreshold` 상향 또는 모델을 `/data/fast/models` 로 이동(NVMe 여유 확인 후) |

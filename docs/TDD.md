@@ -1372,6 +1372,7 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
 - `POST /internal/v1/embeddings` — PRD §17.6 계약 그대로. `normalize=true` 기본. 요청 본문 `{"texts": [...]}`.
 - **MUST**: startup 시 모델 로딩 완료 전 `/health/startup` 503. 로딩은 lifespan에서 1회.
 - **MUST**: batch size 상한 `EMBEDDING_MAX_BATCH=64`. 초과 요청은 내부 분할.
+- 호출 측 parser-indexer 는 chart(`ingestion.extraEnv`)에서 `EMBEDDING_MAX_BATCH=8`, `EMBEDDING_TIMEOUT=120` 으로 보낸다 — CPU 에서 한글 64청크/요청은 60~104초로 코드 기본 timeout(30s)을 넘는다 (실측, RKE2 가이드 §5.1.1).
 - Dense vector만 반환 (PoC). Sparse/ColBERT는 Hybrid(P1) 시 확장 필드로 추가.
 
 ### 7.4 reranker-api
@@ -1826,7 +1827,7 @@ deploy/helm/rag-platform/
 | admin-web (values-lab) | rag-app | 1 | `rag/admin-web` :8080 | (이미지 기본 nginx) | admin host `/` — values.yaml 기본에는 없음 |
 
 - `global.chatSecretName: rag-chat-secrets` (v1.x `global.bridgeSecretName` 대체) — 사전 생성 Secret, 키: `jwt-secret`, `password-pepper`, `feedback-signing-key`. 서비스별로 필요한 키만 `secretMount.keys` 로 투영한다(최소 권한).
-- `ingress` (`ingress.enabled`, 기본 false): `className: nginx`. **chatHost**(기본 `chat.rag.internal`) → Ingress `rag-chat`: `/api/v1`·`/ws` → chat-gateway:8001, `/` → chat-web:3000 (동일 출처 → refresh 쿠키 SameSite=Strict·WS Origin 검사 통과), annotation `proxy-read-timeout`/`proxy-send-timeout` `3600`(websocket 장시간 연결), `proxy-body-size 1m`, `tlsSecretName` 지정 시 TLS(운영 필수). **adminHost** 지정 시 Ingress `rag-admin`: `/api` → admin-api:8003, `/` → admin-web:8080(appServices 에 정의된 경우), TLS = `adminTlsSecretName` 또는 `tlsSecretName`. ⚠ admin-api 는 `X-Auth-User` 를 신뢰하므로(DEC-003) admin host 앞에 인증 프록시가 필수다. 라우트는 appServices 에 존재하는 서비스만 렌더된다.
+- `ingress` (`ingress.enabled`, 기본 false): `className: nginx`. **chatHost**(기본 `chat.rag.internal`) → Ingress `rag-chat`: `/api/v1`·`/ws` → chat-gateway:8001, `/` → chat-web:3000 (동일 출처 → refresh 쿠키 SameSite=Strict·WS Origin 검사 통과), annotation `proxy-read-timeout`/`proxy-send-timeout` `3600`(websocket 장시간 연결), `proxy-body-size 1m`, `tlsSecretName` 지정 시 TLS(운영 필수). **adminHost** 지정 시 Ingress `rag-admin`: `/api` → admin-api:8003, `/` → admin-web:8080(appServices 에 정의된 경우), TLS = `adminTlsSecretName` 또는 `tlsSecretName`, annotation `proxy-body-size` = `adminProxyBodySize`(기본 `100m`, admin-api `MAX_UPLOAD_BYTES` 와 일치 — nginx 기본 1MB 면 실제 PDF 업로드가 413). `ingress.annotations` 는 두 Ingress 에 병합되며 같은 키는 chart 기본값을 덮어쓴다. ⚠ admin-api 는 `X-Auth-User` 를 신뢰하므로(DEC-003) admin host 앞에 인증 프록시가 필수다. 라우트는 appServices 에 존재하는 서비스만 렌더된다.
 - values-poc: harbor registry, `networkPolicy.ingressController.namespace=ingress-nginx`, ingress(chatHost `chat.rag.internal`, adminHost `rag.internal`, `tlsSecretName: rag-chat-tls`), `migration.enabled=true`, replica/resources/PDB. values-lab: `registry.local:5000`, `ingressController{namespace: kube-system, podSelector{app.kubernetes.io/name: rke2-ingress-nginx}}`, `apiServer{enabled: true, cidrs: [<control-plane IP>/32]}`, `serviceAccounts.adminApi.create=true`, `migration.enabled=true`, admin-api `INDEX_JOB_TRIGGER=k8s`, admin-web appService. `helm lint` 3종(values / +poc / +poc+lab) clean (`make helm-lint helm-template`).
 
 ### 14.2 배포 규칙

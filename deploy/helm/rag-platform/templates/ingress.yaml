@@ -24,14 +24,11 @@ metadata:
   namespace: {{ (index $apps "chat-gateway").namespace }}
   labels:
     {{- include "rag.labels" (dict "name" "rag-chat" "root" $) | nindent 4 }}
+  {{- /* socket.io websocket: 장시간 연결 유지 (nginx 기본 60s → 1h). Upgrade 헤더는 ingress-nginx 가 자동 처리.
+         ingress.annotations 는 같은 키를 덮어쓴다 (중복 키 방지를 위해 dict 병합). */}}
+  {{- $chatAnn := dict "nginx.ingress.kubernetes.io/proxy-read-timeout" "3600" "nginx.ingress.kubernetes.io/proxy-send-timeout" "3600" "nginx.ingress.kubernetes.io/proxy-body-size" "1m" }}
   annotations:
-    # socket.io websocket: 장시간 연결 유지 (nginx 기본 60s → 1h). Upgrade 헤더는 ingress-nginx 가 자동 처리
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
-    {{- with $ing.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
+    {{- toYaml (mergeOverwrite $chatAnn (deepCopy ($ing.annotations | default dict))) | nindent 4 }}
 spec:
   {{- with $ing.className }}
   ingressClassName: {{ . }}
@@ -60,10 +57,10 @@ metadata:
   namespace: {{ (index $apps "admin-api").namespace }}
   labels:
     {{- include "rag.labels" (dict "name" "rag-admin" "root" $) | nindent 4 }}
-  {{- with $ing.annotations }}
+  {{- /* 문서 업로드: nginx 기본 1MB → admin-api MAX_UPLOAD_BYTES(100MB)와 맞춤 (가이드 §5.1.1) */}}
+  {{- $adminAnn := dict "nginx.ingress.kubernetes.io/proxy-body-size" ($ing.adminProxyBodySize | default "100m") }}
   annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- toYaml (mergeOverwrite $adminAnn (deepCopy ($ing.annotations | default dict))) | nindent 4 }}
 spec:
   {{- with $ing.className }}
   ingressClassName: {{ . }}
