@@ -1,0 +1,7 @@
+# 빌드 컨텍스트 = apps/chat-web — 호스트 산출물이 npm ci 결과를 덮어쓰지 않도록 제외
+node_modules
+.next
+.next-dev
+*.tsbuildinfo
+next-env.d.ts
+.env*.local

@@ -20,8 +20,7 @@ class EvalCase(BaseModel):
     id: str
     type: CaseType
     question: str
-    channel_id: str
-    team_id: str = "team-001"
+    channel_id: str  # chat_channels.id (UUID) — seed: c0000000-…-001 rag-cloud-ops / -002 rag-hr
     ground_truth: GroundTruth = Field(default_factory=GroundTruth)
 
 

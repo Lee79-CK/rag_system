@@ -71,3 +71,16 @@ def test_processor_order_masks_after_dict_tracebacks(capsys):
         log.exception("boom")
     out = capsys.readouterr()
     assert "redis-secret-pw" not in out.out + out.err
+
+
+def test_mask_web_chat_credentials():
+    """Web Chat 자격 증명(prehash/pepper/cookie 키, bare JWT 값) 마스킹 (v2.0)."""
+    from rag_common import jwt
+    from rag_observability import mask_secrets
+
+    tok = jwt.encode({"sub": "u1"}, b"k" * 32, ttl_seconds=60)
+    out = mask_secrets(
+        {"prehash": "abc", "password_pepper": "p", "set_cookie": "rag_rt=xyz", "msg": f"auth {tok}"}
+    )
+    assert out["prehash"] == out["password_pepper"] == out["set_cookie"] == "***"
+    assert tok not in out["msg"] and tok.rsplit(".", 1)[0] in out["msg"]

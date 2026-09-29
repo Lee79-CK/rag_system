@@ -70,9 +70,12 @@ async def widget_action(
     if ref is None:
         raise ApiError(404, "FEEDBACK_TARGET_NOT_FOUND", "피드백 대상을 찾을 수 없습니다.")
 
-    if not verify_feedback_token(
-        settings.feedback_signing_key(), ref.message_id, post.id, body.value or ""
-    ):
+    signing_key = settings.feedback_signing_key()
+    if not signing_key:  # fail-closed: 키 미설정이면 모든 피드백 거부
+        gateway_invalid_feedback_token_total.inc()
+        log.error("actions.signing_key_missing")
+        raise ApiError(401, "INVALID_SIGNATURE", "서명이 유효하지 않습니다.")
+    if not verify_feedback_token(signing_key, ref.message_id, post.id, body.value or ""):
         gateway_invalid_feedback_token_total.inc()
         raise ApiError(401, "INVALID_SIGNATURE", "서명이 유효하지 않습니다.")
 

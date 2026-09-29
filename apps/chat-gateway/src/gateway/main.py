@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import ORJSONResponse
 from rag_common import new_request_id
-from rag_observability import configure_logging
+from rag_observability import configure_logging, get_logger
 
 from gateway.api import actions, auth, channels, health, posts
 from gateway.api.responses import ApiError, error_response
@@ -24,7 +24,22 @@ from gateway.api.responses import ApiError, error_response
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging("chat-gateway")
+    _warn_missing_secrets()
     yield
+
+
+def _warn_missing_secrets() -> None:
+    """Secret 파일이 없거나 비면 기동 시 1회 error 로그. 런타임은 fail-closed (§11, 리뷰 B-2)."""
+    from gateway.core.config import get_settings
+
+    log = get_logger("gateway.startup")
+    s = get_settings()
+    if not s.jwt_secret():
+        log.error("startup.jwt_secret_missing", file=s.jwt_secret_file)
+    if not s.password_pepper():
+        log.error("startup.password_pepper_missing", file=s.password_pepper_file)
+    if s.feedback_enabled and not s.feedback_signing_key():
+        log.error("startup.feedback_signing_key_missing", file=s.feedback_signing_key_file)
 
 
 def create_app() -> FastAPI:

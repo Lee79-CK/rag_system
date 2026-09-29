@@ -23,7 +23,6 @@ def run_case(client: httpx.Client, rag_url: str, case: EvalCase) -> CaseResult:
         resp = client.post(
             f"{rag_url.rstrip('/')}/internal/v1/rag/completions",
             json={
-                "team_id": case.team_id,
                 "channel_id": case.channel_id,
                 "message": case.question,
             },

@@ -24,7 +24,6 @@ def enqueue_chat_job(redis_conn: Any, chat_job_id: str) -> str:
     from rq import Queue
 
     queue = Queue(_QUEUE_NAME, connection=redis_conn)
-<<<<<<< HEAD:apps/mattermost-bridge/src/bridge/services/job_enqueuer.py
     job = queue.enqueue(
         _WORKER_TARGET,
         chat_job_id,
@@ -33,10 +32,6 @@ def enqueue_chat_job(redis_conn: Any, chat_job_id: str) -> str:
         failure_ttl=FAILURE_TTL_SECONDS,
     )
     return str(job.id)
-=======
-    job = queue.enqueue(_WORKER_TARGET, chat_job_id)
-    return job.id
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가):apps/chat-gateway/src/gateway/services/job_enqueuer.py
 
 
 class Enqueuer(Protocol):

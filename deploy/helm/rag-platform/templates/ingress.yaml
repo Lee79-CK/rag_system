@@ -1,36 +1,65 @@
-<<<<<<< HEAD
-{{/* Ingress — Mattermost Callback(/integrations) · Admin API(/api) · Admin Web(/).
-     appServices 에 존재하는 서비스만 라우팅한다(admin-web 미정의 시 / 경로 생략).
-     ⚠ admin-api 는 X-Auth-User 헤더를 신뢰한다(DEC-003). 운영에서는 이 Ingress 앞에 인증 프록시
-       (oauth2-proxy 등)가 헤더를 주입/덮어써야 하며, 클라이언트가 임의로 보낸 헤더는 제거해야 한다. */}}
+{{/*
+Web Chat / Admin Ingress (§14.1, §22.1) — ingress.enabled=true 일 때만 렌더. appServices 에 정의된 서비스만 라우팅한다.
+chat host  (rag-chat) : /api/v1, /ws → chat-gateway · / → chat-web
+                        동일 출처 필수 → refresh 쿠키 SameSite=Strict, WebSocket Origin 검사 통과. HTTPS 필수(WebCrypto prehash).
+admin host (rag-admin): /api → admin-api · / → admin-web  (adminHost 지정 시)
+  ⚠ admin-api 는 X-Auth-User 헤더를 신뢰한다(DEC-003). 운영에서는 이 Ingress 앞에 인증 프록시
+    (oauth2-proxy 등)가 헤더를 주입/덮어써야 하며, 클라이언트가 임의로 보낸 헤더는 제거해야 한다.
+*/}}
+{{- define "rag.ingressPath" -}}
+{{- $svc := index .root.Values.appServices .service }}
+- path: {{ .path }}
+  pathType: Prefix
+  backend: { service: { name: {{ .service }}, port: { number: {{ $svc.port }} } } }
+{{- end -}}
 {{- if .Values.ingress.enabled }}
 {{- $ing := .Values.ingress }}
-{{- $byNs := dict }}
-{{- range $route := $ing.routes }}
-{{- if hasKey $.Values.appServices $route.service }}
-{{- $svc := index $.Values.appServices $route.service }}
-{{- $list := index $byNs $svc.namespace | default list }}
-{{- $_ := set $byNs $svc.namespace (append $list (dict "route" $route "port" $svc.port)) }}
-{{- end }}
-{{- end }}
-{{- range $ns, $entries := $byNs }}
-=======
-{{/*
-Web Chat / Admin Ingress (§14.1, §22.1) — ingress.enabled=true 일 때만 렌더.
-chat host : /api/v1, /ws → chat-gateway · / → chat-web  (동일 출처 → refresh 쿠키 SameSite=Strict, WS Origin 검사 통과)
-admin host: /api → admin-api · / → admin-web(별도 배포 시)
-*/}}
-{{- if .Values.ingress.enabled }}
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
+{{- $apps := .Values.appServices }}
+{{- if and $ing.chatHost (hasKey $apps "chat-gateway") }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-<<<<<<< HEAD
-  name: rag-platform
-  namespace: {{ $ns }}
+  name: rag-chat
+  namespace: {{ (index $apps "chat-gateway").namespace }}
   labels:
-    app.kubernetes.io/part-of: rag-platform
+    {{- include "rag.labels" (dict "name" "rag-chat" "root" $) | nindent 4 }}
+  annotations:
+    # socket.io websocket: 장시간 연결 유지 (nginx 기본 60s → 1h). Upgrade 헤더는 ingress-nginx 가 자동 처리
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    {{- with $ing.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with $ing.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with $ing.tlsSecretName }}
+  tls:
+    - hosts: [{{ $ing.chatHost | quote }}]
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ $ing.chatHost | quote }}
+      http:
+        paths:
+          {{- include "rag.ingressPath" (dict "root" $ "path" "/api/v1" "service" "chat-gateway") | nindent 10 }}
+          {{- include "rag.ingressPath" (dict "root" $ "path" "/ws" "service" "chat-gateway") | nindent 10 }}
+          {{- if hasKey $apps "chat-web" }}
+          {{- include "rag.ingressPath" (dict "root" $ "path" "/" "service" "chat-web") | nindent 10 }}
+          {{- end }}
+{{- end }}
+{{- if and $ing.adminHost (hasKey $apps "admin-api") }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rag-admin
+  namespace: {{ (index $apps "admin-api").namespace }}
+  labels:
+    {{- include "rag.labels" (dict "name" "rag-admin" "root" $) | nindent 4 }}
   {{- with $ing.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -39,74 +68,18 @@ spec:
   {{- with $ing.className }}
   ingressClassName: {{ . }}
   {{- end }}
-  {{- with $ing.tls }}
+  {{- with ($ing.adminTlsSecretName | default $ing.tlsSecretName) }}
   tls:
-    {{- toYaml . | nindent 4 }}
+    - hosts: [{{ $ing.adminHost | quote }}]
+      secretName: {{ . }}
   {{- end }}
   rules:
-    - host: {{ $ing.host | quote }}
+    - host: {{ $ing.adminHost | quote }}
       http:
         paths:
-          {{- range $e := $entries }}
-          - path: {{ $e.route.path }}
-            pathType: {{ $e.route.pathType | default "Prefix" }}
-            backend:
-              service:
-                name: {{ $e.route.service }}
-                port:
-                  number: {{ $e.port }}
+          {{- include "rag.ingressPath" (dict "root" $ "path" "/api" "service" "admin-api") | nindent 10 }}
+          {{- if hasKey $apps "admin-web" }}
+          {{- include "rag.ingressPath" (dict "root" $ "path" "/" "service" "admin-web") | nindent 10 }}
           {{- end }}
-=======
-  name: rag-chat
-  namespace: rag-app
-  labels:
-    {{- include "rag.labels" (dict "name" "rag-chat" "root" $) | nindent 4 }}
-  annotations:
-    # socket.io websocket: 장시간 연결 유지 (nginx 기본 60s → 1h). Upgrade 헤더는 ingress-nginx 가 자동 처리
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
-    {{- with .Values.ingress.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-spec:
-  ingressClassName: {{ .Values.ingress.className }}
-  {{- if .Values.ingress.tlsSecretName }}
-  tls:
-    - hosts: [{{ .Values.ingress.chatHost | quote }}]
-      secretName: {{ .Values.ingress.tlsSecretName }}
-  {{- end }}
-  rules:
-    - host: {{ .Values.ingress.chatHost | quote }}
-      http:
-        paths:
-          - path: /api/v1
-            pathType: Prefix
-            backend: { service: { name: chat-gateway, port: { number: 8001 } } }
-          - path: /ws
-            pathType: Prefix
-            backend: { service: { name: chat-gateway, port: { number: 8001 } } }
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: chat-web, port: { number: 3000 } } }
-{{- if .Values.ingress.adminHost }}
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: rag-admin
-  namespace: rag-app
-  labels:
-    {{- include "rag.labels" (dict "name" "rag-admin" "root" $) | nindent 4 }}
-spec:
-  ingressClassName: {{ .Values.ingress.className }}
-  rules:
-    - host: {{ .Values.ingress.adminHost | quote }}
-      http:
-        paths:
-          - path: /api
-            pathType: Prefix
-            backend: { service: { name: admin-api, port: { number: 8003 } } }
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 {{- end }}
 {{- end }}

@@ -7,11 +7,13 @@
 **/.mypy_cache
 **/node_modules
 apps/admin-web/dist
+apps/chat-web/.next
+apps/chat-web/.next-dev
+**/*.tsbuildinfo
 secrets
 data
 models
 reports
 docs
 *.md
-!apps/admin-web/README.md
 .env

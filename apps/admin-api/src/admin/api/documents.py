@@ -17,11 +17,7 @@ from sqlalchemy.orm import Session
 from admin.api.responses import api_error, envelope
 from admin.core.config import get_settings
 from admin.core.rbac import DOC_ADMIN, SYS_ADMIN, Principal, require_roles
-<<<<<<< HEAD
-from admin.db.models import Document, DocumentChannelAcl, DocumentVersion, IndexJob
-=======
 from admin.db.models import ChatChannel, Document, DocumentChannelAcl, DocumentVersion, IndexJob
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 from admin.db.session import get_db
 from admin.services.index_trigger import IndexJobTrigger, provide_index_trigger
 from admin.services.storage import NFSStorage
@@ -77,23 +73,20 @@ async def upload_document(
     category: str | None = Form(default=None),
     department: str | None = Form(default=None),
     security_level: str = Form(default="INTERNAL"),
-<<<<<<< HEAD
-    allowed_channel_ids: str | None = Form(
-        default=None,
-        description="허용 Channel ID 목록(콤마 구분). 비우면 어느 채널에서도 검색되지 않는다.",
+    allowed_channel_ids: list[str] = Form(
+        default_factory=list,
+        description="허용 채널(chat_channels.id) — 반복 필드 또는 콤마 구분. 비우면 어느 채널에서도 검색되지 않는다.",
     ),
     start_indexing: bool = Form(default=False, description="true 면 업로드 직후 색인 Job 생성"),
-=======
-    allowed_channel_ids: list[str] = Form(default_factory=list),
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
     trigger: IndexJobTrigger = Depends(provide_index_trigger),
 ) -> dict:
-    """업로드 + Channel ACL(document_channel_acl) 등록.
+    """업로드 + Channel ACL(document_channel_acl) 등록 (+ 선택적으로 색인 Job 생성).
 
     allowed_channel_ids = chat_channels.id — parser-indexer 가 Qdrant payload
-    `allowed_channel_ids` 로 복사하며 build_filter() 격리의 근거가 된다 (§6.3).
+    `allowed_channel_ids` 로 복사하며 build_filter() 격리의 근거가 된다 (§6.3, FR-DOC-004).
+    start_indexing=true 면 index_jobs INSERT + Job 트리거 (FR-IDX-010, ADR-008).
     """
     settings = get_settings()
     channel_ids = _validated_channel_ids(db, allowed_channel_ids)
@@ -155,17 +148,12 @@ async def upload_document(
     db.add(version)
     db.flush()
     doc.active_version_id = version.id
-<<<<<<< HEAD
 
     # FR-DOC-004 / FR-RAG-004: 허용 Channel ACL. parser-indexer 가 이 행으로 allowed_channel_ids 를 채운다.
-    channel_ids = _parse_channel_ids(allowed_channel_ids)
-=======
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
     for cid in channel_ids:
         db.add(DocumentChannelAcl(document_id=doc.id, channel_id=cid, access_type="ALLOW"))
     db.commit()
 
-<<<<<<< HEAD
     result: dict = {
         "document": _doc_view(doc),
         "version": _version_view(version),
@@ -176,17 +164,6 @@ async def upload_document(
         result["index_job_id"] = str(job.id)
         result["index_job_status"] = job.status
     return envelope(result)
-
-
-def _parse_channel_ids(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    seen: dict[str, None] = {}
-    for part in raw.split(","):
-        cid = part.strip()
-        if cid:
-            seen.setdefault(cid, None)
-    return list(seen)
 
 
 def _create_index_job(db: Session, doc: Document, trigger: IndexJobTrigger) -> IndexJob:
@@ -205,20 +182,14 @@ def _create_index_job(db: Session, doc: Document, trigger: IndexJobTrigger) -> I
         job.error = f"TRIGGER_FAILED[{trigger.name}]: {exc}"[:500]
         db.commit()
     return job
-=======
-    return envelope(
-        {
-            "document": _doc_view(doc),
-            "version": _version_view(version),
-            "allowed_channel_ids": channel_ids,
-        }
-    )
 
 
 def _validated_channel_ids(db: Session, raw: list[str]) -> list[str]:
     """존재하는 chat_channels.id 만 허용 (오타·타 시스템 id 로 인한 격리 오류 방지)."""
     ids: list[str] = []
-    for v in dict.fromkeys(x.strip() for x in raw if x and x.strip()):
+    # 반복 필드(admin-web) · 콤마 구분(curl 편의) 모두 허용
+    parts = (p.strip() for x in raw if x for p in x.split(","))
+    for v in dict.fromkeys(p for p in parts if p):
         try:
             ids.append(str(uuid.UUID(v)))
         except ValueError as exc:
@@ -244,7 +215,6 @@ def _validated_channel_ids(db: Session, raw: list[str]) -> list[str]:
                 channel_ids=missing,
             )
     return ids
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 
 @router.get("")

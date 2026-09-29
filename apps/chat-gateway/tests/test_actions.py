@@ -81,3 +81,15 @@ def test_fb_disabled_404(harness):
     harness.settings.feedback_enabled = False
     post_id, _, token = harness.answered_bot_post()
     assert _fb(harness, post_id, token).status_code == 404
+
+
+def test_fb_missing_signing_key_rejects_all(harness):
+    """서명키 파일이 없거나 비면 빈 키로 만든 토큰도 거부 (fail-closed, 리뷰 B-2 이식)."""
+    from chat_adapter import feedback_token
+
+    post_id, message_id, _ = harness.answered_bot_post()
+    harness.settings.feedback_signing_key_file = "/nonexistent/fb"
+    assert harness.settings.feedback_signing_key() == b""
+    resp = _fb(harness, post_id, feedback_token(b"", message_id, post_id))
+    assert resp.status_code == 401 and resp.json()["error"]["code"] == "INVALID_SIGNATURE"
+    assert harness.store.feedback == {}

@@ -15,6 +15,7 @@
 | v1.1 | 2026-07-11 | 답변 피드백(👍/👎) 기능 추가 — Interactive Message Actions 기반. §4.5, §5(message_feedback), §7.1.4, §7.2.5, §7.5, §7.8, §12, §13, §15(M6/M8), §16(DEC-018 확정), §18 갱신 |
 | v1.2 | 2026-07-11 | Python 3.11 → **3.12** 전환. §3.1(스택/툴링 버전), §3.4(cp312 휠 반입·sdist 빌드 금지 정책), §7.7(OCR 격리 fallback), §15(M1 DoD), §16(결정 근거) 갱신 |
 | v2.0 | 2026-09-28 | **Mattermost 완전 제거 → Web Chat 전환.** 사용자 UI = `apps/chat-web`(aiops_chatbot Next.js UI 이식, 원본 무수정), 백엔드 = `apps/chat-gateway`(FastAPI REST + python-socketio `/ws`, NestJS 미이식), 공유 lib `libs/chat-adapter`(`libs/mattermost-adapter` 대체). 답변 **토큰 스트리밍**(`llm.stream.delta`, ADR-001 개정), **prehash 로그인**(PBKDF2 prehash → 서버 scrypt+pepper, HS256 JWT access + HttpOnly refresh 쿠키 rotation), Channel 격리 키 = `chat_channels.id`(UUID) + 채널 멤버십, 피드백 토큰 = `HMAC(message_id:bot_post_id)`, Alembic `0003_webchat`(데이터 보존 — **업그레이드 후 전 문서 재색인 필요**), 요구사항 ID `FR-MM-*` → `FR-WEB-*`. 전 절(§1~§18) 갱신, §19(기존 결함 수정 기록) 신설. 검증: 159 passed · ruff/helm lint clean · admin-web/chat-web build OK |
+| v2.0.1 | 2026-09-29 | **병합 복구** — 2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md`, v1.x 기준) 수정 중 v2.0 에 유효한 것을 이월: Containerfile 8종 + `make build-images/push-images/helm-lint/helm-template`, admin-api 색인 트리거(`index_trigger.py`, 업로드 `start_indexing`), worker `claim_job` 멱등 가드, RQ `job_timeout`, chat-gateway Secret fail-closed(503 `AUTH_NOT_CONFIGURED`), 마스킹 값 패턴, `postgres_password` SecretStr, 단일 Helm chart(rbac/migration-job/namespaces, `secretMount.keys`, `networkPolicy.ingressController/exposedServices/apiServer`). §2, §7.1, §7.2.1, §7.5, §10~§14, §17, §19 갱신. 검증: 182 passed(Docker 없으면 181 passed, 1 skipped) · ruff clean · helm lint 3프로파일 clean |
 
 ---
 
@@ -129,8 +130,9 @@ rag-platform/
 │   │   │   └── services/
 │   │   │       ├── trigger.py      # 트리거 판정(순수 함수) + Bot 답변 위치 결정
 │   │   │       ├── rate_limit.py   # 고정 윈도우 INCR+EXPIRE
-│   │   │       └── job_enqueuer.py # RQ enqueue (payload = job_id)
+│   │   │       └── job_enqueuer.py # RQ enqueue (payload = job_id, job_timeout=600)
 │   │   ├── tests/
+│   │   ├── Containerfile
 │   │   └── pyproject.toml
 │   ├── chat-web/                   # Web Chat UI (aiops_chatbot apps/web 이식, Next.js 15) — §7.8
 │   │   ├── src/
@@ -140,6 +142,7 @@ rag-platform/
 │   │   │   ├── shared/             # crypto/prehash.ts, schemas/{blocks,ws}.ts (packages/shared 인라인)
 │   │   │   └── styles/
 │   │   ├── next.config.ts          # output: standalone, dev 전용 /api rewrite, CSP
+│   │   ├── Containerfile           # node:22-alpine, standalone `node server.js` :3000 (컨텍스트 = apps/chat-web)
 │   │   ├── PORTING.md              # 이식 기록 (원본 커밋, 유지/변경/제거 목록)
 │   │   └── package.json            # @rag/chat-web (npm)
 │   ├── rag-api/                    # RAG Orchestration (FastAPI + Worker)
@@ -191,6 +194,8 @@ rag-platform/
 │   │   │   │   ├── models.py       # SQLAlchemy ORM (§5 DDL과 1:1)
 │   │   │   │   └── migrations/     # Alembic (0001_initial → 0002_feedback_enabled → 0003_webchat)
 │   │   │   └── services/
+│   │   │       ├── storage.py      # 문서 원본 저장 (NFS PVC, DOCUMENT_STORAGE_PATH)
+│   │   │       └── index_trigger.py # 색인 Job 트리거 none|k8s (§7.5)
 │   │   ├── tests/
 │   │   ├── Containerfile
 │   │   └── pyproject.toml
@@ -262,7 +267,7 @@ rag-platform/
 │   ├── mock-llm/                   # OpenAI-compatible mock LLM (stream:true SSE 지원)
 │   └── evaluation/                 # RAG 품질 평가 runner
 ├── deploy/
-│   └── helm/rag-platform/          # Umbrella Chart (§14)
+│   └── helm/rag-platform/          # 단일 Chart (§14 — sub-chart/외부 dependency 없음)
 ├── scripts/                        # export_openapi.py, measure_latency.py, seed_dev.sql, create_chat_user.py
 ├── tests/
 │   ├── contract/                   # 계약 테스트 (mock-llm SSE ↔ LLMClient.stream)
@@ -274,7 +279,7 @@ rag-platform/
 └── CLAUDE.md                       # Claude Code용 프로젝트 컨텍스트 (§17 참조)
 ```
 
-> v2.0 삭제: `apps/mattermost-bridge`(pkg `bridge`), `libs/mattermost-adapter`, `rag_schemas/mattermost.py`, `tests/mattermost`. Containerfile/이미지 빌드 스크립트는 신규 앱(chat-gateway/chat-web)도 저장소에 두지 않는다(§14.2).
+> v2.0 삭제: `apps/mattermost-bridge`(pkg `bridge`), `libs/mattermost-adapter`, `rag_schemas/mattermost.py`, `tests/mattermost`. 이미지 빌드 자산은 저장소에 포함한다: `apps/{chat-gateway,rag-api,admin-api,embedding-api,reranker-api,parser-indexer}/Containerfile`(uv 2-stage, 리포 루트 컨텍스트, `UV_ONLY_BINARY`, uid 10001, `ARG PYTHON_IMAGE/UV_IMAGE/UV_INDEX_URL/UV_EXTRA` — embedding/reranker 는 `UV_EXTRA=models` 기본), `apps/admin-web/Containerfile`+`nginx.conf`(:8080 비루트), `apps/chat-web/Containerfile`(Next standalone, 컨텍스트 = `apps/chat-web`), `.dockerignore`. 빌드/푸시는 `make build-images` / `make push-images`(`REG=`, `TAG=`) (§14.2).
 
 ### 2.1 구조 규칙
 
@@ -1062,7 +1067,9 @@ def build_filter(binding: ChannelBinding) -> qdrant.Filter:
    INSERT 실패 → dedup key 해제 후 예외 전파
 8. dedup key 에 질문 post_id 기록 → post.created ×2 emit (질문, placeholder Bot) → room channel:{id}
 9. Worker 전달: Redis SET f"chat:req:{job_id}" = ChatRequest(source="web", bot_post_id, trace_id, …) EX=86400
-   → RQ Queue("rag-chat").enqueue("rag.worker.chat_worker.run_chat_job", job_id)  # payload 는 job_id 만
+   → RQ Queue("rag-chat").enqueue("rag.worker.chat_worker.run_chat_job", job_id,
+        job_timeout=600, result_ttl=3600, failure_ttl=86400)  # payload 는 job_id 만
+     (RQ 기본 job_timeout 180s < 파이프라인 최악치 ≈185s — LLM 120s + embedding/rerank 30s×2 + Qdrant 5s)
    실패 → chat_jobs FAILED(error="ENQUEUE_FAILED:<type>") + Bot Post 를 ERROR_TEXT / props{streaming:false, kind:"error"} 로
           갱신 + post.updated emit (result=enqueue_failed)
 10. 201 + 질문 PostDto (result=accepted, gateway_ack_latency_seconds 기록)
@@ -1131,7 +1138,8 @@ Origin: origin_checker — Origin 없음(브라우저 외, 인증은 토큰으�
 | `test_ws_connect_rejects_bad_token` / `test_ws_bot_token_rejected` | 잘못된 토큰·Bot 토큰 연결 거부 |
 | `test_ws_joins_only_member_channel_rooms` / `test_ws_ack_resyncs_rooms_after_membership_removed` | 멤버 채널 room만 join / ack 시 탈퇴 채널 leave |
 | `test_ws_origin_same_origin_and_allowlist` | same-origin + 허용 목록 통과, 그 외 거부 |
-| `test_rq_enqueuer_returns_job_id_and_payload_is_job_id_only` | RQ payload = job_id만, `job.id` 반환 |
+| `test_rq_enqueuer_returns_job_id_and_payload_is_job_id_only` | RQ payload = job_id만, `job.id` 반환, `job_timeout`/`result_ttl`/`failure_ttl` 지정 |
+| `test_login_fails_closed_without_jwt_secret` / `test_login_fails_closed_without_pepper` / `test_empty_key_jwt_rejected` | Secret 누락 시 503 `AUTH_NOT_CONFIGURED` / 빈 키 서명 JWT 401 (§7.1.5) |
 
 #### 7.1.4 답변 피드백(👍/👎) 수신 — Widget Action (v1.1 추가, v2.0 개정)
 
@@ -1160,6 +1168,7 @@ Origin: origin_checker — Origin 없음(브라우저 외, 인증은 토큰으�
 - **MUST**: `FEEDBACK_SIGNING_KEY`는 K8s Secret 파일(`FEEDBACK_SIGNING_KEY_FILE`)로 gateway·worker에 동일하게 주입하고 로그에 노출하지 않는다.
 - **MUST**: 5·7단계 검증 없이 UPSERT하지 않는다 — 서명이 유효해도 message가 삭제/타 Channel 소속이면 404/403.
 - 채널별 off(`binding.feedback_enabled=false`)이면 Worker가 `feedback_token`을 싣지 않으므로 버튼 요청은 6단계에서 거부된다.
+- **fail-closed**: `FEEDBACK_SIGNING_KEY` 가 비면 6단계에서 모든 요청을 401 `INVALID_SIGNATURE` 로 거부하고 `actions.signing_key_missing` error 로그를 남긴다(빈 키 HMAC 위조 방지). Worker 도 키가 없으면 `feedback_token` 을 싣지 않는다(`worker.feedback_signing_key_missing`).
 
 피드백 관련 단위 테스트 (M6/M12 완료 조건):
 
@@ -1172,6 +1181,7 @@ Origin: origin_checker — Origin 없음(브라우저 외, 인증은 토큰으�
 | `test_fb_cross_channel_message_rejected` | 타 Channel message → 403 |
 | `test_fb_target_not_found_404` / `test_fb_unsupported_action_400` / `test_fb_disabled_404` | 대상 없음 / 미지원 action / 기능 off |
 | `test_fb_no_rag_call` | 피드백 경로에서 Queue/LLM 미호출 assert |
+| `test_fb_missing_signing_key_rejects_all` | 서명 키 미설정 시 모든 요청 401 `INVALID_SIGNATURE` (fail-closed) |
 
 #### 7.1.5 인증 (prehash 로그인, JWT, refresh rotation — ADR-013)
 
@@ -1188,6 +1198,7 @@ Origin: origin_checker — Origin 없음(브라우저 외, 인증은 토큰으�
 - **access token**: HS256 JWT(`JWT_SECRET_FILE`), TTL `CHAT_ACCESS_TTL_SECONDS`(900s). chat-web은 메모리(zustand)에만 보관, `Authorization: Bearer`.
 - **refresh token**: `secrets.token_urlsafe(32)` 원문은 쿠키에만, DB에는 sha256. 쿠키 `rag_rt`: HttpOnly, SameSite=Strict, Path=`/api/v1/auth`, Secure=`COOKIE_SECURE`, Max-Age=`REFRESH_TTL_DAYS`(7일).
 - Bot/System 계정(`is_bot`)은 로그인·access token·WS 연결이 모두 거부된다(loop guard).
+- **fail-closed (Secret 누락)**: 기동 시 `_warn_missing_secrets()` 가 `startup.jwt_secret_missing` / `startup.password_pepper_missing` / (`FEEDBACK_ENABLED` 시) `startup.feedback_signing_key_missing` error 로그를 남긴다. 런타임에 JWT 키 또는 pepper 가 비면 login / refresh / password change 는 **503 `AUTH_NOT_CONFIGURED`**(`auth.secret_missing` 로그) — 빈 키로 서명·해시하지 않는다. 빈 키로 서명된 JWT 는 항상 401 (`test_login_fails_closed_without_jwt_secret`, `test_login_fails_closed_without_pepper`, `test_empty_key_jwt_rejected`).
 - 계정 생성은 admin-api `/api/v1/chat/users`만 가능(자가 가입 없음, §7.5). 임시 비밀번호로 생성된 사용자는 `must_change_password=true` → chat-web이 `/profile`로 유도.
 
 #### 7.1.6 채널 / Post 조회 API
@@ -1215,13 +1226,15 @@ Origin: origin_checker — Origin 없음(브라우저 외, 인증은 토큰으�
 
 ```
 def run_chat_job(job_id):                      # RQ entrypoint (문자열 target)
-    request = load_chat_request(job_id)        # Redis chat:req:{job_id} → ChatRequest (없으면 RuntimeError)
+    request = load_chat_request(job_id)        # Redis chat:req:{job_id} → ChatRequest (없으면 RuntimeError). Redis 연결은 with 로 닫음
     _event_loop().run_until_complete(process_chat_job(get_worker_deps(), job_id, request))
     # 프로세스 수명 동안 재사용하는 persistent event loop — AsyncRedisManager/httpx/AsyncOpenAI 연결이
     # loop 에 묶이므로 job 마다 asyncio.run() 으로 새 loop 를 만들지 않는다.
 
 async def process_chat_job(deps, job_id, request):
-    1. chat_jobs → RUNNING (started_at)
+    1. claim_job(job_id): chat_jobs QUEUED → RUNNING 원자 전이 (UPDATE … WHERE status='QUEUED', started_at)
+       선점 실패(이미 다른 워커가 잡았거나 종료된 job — RQ 재전달/중복 enqueue) → worker.job_already_claimed 로그 후
+       None 반환 (LLM 호출·Bot Post 갱신·emit 없음 — 답변 중복 게시 방지, test_worker_skips_already_claimed_job)
     2. Binding 조회(channel_id). 없음/비활성 → chat_jobs FAILED("CHANNEL_NOT_BOUND_OR_DISABLED")
        + delivery.deliver_error(CHANNEL_DISABLED_TEXT) — placeholder 가 "생각 중"으로 남지 않게 — 후 RuntimeError
     3. scope_key 계산(§4.3) → channel_conversations upsert (ON CONFLICT (scope_key) DO NOTHING)
@@ -1265,7 +1278,8 @@ class DeliveryPort(Protocol):      # 구현: rag.adapters.webchat_delivery.WebCh
 - **MUST**: 동시 실행은 RQ worker 프로세스 수 × 내부 semaphore로 `CHAT_MAX_CONCURRENCY`(15)를 넘지 않는다 (NFR-PERF-004).
 - **MUST**: 단계별 latency(`embedding_ms`, `search_ms`, `rerank_ms`, `llm_ms`, `llm_first_token_ms`)와 토큰 수를 `usage`에 기록한다 (FR-OPS-006).
 - **MUST**: 스트리밍 emit 실패는 답변 생성을 중단시키지 않는다(`SafeStream`). Bot Post UPDATE가 최종 SSOT다.
-- `WebChatDelivery` 의존성: `PgChatPostStore`(Bot Post UPDATE — `props = props || :props` jsonb merge, `delete_at IS NULL` 조건), `redis_emitter(REDIS_URL)`, `FEEDBACK_SIGNING_KEY_FILE` 내용(bytes).
+- `WebChatDelivery` 의존성: `PgChatPostStore`(Bot Post UPDATE — `props = props || :props` jsonb merge, `delete_at IS NULL` 조건), `redis_emitter(REDIS_URL)`, `FEEDBACK_SIGNING_KEY_FILE` 내용(bytes — 비면 `feedback_token` 미부착 + `worker.feedback_signing_key_missing` 로그).
+- **MUST**: Job 상태 전이는 `claim_job` 선점 후에만 진행한다(멱등성). chat-gateway 는 `chat_jobs` 를 `QUEUED` 로 INSERT 한다(§7.1.1 step 7).
 
 #### 7.2.2 Token Budget 알고리즘
 
@@ -1372,8 +1386,13 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
 - 인증(DEC-003 PoC 확정): **자체 세션 없이 Reverse Proxy 헤더 신뢰 방식** — ingress 뒤에서 `X-Auth-User` 헤더를 읽고 `admin_users`와 매칭. 폐쇄망 내부 IdP 연계는 oauth2-proxy를 앞단에 두는 것으로 분리. 코드에는 `AuthBackend` 인터페이스를 두어 Keycloak/LDAP 교체 가능하게 한다. (Web Chat 사용자 계정 `chat_users`와는 완전히 별개)
 - RBAC: 역할 4종(DOC_ADMIN, SYS_ADMIN, QUALITY_EVALUATOR, AUDITOR). FastAPI dependency `require_roles("SYS_ADMIN")` 패턴.
 - 문서 업로드: `python-multipart`, 크기/확장자 검증(FR-DOC-002), sha256 중복 검사(FR-DOC-003), 저장은 PoC 확정(DEC-004) **NFS PVC** (`/data/documents/{document_id}/{version}/`). MinIO는 스토리지 어댑터 인터페이스로 교체 가능하게.
-  - **v2.0**: 업로드 Form 필드 `allowed_channel_ids`(반복 필드, `chat_channels.id` 목록) → UUID 형식 검증(422 `INVALID_CHANNEL_ID`) + 존재 검증(404 `CHANNEL_NOT_FOUND`) → `document_channel_acl(ALLOW)` 기록. 응답에 `allowed_channel_ids` 포함. (v1.x에는 seed 외 ACL 기록 경로가 없던 결함 수정, §19)
-- 색인 트리거: `index_jobs` INSERT 후 Kubernetes Job 생성 (`kubernetes` Python client, `parser-indexer` 이미지, args=`--index-job-id`). PoC에서 K8s API 권한이 곤란하면 fallback으로 DB polling worker 허용.
+  - **v2.0**: 업로드 Form 필드 `allowed_channel_ids`(반복 필드 **또는 콤마 구분**, `chat_channels.id` 목록) → UUID 형식 검증(422 `INVALID_CHANNEL_ID`) + 존재 검증(404 `CHANNEL_NOT_FOUND`) → `document_channel_acl(ALLOW)` 기록. 응답에 `allowed_channel_ids` 포함. (v1.x에는 seed 외 ACL 기록 경로가 없던 결함 수정, §19)
+  - 업로드 Form 필드 **`start_indexing`**(bool, 기본 false): true 면 업로드 직후 `index_jobs` INSERT + 색인 트리거 호출 → 응답에 `index_job_id`, `index_job_status` 포함 (FR-IDX-010).
+- 색인 트리거 (`admin/services/index_trigger.py`, ADR-008): 업로드(`start_indexing=true`)·재색인(`POST /api/v1/documents/{id}/reindex`, 응답에 `index_job_id`/`trigger`/`error`) 모두 `index_jobs` INSERT 후 트리거를 호출한다. `INDEX_JOB_TRIGGER`로 선택:
+  - `none`(기본, `NoopTrigger`): `index_jobs` 행만 남긴다 — 로컬/테스트는 CLI(`python -m ingestion.main --index-job-id <uuid>`)로 수동 실행.
+  - `k8s`(`K8sJobTrigger`): 추가 의존성(`kubernetes` client) 없이 in-cluster ServiceAccount 토큰 + httpx 로 kube-apiserver 호출 — ① `GET /api/v1/namespaces/{INDEX_JOB_NAMESPACE}/configmaps/{INDEX_JOB_TEMPLATE_CONFIGMAP}`(chart 가 렌더한 `parser-indexer-job-template` 의 `job.yaml`) ② `__INDEX_JOB_ID__` 치환 ③ `POST /apis/batch/v1/namespaces/{ns}/jobs`(application/yaml). 필요 권한은 `templates/rbac.yaml` Role(configmaps get, jobs create/get/list) + `networkPolicy.apiServer` egress.
+  - 트리거 실패는 예외로 올리지 않고 `index_jobs.error = "TRIGGER_FAILED[<name>]: ..."` 로 기록한다(요청은 성공 — 수동 실행 가능). 오류 메시지에 SA 토큰을 포함하지 않는다.
+  - 테스트: `test_fr_idx_010_upload_with_start_indexing_creates_job_and_records_trigger_failure`, `test_reindex_calls_trigger`, `test_fr_idx_010_k8s_trigger_posts_job_manifest`, `test_k8s_trigger_wraps_http_errors_without_leaking_token`, `test_k8s_trigger_rejects_template_without_placeholder`, `test_build_trigger_defaults_to_noop`.
 - **Web Chat 채널/Binding/멤버 (v2.0, `/api/v1/mattermost/*` → `/api/v1/chat/*`)** — 쓰기는 SYS_ADMIN:
 
 | Method | Endpoint | 설명 |
@@ -1561,6 +1580,16 @@ CHAT_GATEWAY_URL=http://localhost:8001           # dev rewrite 대상 (/api)
 NEXT_PUBLIC_WS_URL=                              # dev: http://localhost:8001 / 운영: 비움(same-origin)
 NEXT_PUBLIC_WORKSPACE_SLUG=rag
 
+# admin-api — 문서 저장 / 색인 트리거 (§7.5)
+DOCUMENT_STORAGE_PATH=/data/documents            # NFS PVC 마운트 경로 (parser-indexer 동일)
+MAX_UPLOAD_BYTES=104857600                       # 100 MiB
+INDEX_JOB_TRIGGER=none                           # none | k8s
+INDEX_JOB_NAMESPACE=rag-ingestion
+INDEX_JOB_TEMPLATE_CONFIGMAP=parser-indexer-job-template
+
+# 평가 / 측정 도구 (tools/evaluation, scripts/measure_latency.py)
+RAG_API_URL=http://localhost:8002                # --rag-url 기본값
+
 # mock-llm (로컬)
 MOCK_LLM_STREAM_DELAY_MS=30                      # SSE chunk 간 지연
 ```
@@ -1572,8 +1601,8 @@ MOCK_LLM_STREAM_DELAY_MS=30                      # SSE chunk 간 지연
 | `CHAT_DEFAULT_TRIGGER_WORD` | chat-gateway | `!rag` | |
 | `CHAT_MAX_POST_CHARS` | chat-gateway | `12000` | `CreatePostRequest.message` max_length와 동일 |
 | `CHAT_CORS_ORIGINS` | chat-gateway | `http://localhost:3000` | 운영 values는 `""` |
-| `JWT_SECRET_FILE` | chat-gateway | `""` | 파일 없으면 토큰 검증 전부 실패(fail-closed) |
-| `PASSWORD_PEPPER_FILE` | chat-gateway, admin-api | `""` | admin-api 미설정 시 사용자 생성 503 |
+| `JWT_SECRET_FILE` | chat-gateway | `""` | 파일 없으면 fail-closed — 로그인/refresh 503 `AUTH_NOT_CONFIGURED`, 토큰 검증 전부 401 |
+| `PASSWORD_PEPPER_FILE` | chat-gateway, admin-api | `""` | chat-gateway 미설정 시 로그인 503 `AUTH_NOT_CONFIGURED`, admin-api 미설정 시 사용자 생성 503 |
 | `CHAT_ACCESS_TTL_SECONDS` | chat-gateway | `900` | |
 | `REFRESH_TTL_DAYS` | chat-gateway | `7` | |
 | `COOKIE_SECURE` | chat-gateway | `true` | `.env.example`은 로컬용 `false` |
@@ -1582,9 +1611,16 @@ MOCK_LLM_STREAM_DELAY_MS=30                      # SSE chunk 간 지연
 | `RATE_LIMIT_PER_USER_PER_MIN` / `RATE_LIMIT_PER_CHANNEL_PER_MIN` | chat-gateway | `10` / `30` | 질문 |
 | `RATE_LIMIT_FEEDBACK_PER_USER_PER_MIN` | chat-gateway | `20` | |
 | `FEEDBACK_ENABLED` | chat-gateway, rag-api | `true` | |
-| `FEEDBACK_SIGNING_KEY_FILE` | chat-gateway, rag-worker | `""` / `./secrets/rag/feedback-signing-key` | 동일 키 필수 |
+| `FEEDBACK_SIGNING_KEY_FILE` | chat-gateway, rag-worker | `""` / `./secrets/rag/feedback-signing-key` | 동일 키 필수. 비면 `/actions` 전부 401, worker 는 토큰 미부착 |
 | `REDIS_URL` | chat-gateway, rag-worker | `redis://localhost:6379/0` | RQ + dedup/rate-limit + socket.io manager |
 | `CHAT_GATEWAY_URL` / `NEXT_PUBLIC_WS_URL` / `NEXT_PUBLIC_WORKSPACE_SLUG` | chat-web | `http://localhost:8001` / (same-origin) / `rag` | build 시 |
+| `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_USER`/`POSTGRES_DB`/`POSTGRES_PASSWORD` | chat-gateway, rag-api/worker, admin-api, parser-indexer | 로컬 dev 값 | `postgres_password` 는 `SecretStr`. Helm 은 `rag-postgresql-secret`(key `password`) secretKeyRef (`rag.dbEnv`) |
+| `RQ_REDIS_URL` | rag-worker (`rq worker` CLI) | — | Helm `rag.redisEnv` 가 `REDIS_URL` 과 함께 주입 |
+| `DOCUMENT_STORAGE_PATH` | admin-api, parser-indexer | `/data/documents` | |
+| `MAX_UPLOAD_BYTES` | admin-api | `104857600` | 초과 413 `FILE_TOO_LARGE` |
+| `INDEX_JOB_TRIGGER` | admin-api | `none` | `k8s` 면 ServiceAccount/RBAC + apiserver egress 필요 (§7.5, §14) |
+| `INDEX_JOB_NAMESPACE` / `INDEX_JOB_TEMPLATE_CONFIGMAP` | admin-api | `rag-ingestion` / `parser-indexer-job-template` | |
+| `RAG_API_URL` | tools/evaluation, scripts/measure_latency.py | `http://localhost:8002` | |
 | `MOCK_LLM_STREAM_DELAY_MS` | mock-llm | `30` | |
 
 - v2.0 삭제: `MATTERMOST_BASE_URL`, `MATTERMOST_OUTGOING_TOKEN_SECRET_FILE`, `BRIDGE_ALLOWED_SOURCE_CIDRS`, `BRIDGE_BOT_USERNAME`, `BRIDGE_BINDING_CACHE_TTL_SECONDS`, `MATTERMOST_DEFAULT_TRIGGER_WORD`, `MATTERMOST_MAX_POST_CHARS`, `BRIDGE_INTERNAL_URL`, `MATTERMOST_SECRET_DIR`.
@@ -1598,12 +1634,12 @@ Rate Limit 구현: `gateway/services/rate_limit.allow()` — Redis `INCR + EXPIR
 | # | 항목 | 구현 위치 | PRD |
 |---|---|---|---|
 | 1 | 원문 비밀번호 미전송(prehash), 서버 저장 scrypt+pepper, 검증은 상수시간 + 해시 없을 때 dummy 동일 비용(사용자 열거 방지), 로그인 실패 동일 오류 | chat-web `shared/crypto/prehash.ts`, `rag_common/passwords.py`, gateway `api/auth.py` | §22.2 |
-| 2 | Secret(JWT 키/pepper/피드백 서명 키)은 Secret file mount로만 주입, bytes/SecretStr 보관, 로그·응답·repr 미노출 (`test_secret_never_in_logs`) | gateway `core/config.py`, rag-worker, admin-api, helm `secretMount` | NFR-SEC-005/006 |
-| 3 | 로그 필터: `token`, `secret`, `webhook`, `password`, `signing_key`, `authorization` 포함 키 자동 마스킹 | libs/observability `masking.py` | §23.4 |
+| 2 | Secret(JWT 키/pepper/피드백 서명 키)은 Secret file mount로만 주입, bytes/SecretStr 보관, 로그·응답·repr 미노출 (`test_secret_never_in_logs`). **누락/빈 값이면 fail-closed**(503 `AUTH_NOT_CONFIGURED` / `/actions` 401 / worker 토큰 미부착, 기동 시 `startup.*_missing` 로그). `postgres_password` 도 `SecretStr`(`test_*_config_secret.py`) | gateway `core/config.py`·`main.py`·`api/auth.py`·`api/actions.py`, rag-worker `bootstrap.py`, admin-api, helm `secretMount.keys`(0440) + `rag-postgresql-secret` secretKeyRef | NFR-SEC-005/006 |
+| 3 | 로그 필터: `token`, `secret`, `webhook`, `password`, `pepper`, `prehash`, `cookie`, `signing_key`, `authorization` 포함 키 자동 마스킹 + 값 패턴(DSN 비밀번호, `/hooks/<id>`, `Bearer <tok>`, bare JWT 서명부) 치환, `dict_tracebacks` 이후 적용 | libs/observability `masking.py`, `logging.py` | §23.4 |
 | 4 | 검색 전 Channel/ACL Filter 강제 (사후 필터 금지), `allowed_channel_ids = chat_channels.id` | rag/domain/retrieval.py | NFR-SEC-013, §22.5 |
 | 5 | 문서 Context를 system 지시와 구분, Injection 완화 문구 | rag/domain/prompt.py | NFR-SEC-014 |
-| 6 | 전 Pod securityContext: runAsNonRoot, readOnlyRootFilesystem, drop ALL, RuntimeDefault seccomp (vLLM/OCR 예외는 values 주석으로 문서화) | helm | §22.4 |
-| 7 | NetworkPolicy default-deny + §22.1 allowlist — `allow-ingress-to-chat`(ingress-nginx → chat-gateway:8001, chat-web:3000). 외부 egress 없음 | helm/templates/networkpolicy.yaml | §22.1 |
+| 6 | 전 Pod securityContext: runAsNonRoot, readOnlyRootFilesystem, drop ALL, RuntimeDefault seccomp (`values.yaml` `podSecurityContext`/`containerSecurityContext`). vLLM 은 readOnlyRootFS 예외, root 이미지면 `vllm.podSecurityContext` override — 예외는 values 주석으로 문서화 | helm | §22.4 |
+| 7 | NetworkPolicy default-deny + §22.1 allowlist — NS별 default-deny-all/allow-dns-egress/allow-intra-platform + `allow-ingress-to-<svc>`(`networkPolicy.exposedServices`: chat-gateway/chat-web/admin-api/admin-web, Ingress Controller = `networkPolicy.ingressController.{namespace,podSelector}`) + (`networkPolicy.apiServer.enabled` 시) `allow-admin-api-to-apiserver`. NS 라벨 `rag-platform=true` 필수. 외부 egress 없음 | helm/templates/networkpolicy.yaml, namespaces.yaml | §22.1 |
 | 8 | Admin API는 Web Chat 사용자 계정(JWT)으로 접근 불가 (별도 인증 — Reverse Proxy 헤더) | admin-api | §22.5 |
 | 9 | **Channel 격리 3중**: (a) 멤버십 — REST 모든 채널 리소스 멤버 검사(비멤버·미존재 동일 404), WS는 멤버 채널 room만 join (b) Qdrant `build_filter()` 강제 (c) scope_key로 대화 이력 격리 | gateway `api/channels.py require_member`, `realtime.py`, rag domain | NFR-SEC-013 |
 | 10 | Egress 차단 전제: 코드에 외부 도메인 호출 없음, chat-web 외부 CDN 폰트/CSP 외부 도메인 제거 | 전체, chat-web `next.config.ts`/`layout.tsx` | NFR-SEC-002 |
@@ -1613,6 +1649,10 @@ Rate Limit 구현: `gateway/services/rate_limit.allow()` — Redis `INCR + EXPIR
 | 14 | WebSocket Origin 검사(CSWSH 방지): same-origin(Host/X-Forwarded-Host) + `CHAT_CORS_ORIGINS`만 허용, handshake JWT 필수, Bot 토큰 거부 | gateway `realtime.py origin_checker` | §22.1 |
 | 15 | HTTPS 필수 — 브라우저 WebCrypto(prehash)는 HTTPS/localhost에서만 동작 → 운영 Ingress TLS(`ingress.tlsSecretName`) 필수 | helm `ingress.yaml` | §22.3 |
 | 16 | 내부 props(`message_id`, `chat_job_id`)는 클라이언트 PostDto에서 제거, `ChannelBindingBrief`는 knowledge_scope 비노출, 검증 오류 응답에 입력값 원문 미포함 | `chat_adapter/mapper.py`, `rag_schemas.webchat`, gateway `main.py` | §23.4 |
+| 17 | 색인 트리거 최소 권한: admin-api SA 에 `rag-ingestion` Role(configmaps `parser-indexer-job-template` get, jobs create/get/list)만. 기본 `INDEX_JOB_TRIGGER=none` | helm `rbac.yaml`, `admin/services/index_trigger.py` | ADR-008 |
+| 18 | Worker 멱등성: `claim_job`(QUEUED→RUNNING 원자 전이) 선점 실패 시 종료 — 중복 답변 방지 | rag `worker/chat_worker.py` | NFR-HA |
+
+> 구현 매핑·테스트 상세는 `docs/security-checklist.md` 가 SSOT 다. 잔여: rate limit 원자화(리뷰 M-3), async 핸들러 내 동기 I/O(리뷰 H-8), admin-api `X-Auth-User` 는 인증 프록시 뒤에서만(DEC-003).
 
 ---
 
@@ -1657,7 +1697,7 @@ vLLM 자체 `/metrics`, DCGM, kube-state-metrics는 Prometheus scrape config로 
 
 ### 12.2 structlog 공통 필드
 
-PRD §23.4의 JSON 필드를 `libs/observability.configure_logging(service_name)`에서 바인딩한다(`service`). 요청 컨텍스트는 `bind_context()`로 contextvars에 넣어 자동 포함한다 — chat-gateway 질문 수신 시 `trace_id`, `channel_id`(`chat_channels.id`). `user_id/post_id/job_id/operation/duration_ms/status`는 이벤트 필드로 기록한다. v2.0에서 `team_id`·`mattermost_post_id` 필드는 폐기되었다. Secret 키는 masking processor로 제거된다(§11 #3).
+PRD §23.4의 JSON 필드를 `libs/observability.configure_logging(service_name)`에서 바인딩한다(`service`). 요청 컨텍스트는 `bind_context()`로 contextvars에 넣어 자동 포함한다 — chat-gateway 질문 수신 시 `trace_id`, `channel_id`(`chat_channels.id`). `user_id/post_id/job_id/operation/duration_ms/status`는 이벤트 필드로 기록한다. v2.0에서 `team_id`·`mattermost_post_id` 필드는 폐기되었다. Secret 은 masking processor로 제거된다(§11 #3) — 키 힌트(token/secret/webhook/password/pepper/prehash/cookie/signing_key/authorization) + 문자열 값 패턴(DSN 비밀번호, `/hooks/<id>`, `Bearer <tok>`, bare JWT 서명부). processor 는 `dict_tracebacks` **이후**에 두어 예외 메시지(psycopg/httpx 오류의 URL 등)도 마스킹한다 (`test_mask_secrets_value_patterns_in_plain_strings`, `test_processor_order_masks_after_dict_tracebacks`, `test_mask_web_chat_credentials`).
 
 ---
 
@@ -1674,7 +1714,7 @@ PRD §23.4의 JSON 필드를 `libs/observability.configure_logging(service_name)
 | 성능 | `tests/performance` | locust — 로그인 → `POST /api/v1/posts` Burst/Peak/Soak (PRD §25.5), ACK p95 ≤ 2s (`make perf-chat-burst`, `GATEWAY_URL`/`CHAT_EMAIL`/`CHAT_PASSWORD`) | Phase 8 |
 | 품질 평가 | `tests/evaluation` | 100문항 데이터셋 runner → Recall@10, Faithfulness 등 리포트 | Phase 8 |
 
-v2.0 주요 테스트 (전체 결과: **159 passed**, Docker 미가용 시 CH-001 실 Qdrant 1 skipped):
+v2.0 주요 테스트 (전체 결과: **182 passed** — `make test`(testpaths `libs`·`apps`·`tests`), Docker 미가용 시 CH-001 실 Qdrant 1 skipped → 181 passed. `tools/*` 7건은 `uv run pytest tools` 별도):
 
 | 영역 | 테스트 |
 |---|---|
@@ -1682,8 +1722,12 @@ v2.0 주요 테스트 (전체 결과: **159 passed**, Docker 미가용 시 CH-00
 | libs/common | `test_fr_web_001_prehash_matches_web_client_vector`(aiops TS 구현 고정 벡터), `test_hash_verify_roundtrip_and_pepper_bound`, `test_verify_without_stored_hash_is_false`, `test_jwt_roundtrip`, `test_jwt_rejects_bad_signature_and_alg`, `test_jwt_expired` |
 | libs/chat-adapter | `test_render_answer_mentions_and_citation_table`, `test_render_answer_insufficient_evidence_context_block`, `test_fb_feedback_token_binds_message_and_post`, `test_delta_stream_coalesces_and_sequences`, `test_emitter_post_updated_and_end_target_channel_room`, `test_mapper_hides_internal_props` |
 | libs/schemas | `test_chat_request_source_literal`, `test_widget_action_request_limits`, `test_block_union_discriminates_by_type`, `test_post_dto_defaults_match_web_contract`, `test_login_request_requires_prehash_not_password`, `test_channel_room_name`, `test_scope_key_*` |
-| admin-api | `test_channel_create_and_duplicate_name`, `test_binding_has_no_secret_fields`, `test_trigger_word_mode_requires_trigger`, `test_binding_enable_disable`, `test_members_add_list_remove`, `test_channel_api_requires_sys_admin`, `test_create_user_returns_temp_password_once`, `test_create_user_without_pepper_503`, `test_reset_password_rotates_hash`, `test_duplicate_email_conflict`, `test_upload_registers_channel_acl` |
-| rag-api worker | `test_full_pipeline_streams_and_updates_bot_post`, `test_insufficient_evidence_skips_llm`, `test_pipeline_failure_marks_bot_post_error`, `test_disabled_binding_updates_placeholder`, `test_stream_emit_failure_does_not_abort_answer`, `test_feedback_disabled_channel_has_no_token`, `test_pipeline_streaming_delivers_deltas_in_order` |
+| admin-api | `test_channel_create_and_duplicate_name`, `test_binding_has_no_secret_fields`, `test_trigger_word_mode_requires_trigger`, `test_binding_enable_disable`, `test_members_add_list_remove`, `test_channel_api_requires_sys_admin`, `test_create_user_returns_temp_password_once`, `test_create_user_without_pepper_503`, `test_reset_password_rotates_hash`, `test_duplicate_email_conflict`, `test_upload_registers_channel_acl`, `test_fr_doc_004_upload_writes_channel_acl`, `test_upload_rejects_non_uuid_channel_id`, `test_fr_idx_010_upload_with_start_indexing_creates_job_and_records_trigger_failure`, `test_reindex_calls_trigger`, `test_fr_idx_010_k8s_trigger_posts_job_manifest`, `test_k8s_trigger_wraps_http_errors_without_leaking_token`, `test_k8s_trigger_rejects_template_without_placeholder`, `test_build_trigger_defaults_to_noop`, `test_config_password_not_in_repr` |
+| chat-gateway (fail-closed) | `test_login_fails_closed_without_jwt_secret`, `test_login_fails_closed_without_pepper`, `test_empty_key_jwt_rejected`, `test_fb_missing_signing_key_rejects_all` |
+| libs/observability | `test_mask_secrets_value_patterns_in_plain_strings`, `test_processor_order_masks_after_dict_tracebacks`, `test_mask_web_chat_credentials`, `test_secret_never_in_logs` |
+| embedding / parser-indexer 계약 | `test_embedding_missing_texts_key_is_422`, `test_fr_idx_004_embedder_sends_texts_key`, `test_embedder_raises_on_count_mismatch`, `test_config_password_not_in_repr`(rag-api·parser-indexer) |
+| tools/evaluation | `test_doc_match_uses_removesuffix_not_rstrip` |
+| rag-api worker | `test_full_pipeline_streams_and_updates_bot_post`, `test_insufficient_evidence_skips_llm`, `test_pipeline_failure_marks_bot_post_error`, `test_disabled_binding_updates_placeholder`, `test_stream_emit_failure_does_not_abort_answer`, `test_feedback_disabled_channel_has_no_token`, `test_pipeline_streaming_delivers_deltas_in_order`, `test_worker_skips_already_claimed_job`, `test_missing_signing_key_attaches_no_feedback_token` |
 
 ### 13.2 Channel 격리 테스트 구현 지침 (Critical — R-009/R-014)
 
@@ -1701,7 +1745,7 @@ CH-001~010의 **ID·시나리오는 v1.x와 동일**하며, v2.0 스키마(`chan
 id: q001
 type: single_doc          # single_doc|multi_doc|table|definition|no_answer|ambiguous
 question: "장애 등급별 대응 절차를 알려주세요."
-channel_id: channel-001
+channel_id: c0000000-0000-0000-0000-000000000001   # chat_channels.id (UUID) — v2.0
 ground_truth:
   answer_gist: "..."
   documents: ["장애대응매뉴얼.pdf"]
@@ -1713,7 +1757,7 @@ Runner는 Recall@10, Citation Precision, Faithfulness(LLM-judge 선택), 무근�
 
 ### 13.4 로컬 E2E 절차 (수동)
 
-`make infra-up` → `alembic upgrade head` → `make seed` → `make seed-users` → `make qdrant-init` → admin-api 문서 업로드(`allowed_channel_ids`) + reindex + `python -m ingestion.main --index-job-id` → `make mock-llm` → embedding/reranker(`EMBEDDING_MOCK=1`/`RERANKER_MOCK=1`) → `rq worker rag-chat` → `make chat-gateway` → `make chat-web-dev` → http://localhost:3000 로그인(`hong@example.com`, 로컬 전용 기본 비밀번호).
+`make infra-up` → `alembic upgrade head` → `make seed` → `make seed-users` → `make qdrant-init` → admin-api 문서 업로드(`allowed_channel_ids`, `samples/*`) + reindex(또는 업로드 시 `start_indexing=true`) + `python -m ingestion.main --index-job-id` → `make mock-llm` → embedding/reranker(`EMBEDDING_MOCK=1`/`RERANKER_MOCK=1`) → `rq worker rag-chat` → `make chat-gateway` → `make chat-web-dev` → http://localhost:3000 로그인(`hong@example.com`, 로컬 전용 기본 비밀번호).
 
 확인 항목: 로그인 → WS `ready` → 질문 → `llm.stream.delta` seq 1..N 순서 → 최종 `table` blocks → 피드백 200 / 위조 토큰 401, THREAD 후속질문 동일 scope_key, TRIGGER_WORD 미트리거/트리거, 비멤버 404, admin 임시 비밀번호 → gateway 로그인, 업로드 ACL → Qdrant `allowed_channel_ids` = 채널 UUID.
 
@@ -1721,51 +1765,79 @@ Runner는 Recall@10, Citation Precision, Faithfulness(LLM-judge 선택), 무근�
 
 ## 14. Kubernetes 배포 설계 (Helm)
 
-### 14.1 Umbrella Chart 구성
+### 14.1 Chart 구성 (단일 chart)
+
+외부 chart repo·sub-chart 없이 **단일 chart** 의 `templates/*.yaml` 로 전 서비스를 렌더한다(폐쇄망 — `helm dependency update` 불필요). `values-poc.yaml`/`values-lab.yaml` 은 `values.yaml` 위에 겹치는 **override 전용 델타**다(appServices 리스트 재정의 금지).
 
 ```text
 deploy/helm/rag-platform/
 ├── Chart.yaml                  # 외부 chart repo 미사용 (폐쇄망) — qdrant/postgres/redis 도 본 chart 템플릿
-├── values.yaml                 # 기본값 (PRD §12 리소스)
-├── values-poc.yaml             # PoC
-├── values-lab.yaml             # 이기종 랩 (nodeSelector/tolerations, local SC)
+├── values.yaml                 # 기본값 (PRD §12 리소스) — 코드가 기대하는 env 키·Secret 파일 경로의 기준선
+├── values-poc.yaml             # PoC override (harbor, ingress, migration, replica/resources/PDB)
+├── values-lab.yaml             # 2-Node RKE2 랩 override (registry.local:5000, kube-system ingress, INDEX_JOB_TRIGGER=k8s)
 └── templates/
-    ├── _helpers.tpl
-    ├── app-services.yaml       # appServices 루프: Deployment + Service + PDB (probePath / secretMount 지원)
-    ├── ingress.yaml            # v2.0 — ingress.enabled 시 chat host / admin host
-    ├── networkpolicy.yaml      # default-deny + DNS + intra-platform + allow-ingress-to-chat
-    ├── vllm.yaml               # llm-0/llm-1 Deployment + 공통 Service
-    ├── data.yaml               # qdrant / postgresql / redis StatefulSet
+    ├── _helpers.tpl            # rag.image / rag.labels / rag.offlineEnv / rag.dbEnv / rag.redisEnv / rag.chatSecretEnv
+    ├── app-services.yaml       # appServices 루프: Deployment + Service + PDB
+    ├── data.yaml               # qdrant / postgresql(POSTGRES_* + secretKeyRef, PGDATA) / redis(appendonly) StatefulSet
+    ├── namespaces.yaml         # namespaces.create=true 시 4개 NS + 라벨 rag-platform=true
+    ├── rbac.yaml               # serviceAccounts.adminApi.create 시 SA + rag-ingestion Role/RoleBinding(rag-index-job-creator)
+    ├── migration-job.yaml      # migration.enabled 시 post-install/post-upgrade hook Job rag-db-migrate (alembic upgrade head)
+    ├── networkpolicy.yaml      # default-deny-all + allow-dns-egress + allow-intra-platform + allow-ingress-to-<svc> + allow-admin-api-to-apiserver
+    ├── ingress.yaml            # ingress.enabled 시 rag-chat(chatHost) / rag-admin(adminHost)
+    ├── parser-indexer-job.yaml # ConfigMap parser-indexer-job-template (job.yaml, __INDEX_JOB_ID__) — admin-api 가 인스턴스화
     ├── pvcs.yaml               # models / documents PVC
-    ├── parser-indexer-job.yaml # Job template — admin-api가 인스턴스화
-    └── monitoring.yaml         # Grafana dashboard ConfigMap
+    ├── vllm.yaml               # llm-0/llm-1 Deployment + 공통 Service (vllm.podSecurityContext override 가능)
+    └── monitoring.yaml         # Grafana dashboard ConfigMap (monitoring.namespace)
 ```
+
+**values 주요 키** (`values.yaml`):
+
+- `global`: `imageRegistry`, `imageTag`, `imagePullPolicy`, `chatSecretName: rag-chat-secrets`, `postgres{host: postgresql.rag-data, port: 5432, user: rag, db: rag, existingSecret: rag-postgresql-secret}`, `redisUrl: redis://redis.rag-data:6379/0`, `offlineEnv`(HF_*_OFFLINE 등).
+- `secretMounts.chatSecretsPath: /var/run/secrets/rag`, `podSecurityContext`/`containerSecurityContext`(runAsNonRoot 10001, fsGroup 10001, readOnlyRootFS, drop ALL, RuntimeDefault).
+- `namespaces{create: false, names: [rag-app, rag-ai, rag-data, rag-ingestion]}`.
+- `networkPolicy{enabled, ingressController{namespace: ingress-nginx, podSelector: {}}, apiServer{enabled: false, cidrs: [], port: 6443}, exposedServices: [chat-gateway, chat-web, admin-api, admin-web]}` — RKE2 는 `ingressController.namespace: kube-system` + `podSelector{app.kubernetes.io/name: rke2-ingress-nginx}`.
+- `ingress{enabled: false, className: nginx, chatHost: chat.rag.internal, adminHost: "", tlsSecretName: "", adminTlsSecretName: "", annotations: {}}`.
+- `serviceAccounts.adminApi{create: false, name: admin-api}`, `migration{enabled: false, backoffLimit: 2, alembicIni: /app/apps/admin-api/src/admin/db/migrations/alembic.ini}`, `monitoring{grafanaDashboards: true, namespace: monitoring}`.
+
+**appServices 플래그** (`templates/app-services.yaml`):
+
+| 플래그 | 동작 |
+|---|---|
+| `dbEnv: true` | `rag.dbEnv` — `POSTGRES_HOST/PORT/USER/DB` + `POSTGRES_PASSWORD`(`global.postgres.existingSecret` secretKeyRef, key `password`) |
+| `redisEnv: true` | `rag.redisEnv` — `REDIS_URL` + `RQ_REDIS_URL`(= `global.redisUrl`) |
+| `secretMount.keys: [...]` | `rag-chat-secrets` 중 나열한 키만 Secret volume `items` 로 투영(defaultMode **`0440`**, 비루트 + fsGroup 읽기). `*_FILE` env 자동: `jwt-secret`→`JWT_SECRET_FILE`, `password-pepper`→`PASSWORD_PEPPER_FILE`, `feedback-signing-key`→`FEEDBACK_SIGNING_KEY_FILE`. secretName 기본 `global.chatSecretName`, mountPath 기본 `secretMounts.chatSecretsPath` |
+| `modelVolume` / `documentVolume` | `/models` RO / `documentStorage.mountPath` RW (문서 PVC) |
+| `probePath` 또는 `livenessPath`/`readinessPath`/`startupPath` | 기본 `/health/live`·`/health/ready`·`/health/startup` |
+| `startupFailureThreshold` | startupProbe failureThreshold(×10s, 기본 60) |
+| `serviceAccountName`, `command`/`args`, `extraEnv`, `extraVolumes`/`extraVolumeMounts`, `pdbMinAvailable` | 그대로 반영 |
 
 `appServices` (rag-app / rag-ai namespace):
 
 | 서비스 | ns | replicas | image / port | command | 비고 |
 |---|---|---|---|---|---|
-| **chat-gateway** | rag-app | 2 | `rag/chat-gateway` :8001 | `uvicorn gateway.main:app --host 0.0.0.0 --port 8001 --proxy-headers --forwarded-allow-ips=*` | `secretMount` rag-chat-secrets → `/var/run/secrets/rag`, env `JWT_SECRET_FILE`/`PASSWORD_PEPPER_FILE`/`FEEDBACK_SIGNING_KEY_FILE`, `COOKIE_SECURE=true`, `CHAT_CORS_ORIGINS=""`, PDB minAvailable 1. Redis manager로 replica 간 브로드캐스트(sticky 불필요) |
+| **chat-gateway** | rag-app | 2 | `rag/chat-gateway` :8001 | `uvicorn gateway.main:app --host 0.0.0.0 --port 8001 --proxy-headers --forwarded-allow-ips=*` | `dbEnv`, `redisEnv`, `secretMount.keys: [jwt-secret, password-pepper, feedback-signing-key]`, `COOKIE_SECURE=true`, `CHAT_CORS_ORIGINS=""`, PDB minAvailable 1. Redis manager로 replica 간 브로드캐스트(sticky 불필요) |
 | **chat-web** | rag-app | 2 | `rag/chat-web` :3000 | `node server.js` | `probePath: /health/live`(live/ready/startup 모두), env `HOSTNAME=0.0.0.0`, `PORT=3000`, `NEXT_TELEMETRY_DISABLED=1`, PDB 1 |
-| rag-api | rag-app | 2 | `rag/rag-api` :8002 | `uvicorn rag.main:app` | |
-| rag-worker | rag-app | 2 | `rag/rag-api` (DEC-017) | `rq worker rag-chat --url redis://redis.rag-data:6379/0` | `secretMount` + `FEEDBACK_SIGNING_KEY_FILE` |
-| admin-api | rag-app | 2 | `rag/admin-api` :8003 | `uvicorn admin.main:app` | `secretMount` + `PASSWORD_PEPPER_FILE`(채팅 사용자 임시 비밀번호 발급) |
-| embedding-api / reranker-api | rag-ai | 2 | :8004 / :8005 | uvicorn | `modelVolume` |
+| rag-api | rag-app | 2 | `rag/rag-api` :8002 | `uvicorn rag.main:app` | `dbEnv`, `redisEnv` (Secret 없음) |
+| rag-worker | rag-app | 2 | `rag/rag-api` (DEC-017) | `rq worker rag-chat` (Redis 주소는 `RQ_REDIS_URL`) | `dbEnv`, `redisEnv`, `secretMount.keys: [feedback-signing-key]` |
+| admin-api | rag-app | 2 | `rag/admin-api` :8003 | `uvicorn admin.main:app` | `dbEnv`, `documentVolume`, `serviceAccountName`, `secretMount.keys: [password-pepper]`, env `DOCUMENT_STORAGE_PATH`, `INDEX_JOB_TRIGGER=none`(values-lab `k8s`), `INDEX_JOB_NAMESPACE` |
+| embedding-api / reranker-api | rag-ai | 2 | :8004 / :8005 | uvicorn | `modelVolume`, `startupFailureThreshold` 60 (values-lab 90) |
+| admin-web (values-lab) | rag-app | 1 | `rag/admin-web` :8080 | (이미지 기본 nginx) | admin host `/` — values.yaml 기본에는 없음 |
 
-- `global.chatSecretName: rag-chat-secrets` (v1.x `global.bridgeSecretName` 대체) — 사전 생성 Secret, 키: `jwt-secret`, `password-pepper`, `feedback-signing-key`. `secretMount`는 Secret volume `defaultMode: 0400`으로 마운트한다.
-- `ingress` (`ingress.enabled`, 기본 false): `className: nginx`, **chatHost**(기본 `chat.rag.internal`) — `/api/v1`·`/ws` → chat-gateway:8001, `/` → chat-web:3000 (동일 출처 → refresh 쿠키 SameSite=Strict·WS Origin 검사 통과), annotation `proxy-read-timeout`/`proxy-send-timeout` `3600`(websocket 장시간 연결), `proxy-body-size 1m`, `tlsSecretName` 지정 시 TLS(운영 필수). **adminHost** 지정 시 별도 Ingress `/api` → admin-api:8003. (admin-web은 appServices 정의가 없다 — 별도 배포)
-- values-poc/values-lab에 동일 구조 반영. `helm lint` 3종(values/poc/lab) clean.
+- `global.chatSecretName: rag-chat-secrets` (v1.x `global.bridgeSecretName` 대체) — 사전 생성 Secret, 키: `jwt-secret`, `password-pepper`, `feedback-signing-key`. 서비스별로 필요한 키만 `secretMount.keys` 로 투영한다(최소 권한).
+- `ingress` (`ingress.enabled`, 기본 false): `className: nginx`. **chatHost**(기본 `chat.rag.internal`) → Ingress `rag-chat`: `/api/v1`·`/ws` → chat-gateway:8001, `/` → chat-web:3000 (동일 출처 → refresh 쿠키 SameSite=Strict·WS Origin 검사 통과), annotation `proxy-read-timeout`/`proxy-send-timeout` `3600`(websocket 장시간 연결), `proxy-body-size 1m`, `tlsSecretName` 지정 시 TLS(운영 필수). **adminHost** 지정 시 Ingress `rag-admin`: `/api` → admin-api:8003, `/` → admin-web:8080(appServices 에 정의된 경우), TLS = `adminTlsSecretName` 또는 `tlsSecretName`. ⚠ admin-api 는 `X-Auth-User` 를 신뢰하므로(DEC-003) admin host 앞에 인증 프록시가 필수다. 라우트는 appServices 에 존재하는 서비스만 렌더된다.
+- values-poc: harbor registry, `networkPolicy.ingressController.namespace=ingress-nginx`, ingress(chatHost `chat.rag.internal`, adminHost `rag.internal`, `tlsSecretName: rag-chat-tls`), `migration.enabled=true`, replica/resources/PDB. values-lab: `registry.local:5000`, `ingressController{namespace: kube-system, podSelector{app.kubernetes.io/name: rke2-ingress-nginx}}`, `apiServer{enabled: true, cidrs: [<control-plane IP>/32]}`, `serviceAccounts.adminApi.create=true`, `migration.enabled=true`, admin-api `INDEX_JOB_TRIGGER=k8s`, admin-web appService. `helm lint` 3종(values / +poc / +poc+lab) clean (`make helm-lint helm-template`).
 
 ### 14.2 배포 규칙
 
 - Namespace 배치는 PRD §11 그대로: `rag-app`, `rag-ai`, `rag-data`, `rag-ingestion`.
 - 리소스 request/limit은 PRD §12.1~12.2 표 값을 values-poc.yaml에 그대로 기입.
-- 이미지: `harbor.internal/<project>/<app>@sha256:...` digest 고정. Containerfile/이미지 빌드 스크립트는 저장소 범위 외(기존과 동일). chat-web 이미지는 `next build` standalone 산출물(`.next/standalone` + `.next/static` + `public`)을 Node 22 런타임 이미지에 담는다.
+- 이미지: `harbor.internal/<project>/<app>@sha256:...` digest 고정. 빌드는 저장소의 `apps/*/Containerfile` 8종으로 `make build-images REG=<registry> TAG=<sha>` → `make push-images` (Python 6종은 리포 루트 컨텍스트, chat-web/admin-web 은 각 앱 디렉터리 컨텍스트). 내부 인덱스는 `--build-arg UV_INDEX_URL=...`(web 은 `NPM_REGISTRY`). chat-web 이미지는 `next build` standalone 산출물(`.next/standalone` + `.next/static` + `public`)을 `node:22-alpine` 런타임에 담아 `node server.js`(:3000, uid 10001)로 실행하며, `NEXT_PUBLIC_WS_URL` 은 비워 same-origin 으로 빌드한다.
 - 2-replica 서비스에 PodDisruptionBudget(minAvailable=1).
 - vLLM RollingUpdate: `maxSurge=0, maxUnavailable=1` (GPU 2장 한도 내 순차 교체).
-- Secret: JWT 서명 키, password pepper, 피드백 서명 키는 Helm 값이 아닌 사전 생성 K8s Secret(`rag-chat-secrets`) 참조 (`existingSecret` 패턴). gateway·worker의 피드백 키, gateway·admin-api의 pepper는 **동일 Secret 키**를 사용해야 한다.
-- NetworkPolicy: `allow-ingress-to-chat`(ingress-nginx namespace → `app.kubernetes.io/name in [chat-gateway, chat-web]`, TCP 8001/3000). v1.x `allow-ingress-to-bridge`와 Worker → Mattermost egress는 삭제(외부 egress 없음).
-- 업그레이드(v1.2 → v2.0): admin-api `alembic upgrade head`(0003_webchat) → `rag-chat-secrets` 생성 → 채팅 사용자 생성·멤버 등록 → **전 문서 재색인**(§5).
+- Secret: JWT 서명 키, password pepper, 피드백 서명 키는 Helm 값이 아닌 사전 생성 K8s Secret(`rag-app/rag-chat-secrets`) 참조 (`existingSecret` 패턴). gateway·worker의 피드백 키, gateway·admin-api의 pepper는 **동일 Secret 키**를 사용해야 한다. PostgreSQL 비밀번호는 `rag-postgresql-secret`(key `password`)을 rag-app / rag-data / rag-ingestion 에 각각 사전 생성한다. TLS 는 `rag-chat-tls`(chat/admin 두 호스트 SAN 권장).
+- NetworkPolicy: 서비스별 `allow-ingress-to-<svc>`(`networkPolicy.ingressController` NS/Pod → `networkPolicy.exposedServices` 중 appServices 에 있는 서비스, 포트 = svc.port: chat-gateway 8001 / chat-web 3000 / admin-api 8003 / admin-web 8080). `INDEX_JOB_TRIGGER=k8s` 면 `networkPolicy.apiServer.enabled=true` + `cidrs` 로 `allow-admin-api-to-apiserver`(ipBlock egress). cross-NS 허용은 NS 라벨 `rag-platform=true` 에 의존한다(`namespaces.create=true` 또는 수동 `kubectl label`). v1.x `allow-ingress-to-bridge`와 Worker → Mattermost egress는 삭제(외부 egress 없음).
+- DB 마이그레이션: `migration.enabled=true`(values-poc/lab) 면 post-install/post-upgrade hook Job `rag-db-migrate`(admin-api 이미지, `alembic -c <migration.alembicIni> upgrade head`, PostgreSQL 준비 대기 재시도)가 실행된다. admin-api 는 기동 시 마이그레이션하지 않는다.
+- 업그레이드(v1.2 → v2.0): `rag-chat-secrets`·`rag-postgresql-secret` 생성 → `helm upgrade`(hook Job 이 `alembic upgrade head` = `0003_webchat` 적용. `migration.enabled=false` 면 수동 실행) → 채팅 사용자 생성·멤버 등록 → **전 문서 재색인**(§5).
 
 ---
 
@@ -1786,7 +1858,7 @@ deploy/helm/rag-platform/
 | **M9** | Channel 격리 테스트 CH-001~010 자동화 + 보안 체크리스트(§11) 적용 | tests/channel-isolation | 전부 green — **배포 차단 Gate** |
 | **M10** | Helm chart + NetworkPolicy + 모니터링 대시보드 | §14, §12 | poc namespace 배포, Grafana 대시보드 |
 | **M11** | 성능 테스트 + 평가 데이터셋 runner | §13 | PRD §8 지표 리포트 생성 |
-| **M12** (v2.0, **완료**) | **Web Chat 전환** — Mattermost 제거, `apps/chat-gateway`(REST + socket.io, prehash 인증, 피드백), `apps/chat-web`(aiops UI 이식), `libs/chat-adapter`, worker 토큰 스트리밍(`LLMPort.stream`, `WebChatDelivery`), Alembic `0003_webchat`, admin-api `/api/v1/chat/*`·채팅 사용자, admin-web 채널/멤버·채팅 사용자 페이지, Helm chat-gateway/chat-web/ingress/`allow-ingress-to-chat`, mock-llm SSE | §1.3, §4.1/4.6, §5, §7.1, §7.2, §7.8, §14 | **159 passed**(Docker 미가용 시 1 skipped) · ruff clean · `helm lint` 3종 clean · admin-web build OK · chat-web typecheck/build OK · CH-001~010 green · 수동 E2E(§13.4) 확인 |
+| **M12** (v2.0, **완료**) | **Web Chat 전환** — Mattermost 제거, `apps/chat-gateway`(REST + socket.io, prehash 인증, 피드백), `apps/chat-web`(aiops UI 이식), `libs/chat-adapter`, worker 토큰 스트리밍(`LLMPort.stream`, `WebChatDelivery`), Alembic `0003_webchat`, admin-api `/api/v1/chat/*`·채팅 사용자, admin-web 채널/멤버·채팅 사용자 페이지, Helm chat-gateway/chat-web/ingress/`allow-ingress-to-<svc>`, mock-llm SSE | §1.3, §4.1/4.6, §5, §7.1, §7.2, §7.8, §14 | **182 passed**(v2.0.1 병합 복구 기준, Docker 미가용 시 1 skipped — v2.0 시점 159) · ruff clean · `helm lint` 3종 clean · admin-web build OK · chat-web typecheck/build OK · CH-001~010 green · 수동 E2E(§13.4) 확인 |
 
 ---
 
@@ -1837,6 +1909,8 @@ Claude Code 세션이 프로젝트 컨텍스트를 즉시 파악하도록 아래
 - Python 3.12 고정 (requires-python ">=3.12,<3.13"). 의존성은 cp312 바이너리 휠만, sdist 빌드 금지.
 - Secret(JWT 키/pepper/피드백 서명 키/refresh token/password_hash)을 로그·응답·repr에 절대 노출 금지. SecretStr/bytes, 파일 mount.
 - Qdrant 검색은 build_filter() 없이 호출 금지 (Channel 격리 100%). allowed_channel_ids = chat_channels.id.
+  예외: parser-indexer 내부 검증(document_version_id 필터 count/query_points)은 서빙 검색이 아니므로 제외.
+- Secret 파일 누락/빈 값이면 fail-closed — 빈 키로 서명·해시·검증하지 않는다 (gateway 503 AUTH_NOT_CONFIGURED, /actions 401, worker 토큰 미부착).
 - 채널 리소스(REST)는 멤버십 검사 필수 — 비멤버·미존재 동일 404. WS 는 사용자가 멤버인 채널 room 만 join.
 - apps/* 간 직접 import 금지. 공유는 libs/* 로만 (gateway↔worker 공유는 libs/chat-adapter).
 - rag/domain/* 은 FastAPI/LangChain/socket.io·chat_adapter 타입 import 금지 (스트리밍은 on_delta 콜백).
@@ -1848,7 +1922,9 @@ Claude Code 세션이 프로젝트 컨텍스트를 즉시 파악하도록 아래
 - make lint      # ruff + mypy
 - make test      # 전체 pytest
 - make test-isolation  # CH-001~010 (배포 Gate)
-- make test-integration  # tests/contract
+- make test-integration  # tests/contract + 실 Qdrant CH-001 (Docker)
+- make build-images / make push-images  # REG=... TAG=...
+- make helm-lint / make helm-template
 - make openapi   # docs/openapi/*.json export
 - make chat-gateway / make chat-web-dev / make seed-users
 
@@ -1917,6 +1993,27 @@ Web Chat 전환 과정에서 발견·수정한 기존(v1.x) 결함. 회귀 방�
 | 3 | RQ 2.x에 `Job.get_id()` 없음 | enqueue 성공 후 AttributeError (bridge 시절부터 잠재) | `job.id` 사용 (`test_rq_enqueuer_returns_job_id_and_payload_is_job_id_only`) |
 | 4 | admin-api 문서 업로드가 `allowed_channel_ids`를 무시 | seed 외에는 `document_channel_acl` 기록 경로가 없어 신규 문서가 어떤 채널에서도 검색되지 않음 | 업로드 시 채널 존재 검증 후 ACL 기록 (§7.5) |
 | 5 | engineio는 허용 Origin 목록 지정 시 same-origin을 자동 허용하지 않음 | 운영 Ingress(동일 출처)에서 WebSocket 전면 거부 위험 | `origin_checker` — same-origin(Host/X-Forwarded-Host) + 명시 목록 허용 (§7.1.2) |
+
+**2026-09-10 코드 리뷰 이월분 + 2026-09-29 병합 복구** — 리뷰(`docs/code-review-2026-09-10.md`, v1.x Mattermost 기준) 수정 중 v2.0 에 유효한 것을 재적용했다. bridge 전용 항목은 Mattermost 제거와 함께 폐기. ID 는 리뷰 리포트 기준.
+
+| # | 결함 (리뷰 ID) | 영향 | 수정 |
+|---|---|---|---|
+| 6 | embedding-api `texts` 가 기본값 `[]` (B-1) | 키 오타가 200 + 빈 결과로 숨겨짐 | `texts` 필수(누락 422, `test_embedding_missing_texts_key_is_422`), 인덱서 계약 테스트 `test_fr_idx_004_embedder_sends_texts_key` |
+| 7 | Secret 파일 누락 시 fail-open (B-2) | 빈 키로 JWT 서명·피드백 HMAC 위조 가능 | chat-gateway 판 fail-closed: 503 `AUTH_NOT_CONFIGURED`, 빈 키 JWT 401, `/actions` 401, worker 토큰 미부착, `startup.*_missing` 로그 (§7.1.4, §7.1.5) |
+| 8 | 색인 Job 트리거 stub (B-3) | 업로드/재색인 후 색인 주체 없음 | `admin/services/index_trigger.py`(none/k8s), 업로드 `start_indexing`, 실패는 `TRIGGER_FAILED[...]` 기록 (§7.5) |
+| 9 | 업로드 ACL 미기록 (B-4) | 신규 문서가 어느 채널에서도 검색 불가 | v2.0 #4 의 UUID 방식 유지 + 콤마 구분 입력 허용 |
+| 10 | `postgres_password` 평문 `str` (H-3) | repr/ValidationError 에 비밀번호 노출 | `SecretStr` (rag-api/admin-api/parser-indexer/chat-gateway), `test_*_config_secret.py` |
+| 11 | Worker 멱등성 없음 (H-4) | RQ 재실행 시 답변 중복 게시 | `claim_job`(QUEUED→RUNNING 원자 전이), `test_worker_skips_already_claimed_job` (§7.2.1) |
+| 12 | RQ 기본 `job_timeout` 180s < 파이프라인 최악치 (H-5) | 느린 LLM 에서 job 강제 종료, `RUNNING` 잔존 | `job_timeout=600, result_ttl=3600, failure_ttl=86400` (§7.1.1) |
+| 13 | `load_chat_request` Redis 연결 미종료 (H-6) | 장기 워커 소켓 누수 | context manager 로 close |
+| 14 | 마스킹이 키 이름만 검사 + `dict_tracebacks` 앞 (H-7) | 예외 메시지 안 DSN 비밀번호·토큰 노출 | 값 패턴 + 프로세서 순서 교체 + pepper/prehash/cookie/bare JWT (§12.2) |
+| 15 | evaluation `_doc_match` 의 `rstrip(".pdf")` 문자 집합 제거 (L-1) + 역방향 포함 비교 오탐(병합 복구 시 발견) | Recall/Citation Precision 왜곡 | `removesuffix` + 역방향 포함 매칭 제거 (`test_doc_match_uses_removesuffix_not_rstrip`) |
+| 16 | chart 결함 (C-2~C-12): admin-api 문서 PVC, PostgreSQL env/Secret, NS 라벨, Ingress Controller NS, Ingress 부재, monitoring NS, 라벨/startupProbe/vLLM securityContext, Alembic 미실행, SA/RBAC/apiserver egress, poc 복제, worker Redis URL 하드코딩 | Pod CrashLoop / 업로드 500 / cross-NS 차단 등 | §14.1 구조(namespaces/rbac/migration-job, `global.postgres`, `networkPolicy.ingressController/exposedServices/apiServer`, `startupFailureThreshold`, `vllm.podSecurityContext`, override 전용 poc, `rq worker rag-chat` + `RQ_REDIS_URL`) |
+| 17 | (병합 복구) Secret volume `defaultMode 0400` | fsGroup 로 읽어야 하는 비루트(10001) 컨테이너가 Secret 파일을 못 읽음 → fail-closed 로 기동 | `0440` |
+| 18 | (병합 복구) Secret 전체 키를 모든 서비스에 마운트 | 최소 권한 위반 | `secretMount.keys` — 서비스별 필요한 키만 `items` 투영 + `*_FILE` env 자동 (§14.1) |
+| 19 | (병합 복구) Containerfile 부재 문서 서술 | 가이드대로 빌드 불가 | `apps/*/Containerfile` 8종(+ `apps/chat-web/Containerfile` 신규) + `make build-images/push-images` (§2, §14.2) |
+
+잔여(리뷰 기준, v2.0 에도 유효): rate limit INCR→EXPIRE 비원자(M-3), async 핸들러 내 동기 I/O(H-8), 업로드 전체 메모리 적재(H-9), settings 테이블 → rag-api 캐시 미연동(§3-4), 문서 삭제 시 Qdrant 비활성화/파일 삭제 미구현(M-6), mock 엔진 silent fallback(M-2), `CHAT_MAX_CONCURRENCY` semaphore 부재(M-13), Circuit Breaker(M-17), 평가셋 100문항·LLM-judge(§3-8), admin-api `/index-jobs` 조회 API 부재.
 
 ---
 

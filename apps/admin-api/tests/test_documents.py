@@ -1,4 +1,4 @@
-"""문서 업로드/중복 테스트 — FR-DOC-002/003."""
+"""문서 업로드/중복/ACL/색인 트리거 테스트 — FR-DOC-002/003/004, FR-IDX-010."""
 
 from __future__ import annotations
 
@@ -51,33 +51,56 @@ def test_upload_rejects_bad_extension(client, seed, auth):
     assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
 
 
-<<<<<<< HEAD
+def _make_channels(TestSession, *names: str) -> list[str]:
+    from admin.db.models import ChatChannel
+
+    with TestSession() as s:
+        chans = [ChatChannel(name=n, display_name=n) for n in names]
+        s.add_all(chans)
+        s.commit()
+        return [str(c.id) for c in chans]
+
+
 def test_fr_doc_004_upload_writes_channel_acl(client, seed, auth, TestSession):
-    """allowed_channel_ids 가 document_channel_acl 로 저장되어야 색인 후 해당 채널에서 검색된다."""
+    """allowed_channel_ids 가 document_channel_acl 로 저장되어야 색인 후 해당 채널에서 검색된다.
+
+    admin-web 은 반복 필드, curl 은 콤마 구분 — 둘 다 허용하고 중복은 제거한다.
+    """
+    import uuid
+
     from admin.db.models import DocumentChannelAcl
 
     seed({"docadmin": ["DOC_ADMIN"]})
+    c1, c2 = _make_channels(TestSession, "rag-cloud-ops", "rag-hr")
     resp = client.post(
         "/api/v1/documents",
         files={"file": ("manual.md", "# 장애대응\n1등급...".encode(), "text/markdown")},
-        data={
-            "title": "장애대응매뉴얼",
-            "allowed_channel_ids": "channel-001, channel-002,channel-001",
-        },
+        data={"title": "장애대응매뉴얼", "allowed_channel_ids": f"{c1}, {c2},{c1}"},
         headers=auth("docadmin"),
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()["data"]
-    assert body["allowed_channel_ids"] == ["channel-001", "channel-002"]
-    import uuid
-
+    assert body["allowed_channel_ids"] == [c1, c2]
     with TestSession() as s:
         rows = (
             s.query(DocumentChannelAcl)
             .filter_by(document_id=uuid.UUID(body["document"]["id"]))
             .all()
         )
-    assert sorted(r.channel_id for r in rows) == ["channel-001", "channel-002"]
+    assert sorted(r.channel_id for r in rows) == sorted([c1, c2])
+
+
+def test_upload_rejects_non_uuid_channel_id(client, seed, auth):
+    """Mattermost 시절 문자열 id(channel-001) 는 격리 키가 아니므로 422."""
+    seed({"docadmin": ["DOC_ADMIN"]})
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("x.txt", b"legacy-id", "text/plain")},
+        data={"allowed_channel_ids": "channel-001"},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "INVALID_CHANNEL_ID"
 
 
 def test_fr_idx_010_upload_with_start_indexing_creates_job_and_records_trigger_failure(
@@ -95,10 +118,11 @@ def test_fr_idx_010_upload_with_start_indexing_creates_job_and_records_trigger_f
 
     client.app.dependency_overrides[provide_index_trigger] = lambda: FailingTrigger()
     seed({"docadmin": ["DOC_ADMIN"]})
+    (cid,) = _make_channels(TestSession, "rag-idx")
     resp = client.post(
         "/api/v1/documents",
         files={"file": ("p.txt", b"content-for-indexing", "text/plain")},
-        data={"start_indexing": "true", "allowed_channel_ids": "channel-001"},
+        data={"start_indexing": "true", "allowed_channel_ids": [cid]},
         headers=auth("docadmin"),
     )
     assert resp.status_code == 201, resp.text
@@ -134,7 +158,8 @@ def test_reindex_calls_trigger(client, seed, auth):
     assert resp.status_code == 202, resp.text
     assert calls == [resp.json()["data"]["index_job_id"]]
     assert resp.json()["data"]["trigger"] == "spy"
-=======
+
+
 def test_upload_registers_channel_acl(client, seed, auth, TestSession):
     """allowed_channel_ids → document_channel_acl (Qdrant 격리 필터의 근거)."""
     from admin.db.models import ChatChannel, DocumentChannelAcl
@@ -164,4 +189,3 @@ def test_upload_registers_channel_acl(client, seed, auth, TestSession):
         headers=auth("docadmin"),
     )
     assert bad.status_code == 404
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

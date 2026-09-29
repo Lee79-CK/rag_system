@@ -1,42 +1,30 @@
 # RAG Chatbot Platform — Claude Code Context
 
 ## What this is
-<<<<<<< HEAD
-폐쇄망 K8s 위 Mattermost RAG 챗봇. 설계 SSOT: `docs/TDD.md`, 요구사항: `docs/PRD.md`.
-Monorepo (uv workspace). **구현 현황: M1–M11 골격 구현 + 2026-09-10 코드 리뷰 블로커 수정 완료** (로컬 mock LLM/mock 엔진 기준).
-검증: `133 passed, 1 skipped`(Docker-gated `test_ch_qdrant.py`) · ruff clean · `helm lint` clean · poc / poc+lab 렌더 OK · admin-web `vite build` OK.
-알려진 미구현(리뷰 리포트 `docs/code-review-2026-09-10.md` §7): Settings 테이블→rag-api 연동(60s 캐시), 채널 연결 테스트(stub), DLQ retry-delivery 소비자,
-문서 삭제 시 Qdrant 비활성화/파일 삭제, mock 엔진 silent fallback 차단, async 핸들러 내 동기 I/O, 평가셋 100문항·LLM-judge, Circuit Breaker.
-
-## Hard rules
-- 외부 네트워크 호출 금지 (HF Hub, PyPI 등). 모델은 로컬 경로 로딩만.
-- Python 3.12 고정 (`requires-python ">=3.12,<3.13"`). 의존성은 cp312 바이너리 휠만, sdist 빌드 금지.
-- Secret(토큰/Webhook URL)을 로그·응답·repr에 절대 노출 금지. Pydantic `SecretStr`.
-- Qdrant 검색은 `build_filter()` 없이 호출 금지 (Channel 격리 100%). 예외: parser-indexer 내부 검증(`count`/`query_points`, `document_version_id` 필터)은 서빙 경로가 아님.
-- Secret 파일이 비어 있으면 **fail-closed**(빈 토큰/빈 서명키 = 전부 거부). "테스트 편의로 빈 값 허용" 금지.
-- `apps/*` 간 직접 import 금지. 공유는 `libs/*` 로만.
-- `rag/domain/*` 은 FastAPI/LangChain/Mattermost 타입 import 금지 (순수 Python + rag_schemas).
-- 스키마 변경은 `libs/schemas` 에서만. 서비스 로컬 재정의 금지.
-- 피드백(`/actions`) 경로는 HMAC 서명 검증 필수, LLM/Queue 호출 금지.
-=======
 폐쇄망 K8s 위 **Web Chat** RAG 챗봇 (v2.0: 사용자 UI = `apps/chat-web`, aiops_chatbot UI 이식 · Mattermost 제거).
 설계 SSOT: `docs/TDD.md`, 요구사항: `docs/PRD.md`. 이식 기록: `apps/chat-web/PORTING.md`.
 Monorepo (uv workspace). **구현 현황: M1–M12 구현 완료** (M12 = Web Chat 전환, 로컬 mock LLM/mock 엔진 기준).
-검증: `159 passed` (Docker 없으면 실 Qdrant CH-001 1 skipped) · ruff clean · `helm lint` clean · admin-web / chat-web build OK.
+2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md` — v1.x Mattermost 기준, 역사 기록)의 수정은 v2.0 에 이월됨
+(Containerfile·Alembic hook Job·K8s 색인 트리거/RBAC·claim_job 멱등·RQ timeout·SecretStr·마스킹·fail-closed).
+검증: `182 passed` (Docker 없으면 실 Qdrant CH-001 1 skipped) · ruff clean · `helm lint`(values / +poc / +poc+lab) clean · admin-web / chat-web build OK.
+알려진 미구현(리뷰 §7 중 v2.0 에 유효한 것): Settings 테이블→rag-api 연동(60s 캐시), 문서 삭제 시 Qdrant 비활성화/파일 삭제,
+mock 엔진 silent fallback 차단, async 핸들러 내 동기 I/O(chat-gateway SqlChatStore·admin 업로드), rate limit 비원자(INCR→EXPIRE),
+CHAT_MAX_CONCURRENCY 미강제, 평가셋 100문항·LLM-judge, Circuit Breaker, admin-api `/index-jobs` 조회 API.
 
 ## Hard rules
 - 외부 네트워크 호출 금지 (HF Hub, PyPI, CDN 폰트 등). 모델은 로컬 경로 로딩만. chat-web 에 외부 CDN 리소스 추가 금지.
 - Python 3.12 고정 (`requires-python ">=3.12,<3.13"`). 의존성은 cp312 바이너리 휠(또는 pure-python wheel)만, sdist 빌드 금지.
 - Secret(JWT 키/pepper/피드백 서명키/토큰/쿠키)을 로그·응답·repr에 절대 노출 금지. Pydantic `SecretStr`, 파일 mount(`*_FILE`).
-- Qdrant 검색은 `build_filter()` 없이 호출 금지 (Channel 격리 100%). 격리 키 = `chat_channels.id`.
+- Secret 파일(JWT 키 / password pepper / 피드백 서명키)이 없거나 비면 **fail-closed**(빈 키로 서명·해시 금지 → 로그인 503, 피드백 401). "테스트 편의로 빈 값 허용" 금지.
+- Qdrant 검색은 `build_filter()` 없이 호출 금지 (Channel 격리 100%). 격리 키 = `chat_channels.id`. 예외: parser-indexer 내부 검증(`count`/`query_points`, `document_version_id` 필터)은 서빙 경로가 아님.
 - Channel 격리는 멤버십으로도 강제: chat-gateway 의 채널 리소스는 멤버만(비멤버 = 404), socket.io 는 **멤버 채널 room 만 join**.
 - `apps/*` 간 직접 import 금지. 공유는 `libs/*` 로만 (gateway ↔ worker 공유 코드는 `libs/chat-adapter`).
 - `rag/domain/*` 은 FastAPI/LangChain/socket.io 타입 import 금지 (순수 Python + rag_schemas).
 - 스키마 변경은 `libs/schemas` 에서만. 서비스 로컬 재정의 금지. Web Chat DTO(`rag_schemas.webchat`)를 바꾸면 chat-web TS 타입(`src/lib/query/hooks.ts`, `src/shared/*`)도 함께.
 - 피드백(`POST /api/v1/actions`) 경로는 JWT + 채널 멤버십 + HMAC 피드백 토큰(`message_id:bot_post_id`) 검증 필수, LLM/Queue 호출 금지.
+- Worker 는 `claim_job`(QUEUED→RUNNING 원자 전이)을 선점한 경우에만 처리 — RQ 재실행/중복 enqueue 로 Bot Post 가 중복 갱신되지 않게.
 - 비밀번호 원문은 서버로 오지 않는다 (PBKDF2 prehash). prehash 알고리즘은 `rag_common.passwords` ↔ `chat-web/src/shared/crypto/prehash.ts` 바이트 동일 유지 (고정 벡터 테스트).
 - `../aiops_chatbot` 원본은 수정하지 않는다. 이식한 코드는 `apps/chat-web` 안에서만 변경하고 PORTING.md 에 기록.
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 ## Layout
 - `libs/schemas` (rag_schemas) — 공유 Pydantic 스키마 (SSOT, §4). `webchat.py` = chat-web ↔ gateway 계약
@@ -50,46 +38,31 @@ Monorepo (uv workspace). **구현 현황: M1–M12 구현 완료** (M12 = Web Ch
 - `apps/embedding-api` (embedding) / `apps/reranker-api` (reranker) — CPU serving (로컬 mock 엔진)
 - `apps/parser-indexer` (ingestion) — 문서 파싱/색인 CLI Job
 - `apps/admin-web` — 관리자 Portal (React 18 + Vite + TS + React Query + antd). uv workspace 제외.
-<<<<<<< HEAD
-- `tools/mock-llm` (mock_llm) — 로컬 OpenAI-compatible mock LLM (`make mock-llm`)
-- `tools/mock-mattermost` (mock_mattermost) — Incoming Webhook 수신 mock (`make mock-mattermost`, :9099)
-- `samples/` — E2E 용 샘플 문서(.md) · `scripts/sign_feedback.py` — 피드백 sig 산출
-- `tools/evaluation` (evaluation) — RAG 품질 평가 runner (`make evaluate`)
-- `tests/channel-isolation` — CH-001~010 격리 Gate / `tests/evaluation` 데이터셋 / `tests/performance` locust
-- `deploy/helm/rag-platform` — 단일 Helm chart (Deployment/Service/PDB/NetworkPolicy/Ingress/Namespace/RBAC/Alembic hook Job/Grafana). `values.yaml` 기본 → `values-poc.yaml`(운영 override) → `values-lab.yaml`(RKE2 랩 override)
-- `apps/*/Containerfile`, `tools/mock-mattermost/Containerfile` — 빌드 컨텍스트는 리포 루트(admin-web 제외). `make build-images REG= TAG=`
-- `scripts/` — `export_openapi.py`, `measure_latency.py`(p95), `seed_dev.sql`
-=======
 - `tools/mock-llm` (mock_llm) — 로컬 OpenAI-compatible mock LLM, `stream:true` SSE 지원 (`make mock-llm`)
 - `tools/evaluation` (evaluation) — RAG 품질 평가 runner (`make evaluate`)
+- `samples/` — E2E 용 샘플 문서(.md), 업로드 예시는 `samples/README.md` (ACL = 채널 UUID)
 - `tests/channel-isolation` — CH-001~010 격리 Gate / `tests/contract` mock-llm SSE 계약 / `tests/evaluation` 데이터셋 / `tests/performance` locust
-- `deploy/helm/rag-platform` — Umbrella Helm chart (Deployment/Service/PDB/NetworkPolicy/Ingress/Grafana)
+- `deploy/helm/rag-platform` — 단일 Helm chart (Deployment/Service/PDB/NetworkPolicy/Ingress/Namespace/RBAC/Alembic hook Job/Grafana). `values.yaml` 기본 → `values-poc.yaml`(운영 override) → `values-lab.yaml`(RKE2 랩 override). Secret 은 `appServices.<svc>.secretMount.keys` 로 필요한 키만 마운트
+- `apps/*/Containerfile` — Python 서비스는 빌드 컨텍스트 = 리포 루트, `chat-web`·`admin-web` 은 자체 디렉터리. `make build-images REG= TAG=`
 - `scripts/` — `export_openapi.py`, `measure_latency.py`(p95), `seed_dev.sql`, `create_chat_user.py`
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 ## Commands
 - `make install`        # uv sync (workspace)
 - `make lint`           # ruff + mypy
 - `make test`           # 전체 pytest
 - `make test-isolation` # CH-001~010 Channel 격리 (배포 차단 Gate)
-- `make test-integration` # tests/contract (mock-llm SSE ↔ LLMClient)
+- `make test-integration` # tests/contract (mock-llm SSE ↔ LLMClient) + 실 Qdrant 격리(Docker)
 - `make evaluate`       # RAG 품질 평가 runner → reports/
 - `make mock-llm`       # 로컬 OpenAI-compatible mock LLM (:8010)
 - `make qdrant-init`    # rag_chunks_v1 collection + payload index
-<<<<<<< HEAD
-- `make openapi`        # docs/openapi/*.json export (API 변경 시 재실행 후 커밋)
-- `make mock-mattermost`# Incoming Webhook 수신 mock (:9099)
-- `make build-images` / `make push-images` REG=registry.local:5000 TAG=$(git rev-parse --short HEAD)
-- `make helm-lint` / `make helm-template`   # chart lint + poc / poc+lab 렌더
-- admin-web: `cd apps/admin-web && npm install && npm run build`
-=======
 - `make seed` / `make seed-users`  # 채널·Binding·ACL / 채팅 데모 사용자+멤버십 (PASSWORD_PEPPER_FILE 필요)
 - `make chat-gateway`   # :8001 (REST + /ws)
 - `make chat-web-dev` / `make chat-web-build`  # :3000 dev / standalone build
 - `make perf-chat-burst` # locust 질문 burst (CHAT_EMAIL/CHAT_PASSWORD)
-- `make openapi`        # docs/openapi/*.json export
+- `make openapi`        # docs/openapi/*.json export (API 변경 시 재실행 후 커밋)
+- `make build-images` / `make push-images` REG=registry.local:5000 TAG=$(git rev-parse --short HEAD)   # 8종 (Python 6 + chat-web + admin-web)
+- `make helm-lint` / `make helm-template`   # chart lint + poc / poc+lab 렌더
 - admin-web: `cd apps/admin-web && npm ci && npm run build`
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 ## Local dev caveat (this machine)
 실 모델 dep(torch/FlagEmbedding)은 미설치(optional `models` extra).

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from chat_adapter import redis_emitter
+from rag_observability import get_logger
 from sqlalchemy import create_engine
 
 from rag.adapters.embedding_client import EmbeddingClient
@@ -63,12 +64,18 @@ def build_pipeline(settings: Settings) -> RagPipeline:
 
 def build_worker_deps() -> WorkerDeps:
     settings = get_settings()
+    signing_key = _read_key(settings.feedback_signing_key_file)
+    if settings.feedback_enabled and not signing_key:
+        # 피드백 버튼 미노출로 degrade (빈 키 HMAC 토큰을 만들지 않는다 — fail-closed)
+        get_logger("rag.worker").error(
+            "worker.feedback_signing_key_missing", file=settings.feedback_signing_key_file
+        )
     engine = create_engine(settings.sqlalchemy_url, pool_pre_ping=True)
     delivery = WebChatDelivery(
         DeliveryDeps(
             posts=PgChatPostStore(engine),
             emitter=redis_emitter(settings.redis_url),
-            signing_key=_read_key(settings.feedback_signing_key_file),
+            signing_key=signing_key,
         )
     )
     return WorkerDeps(

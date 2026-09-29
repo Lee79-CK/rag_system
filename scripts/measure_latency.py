@@ -5,7 +5,7 @@ rag-api 동기 completions 경로를 반복 호출하여 stage별/총 지연을 
 
 실행:
   python scripts/measure_latency.py --n 30 --concurrency 5 \
-      --rag-url http://localhost:8002 --channel channel-001
+      --rag-url http://localhost:8002 --channel c0000000-0000-0000-0000-000000000001
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ import httpx
 TARGET_TOTAL_P95_MS = 30000
 
 
-async def _one(client: httpx.AsyncClient, url: str, team: str, channel: str, q: str) -> float:
+async def _one(client: httpx.AsyncClient, url: str, channel: str, q: str) -> float:
     start = time.perf_counter()
     resp = await client.post(
         f"{url.rstrip('/')}/internal/v1/rag/completions",
-        json={"team_id": team, "channel_id": channel, "message": q},
+        json={"channel_id": channel, "message": q},
     )
     resp.raise_for_status()
     return (time.perf_counter() - start) * 1000
@@ -45,9 +45,7 @@ async def run(args) -> int:
             nonlocal errors
             async with sem:
                 try:
-                    latencies.append(
-                        await _one(client, args.rag_url, args.team, args.channel, args.question)
-                    )
+                    latencies.append(await _one(client, args.rag_url, args.channel, args.question))
                 except Exception as exc:  # noqa: BLE001
                     errors += 1
                     print(f"[err] {i}: {exc}")
@@ -75,8 +73,9 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=20)
     parser.add_argument("--concurrency", type=int, default=5)
     parser.add_argument("--rag-url", default=os.environ.get("RAG_API_URL", "http://localhost:8002"))
-    parser.add_argument("--team", default="team-001")
-    parser.add_argument("--channel", default="channel-001")
+    parser.add_argument(
+        "--channel", default="c0000000-0000-0000-0000-000000000001", help="chat_channels.id"
+    )
     parser.add_argument("--question", default="장애 등급별 대응 절차를 알려주세요.")
     args = parser.parse_args()
     raise SystemExit(asyncio.run(run(args)))

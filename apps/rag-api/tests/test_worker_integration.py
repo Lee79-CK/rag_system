@@ -261,51 +261,6 @@ async def test_insufficient_evidence_skips_llm(binding):
     assert llm.calls == 0 and llm.stream_calls == 0
     assert completion.insufficient_evidence is True
     assert "근거를 찾지 못했습니다" in completion.answer
-<<<<<<< HEAD
-
-
-async def test_worker_skips_already_claimed_job(binding, tmp_path, monkeypatch):
-    """RQ 재실행/중복 enqueue 로 같은 job 이 다시 들어오면 LLM 호출·게시 없이 종료한다 (멱등)."""
-    posted: list = []
-
-    async def fake_deliver(url, message, *, secret_ref, config=None, client=None):
-        from mattermost_adapter.delivery import DeliveryResult
-
-        posted.append(message)
-        return DeliveryResult(ok=True, attempts=1, http_status=200, posted_parts=1)
-
-    monkeypatch.setattr("rag.adapters.delivery_adapter.deliver", fake_deliver)
-    (tmp_path / binding.incoming_webhook_secret_ref).write_text("https://mm/hooks/xyz")
-
-    store = FakeStore()
-    store.jobs["job-dup"] = "COMPLETED"  # 이미 처리된 job
-    llm = FakeLLM()
-    deps = WorkerDeps(
-        binding_reader=FakeBindingReader(binding),
-        store=store,
-        pipeline=_pipeline(llm),
-        delivery=MattermostDelivery(
-            DeliveryDeps(secret_dir=str(tmp_path), signing_key=b"k", action_url="http://b/actions")
-        ),
-    )
-    request = ChatRequest(
-        source="mattermost",
-        team_id="team-001",
-        channel_id="channel-001",
-        channel_name="rag-cloud-ops",
-        user_id="u",
-        user_name="un",
-        post_id="p",
-        root_id=None,
-        message="질문",
-        trace_id="t",
-    )
-    result = await process_chat_job(deps, "job-dup", request)
-    assert result is None
-    assert llm.calls == 0
-    assert posted == []
-    assert store.jobs["job-dup"] == "COMPLETED"  # 상태 미변경
-=======
     assert not [e for e in spy.events if e[0] == "llm.stream.delta"]
     assert posts.updates[0]["blocks"][-1]["type"] == "context"
 
@@ -349,4 +304,31 @@ async def test_stream_emit_failure_does_not_abort_answer(binding):
     await process_chat_job(deps, "job-5", _request())
     assert store.jobs["job-5"] == "COMPLETED"  # 최종 Post 갱신(SSOT) 은 성공
     assert posts.updates[0]["message"].endswith("[1]")
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
+
+
+async def test_worker_skips_already_claimed_job(binding):
+    """RQ 재실행/중복 enqueue 로 같은 job 이 다시 들어오면 LLM·Bot Post 갱신·스트림 emit 없이 종료 (멱등, 리뷰 H-4)."""
+    llm = FakeLLM()
+    deps, store, posts, spy = _deps(binding, llm)
+    store.jobs["job-dup"] = "COMPLETED"  # 이미 처리된 job
+    result = await process_chat_job(deps, "job-dup", _request())
+    assert result is None
+    assert llm.stream_calls == 0 and llm.calls == 0
+    assert posts.updates == [] and spy.events == []
+    assert store.jobs["job-dup"] == "COMPLETED"  # 상태 미변경
+
+
+async def test_missing_signing_key_attaches_no_feedback_token(binding):
+    """서명키가 비면 피드백 토큰을 만들지 않는다 (빈 키 HMAC 금지 — fail-closed)."""
+    posts, spy, store = FakePosts(), SpyManager(), FakeStore()
+    deps = WorkerDeps(
+        binding_reader=FakeBindingReader(binding),
+        store=store,
+        pipeline=_pipeline(FakeLLM()),
+        delivery=WebChatDelivery(
+            DeliveryDeps(posts=posts, emitter=StreamEmitter(spy), signing_key=b"")
+        ),
+    )
+    await process_chat_job(deps, "job-6", _request())
+    assert store.jobs["job-6"] == "COMPLETED"
+    assert "feedback_token" not in posts.updates[0]["props"]

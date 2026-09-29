@@ -29,6 +29,15 @@ log = get_logger(__name__)
 _INVALID = "이메일 또는 비밀번호가 올바르지 않습니다."
 
 
+def _require_auth_secrets(settings: Settings) -> None:
+    """JWT 키 또는 pepper 가 비면 fail-closed — 빈 키로 서명/해시하지 않는다 (CLAUDE.md Hard rule)."""
+    if not settings.jwt_secret() or not settings.password_pepper():
+        log.error("auth.secret_missing")
+        raise ApiError(
+            503, "AUTH_NOT_CONFIGURED", "인증 설정이 완료되지 않았습니다. 관리자에게 문의하세요."
+        )
+
+
 def _auth_user(u: UserRecord) -> AuthUser:
     return AuthUser(
         id=u.id,
@@ -43,6 +52,7 @@ def _auth_user(u: UserRecord) -> AuthUser:
 def _issue_session(
     settings: Settings, store: ChatStore, response: Response, user: UserRecord
 ) -> LoginResponse:
+    _require_auth_secrets(settings)
     raw, digest = new_refresh_token()
     ttl = timedelta(days=settings.refresh_ttl_days)
     store.create_refresh(user.id, digest, datetime.now(UTC) + ttl)
@@ -82,6 +92,7 @@ async def login(
         raise ApiError(
             429, "RATE_LIMITED", "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요."
         )
+    _require_auth_secrets(settings)
 
     # replay 방지: timestamp 허용 오차 + client_nonce 1회성
     skew = abs(int(time.time() * 1000) - body.timestamp) / 1000
@@ -135,6 +146,7 @@ async def me(user: CurrentUser) -> AuthUser:
 async def change_password(
     body: PasswordChangeRequest, user: CurrentUser, settings: AppSettings, store: Store
 ) -> Response:
+    _require_auth_secrets(settings)
     pepper = settings.password_pepper()
     if not verify_prehash(user.password_hash, body.current_prehash, pepper):
         raise ApiError(400, "INVALID_CREDENTIALS", "현재 비밀번호가 올바르지 않습니다.")

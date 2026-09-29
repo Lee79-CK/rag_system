@@ -43,30 +43,17 @@ app.kubernetes.io/managed-by: {{ $.root.Release.Service }}
   value: {{ .Values.global.redisUrl | quote }}
 {{- end -}}
 
-{{/* bridge/rag-worker 가 파일로 읽는 Secret 경로 env (코드: *_SECRET_FILE / MATTERMOST_SECRET_DIR) */}}
-{{- define "rag.bridgeSecretEnv" -}}
-- name: MATTERMOST_OUTGOING_TOKEN_SECRET_FILE
-  value: {{ printf "%s/outgoing-token" .Values.secretMounts.bridgeSecretsPath | quote }}
-- name: FEEDBACK_SIGNING_KEY_FILE
-  value: {{ printf "%s/feedback-signing-key" .Values.secretMounts.bridgeSecretsPath | quote }}
+{{/* Web Chat Secret(global.chatSecretName) 키 → 코드가 읽는 *_FILE env (TDD §10, §14).
+     서비스별 appServices.<svc>.secretMount.keys 에 필요한 키만 나열 → 해당 파일만 마운트(최소 권한). */}}
+{{- define "rag.chatSecretEnvName" -}}
+{{- $m := dict "jwt-secret" "JWT_SECRET_FILE" "password-pepper" "PASSWORD_PEPPER_FILE" "feedback-signing-key" "FEEDBACK_SIGNING_KEY_FILE" -}}
+{{- required (printf "unknown secretMount key %q (jwt-secret|password-pepper|feedback-signing-key)" .) (get $m .) -}}
 {{- end -}}
 
-{{- define "rag.incomingSecretEnv" -}}
-- name: MATTERMOST_SECRET_DIR
-  value: {{ .Values.secretMounts.incomingWebhookPath | quote }}
-{{- end -}}
-
-{{/* Incoming Webhook Secret 들을 하나의 디렉터리로 투영 — 파일명 = secret_ref (delivery.py 계약) */}}
-{{- define "rag.incomingProjectedVolume" -}}
-- name: mm-incoming
-  projected:
-    defaultMode: 0440
-    sources:
-      {{- range .Values.incomingWebhookSecrets }}
-      - secret:
-          name: {{ .secretName }}
-          items:
-            - key: {{ .key | default "url" }}
-              path: {{ .secretName }}
-      {{- end }}
+{{- define "rag.chatSecretEnv" -}}
+{{- $path := .svc.secretMount.mountPath | default .root.Values.secretMounts.chatSecretsPath -}}
+{{- range .svc.secretMount.keys }}
+- name: {{ include "rag.chatSecretEnvName" . }}
+  value: {{ printf "%s/%s" $path . | quote }}
+{{- end }}
 {{- end -}}

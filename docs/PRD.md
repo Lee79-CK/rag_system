@@ -21,6 +21,7 @@
 | v1.0 | 2026-07-09 | Web Chat UI 기반 최초 PRD                                                                                                                    |
 | v1.1 | 2026-07-10 | 사용자 UI를 Mattermost로 전환, Admin Web 기능 재정의, Outgoing/Incoming Webhook 양방향 연계, Channel별 대화·지식 범위 분리, Mattermost Bridge/Queue/보안/테스트 요구사항 추가 |
 | v2.0 | 2026-09-28 | **Mattermost 제거 → Web Chat(aiops_chatbot UI 이식 `apps/chat-web`) + `apps/chat-gateway`(FastAPI REST + socket.io)**, 답변 **토큰 스트리밍**(`llm.stream.delta`), aiops 방식 **prehash 로그인**(PBKDF2 prehash → 서버 scrypt+pepper, JWT access + HttpOnly refresh 쿠키), Channel 격리 키 = `chat_channels.id`(UUID) + 채널 멤버십, DB 마이그레이션 `0003_webchat`, 요구사항 ID `FR-MM-*` → `FR-WEB-*`, ADR-001/004 개정 및 ADR-011~013 신설 |
+| v2.0.1 | 2026-09-29 | 병합 복구 반영 — 이미지 빌드 자산(`apps/*/Containerfile`, `make build-images/push-images`) 저장소 포함(NOGOAL-014 정정), 인증 Secret fail-closed, Secret 파일 `0440` + 서비스별 키 투영, NetworkPolicy 서비스별 `allow-ingress-to-<svc>`, Alembic hook Job, 색인 Job 트리거(`INDEX_JOB_TRIGGER`) |
 
 > v1.x 는 사내 Mattermost 를 사용자 채팅 UI 로 사용했으나 v2.0 에서 Mattermost 연계(Outgoing/Incoming Webhook, Interactive Message, `mattermost-bridge`, `libs/mattermost-adapter`, `mattermost_*` 테이블, 관련 Helm/테스트)를 **완전히 제거**했다. 기존 Mattermost Channel 데이터는 `0003_webchat` 마이그레이션으로 `chat_channels` 로 보존·이관되며, 업그레이드 후 전 문서 재색인이 필요하다(§18.1).
 
@@ -123,7 +124,7 @@
 | NOGOAL-011 | 외부 IdP/SSO 연동(사용자 채팅 로그인)             | PoC 는 Web Chat 자체 계정(prehash 로그인)만 지원. 사용자 계정은 Admin Web 에서 생성                              |
 | NOGOAL-012 | 메시지 편집·타이핑 인디케이터                      | 메시지 편집 없음(작성자/moderate 삭제만), `typing` 이벤트는 no-op                                          |
 | NOGOAL-013 | 멤버십 변경의 즉시 WebSocket 반영               | 연결 중 socket 에는 다음 `ack`/`subscribe`/재연결 시 반영(REST 는 즉시 반영)                                  |
-| NOGOAL-014 | Browser E2E 자동화(Playwright) / 이미지 빌드 스크립트 | aiops e2e 설정은 이식하지 않음. Containerfile/이미지 빌드 스크립트는 저장소에 포함하지 않음                              |
+| NOGOAL-014 | Browser E2E 자동화(Playwright)                   | aiops e2e 설정은 이식하지 않음. (v2.0.1: 이미지 빌드 자산은 범위에 포함 — `apps/*/Containerfile` 8종, `make build-images`/`push-images`) |
 
 ## 5. 범위
 
@@ -935,7 +936,7 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 | FR-DOC-006 | 실패 원인 및 재시도를 지원해야 한다.                                | P0   | 실패 단계와 Error 조회, Retry 가능                  |
 | FR-DOC-007 | 새 버전을 등록하고 활성 버전을 관리할 수 있어야 한다.                      | P1   | Version 전환                                 |
 | FR-DOC-008 | 문서를 삭제하면 검색 대상에서 즉시 제외해야 한다.                         | P0   | Qdrant Filter 또는 Vector 삭제                 |
-| FR-DOC-009 | 문서 재색인을 요청할 수 있어야 한다.                                | P0   | Job 생성 및 완료                                |
+| FR-DOC-009 | 문서 재색인을 요청할 수 있어야 한다.                                | P0   | Job 생성 및 완료 — 재색인 또는 업로드 `start_indexing=true` 시 `index_jobs` 생성, `INDEX_JOB_TRIGGER=k8s` 면 parser-indexer K8s Job 자동 생성(`none` 은 CLI 수동 실행). `test_reindex_calls_trigger` |
 | FR-DOC-010 | 문서 원본과 파싱 결과의 무결성을 확인할 수 있어야 한다.                     | P1   | Hash 및 처리 통계 제공                            |
 
 ### 15.7 Parser
@@ -1627,9 +1628,9 @@ HF_HOME=/models/huggingface
 
 ### 21.4 Web Chat 구성 반입/설정
 
-- `chat-web` 은 npm 의존성을 내부 Registry 에서 설치해 `next build`(standalone) 후 Node 22 런타임 이미지로 반입한다. 런타임에 외부 CDN·폰트·텔레메트리를 호출하지 않는다(`NEXT_TELEMETRY_DISABLED=1`, CDN 폰트 제거, CSP 외부 도메인 제거).
+- `chat-web` 은 npm 의존성을 내부 Registry 에서 설치해 `next build`(standalone) 후 Node 22 런타임 이미지로 반입한다(`apps/chat-web/Containerfile`, build-arg `NPM_REGISTRY`, 비루트 uid 10001). Python 서비스 이미지는 `apps/*/Containerfile` 에서 내부 PyPI(`UV_INDEX_URL`)의 cp312 바이너리 휠만으로 빌드한다. 런타임에 외부 CDN·폰트·텔레메트리를 호출하지 않는다(`NEXT_TELEMETRY_DISABLED=1`, CDN 폰트 제거, CSP 외부 도메인 제거).
 - `chat-gateway` 신규 Python 의존성은 lock 에 이미 있던 pure-python wheel(`python-socketio`/`python-engineio`)뿐이며, prehash/scrypt/JWT 는 stdlib 로 구현한다(신규 네이티브 wheel 없음, ADR-013).
-- JWT 서명 키, Password Pepper, 피드백 서명 키는 Kubernetes Secret `rag-chat-secrets`(키: `jwt-secret`, `password-pepper`, `feedback-signing-key`)/Vault 로 주입하고 `/var/run/secrets/rag` 에 파일(0400)로 마운트한다.
+- JWT 서명 키, Password Pepper, 피드백 서명 키는 Kubernetes Secret `rag-chat-secrets`(키: `jwt-secret`, `password-pepper`, `feedback-signing-key`)/Vault 로 주입하고 `/var/run/secrets/rag` 에 파일(0440, 비루트 + fsGroup 읽기)로 마운트한다. 서비스별로 필요한 키만 투영한다(Helm `appServices.<svc>.secretMount.keys` — chat-gateway 3키, rag-worker `feedback-signing-key`, admin-api `password-pepper`). PostgreSQL 비밀번호는 `rag-postgresql-secret`(key `password`)으로 주입한다.
 - Secret 값은 Admin Web, CLI 출력, CI 로그, Kubernetes Event에 노출하지 않는다.
 - `CHAT_WORKSPACE_SLUG`(서버)와 `NEXT_PUBLIC_WORKSPACE_SLUG`(chat-web 빌드 시)는 prehash salt 구성요소이므로 반드시 동일해야 하며, 변경 시 전 사용자 비밀번호 재설정이 필요하다.
 - 운영 Ingress 에 내부 CA 인증서 기반 TLS 를 적용한다(브라우저 WebCrypto 는 HTTPS 필요).
@@ -1638,13 +1639,15 @@ HF_HOME=/models/huggingface
 
 ### 22.1 NetworkPolicy 및 Firewall
 
-기본 정책은 `default-deny`로 설정한다(Helm: `default-deny-all`, `allow-dns-egress`, `allow-intra-platform`, `allow-ingress-to-chat`).
+기본 정책은 `default-deny`로 설정한다(Helm: `default-deny-all`, `allow-dns-egress`, `allow-intra-platform`, 서비스별 `allow-ingress-to-<svc>`, 선택 `allow-admin-api-to-apiserver`). Ingress Controller 의 Namespace/Pod 선택자는 values(`networkPolicy.ingressController`)로 지정한다(예: RKE2 내장 ingress-nginx = `kube-system`). Namespace 간 허용은 Namespace 라벨 `rag-platform=true` 를 전제로 한다.
 
 | Source                   | Destination                           | Port/Protocol  | 목적                                   |
 | ------------------------ | ------------------------------------- | -------------- | ------------------------------------ |
 | 사용자 Network             | Internal Ingress (chat host)          | HTTPS / WSS    | Web Chat 접속(REST + WebSocket)         |
-| ingress-nginx            | chat-gateway                          | 8001           | `/api/v1`, `/ws` (`allow-ingress-to-chat`) |
-| ingress-nginx            | chat-web                              | 3000           | `/` (`allow-ingress-to-chat`)          |
+| ingress-nginx            | chat-gateway                          | 8001           | `/api/v1`, `/ws` (`allow-ingress-to-chat-gateway`) |
+| ingress-nginx            | chat-web                              | 3000           | `/` (`allow-ingress-to-chat-web`)      |
+| ingress-nginx            | admin-api / admin-web                 | 8003 / 8080    | admin host `/api`, `/` (`allow-ingress-to-admin-api`, `allow-ingress-to-admin-web`) |
+| admin-api                | kube-apiserver                        | 6443           | 색인 Job 생성(`INDEX_JOB_TRIGGER=k8s` 시, `allow-admin-api-to-apiserver`) |
 | Admin User Network       | Internal Ingress (admin host) / Admin Web | HTTPS       | 관리자 접속                               |
 | chat-gateway             | Redis                                 | 6379           | Queue, Dedup, Rate Limit, nonce, socket.io manager |
 | chat-gateway             | PostgreSQL                            | 5432           | 사용자/Channel/멤버/Post/Job             |
@@ -1662,14 +1665,15 @@ HF_HOME=/models/huggingface
 방화벽 요구사항:
 
 - 사용자 Network → Internal Ingress(chat host) HTTPS/WSS 만 허용
-- chat-gateway·chat-web Pod 는 ingress-nginx 에서만 Ingress 허용
+- chat-gateway·chat-web·admin-api·admin-web Pod 는 Ingress Controller 에서만(외부 기준) Ingress 허용
 - 외부 인터넷 Egress 차단 — v2.0 은 외부 메신저 서버로의 Egress 가 필요 없다
 - 내부 DNS/NTP/Registry/Storage 등 승인 목적지만 허용
 
 ### 22.2 인증 Secret 보안
 
 - 대상 Secret: JWT 서명 키(`jwt-secret`), Password Pepper(`password-pepper`, chat-gateway·admin-api 공유), 피드백 서명 키(`feedback-signing-key`, chat-gateway·rag-worker 공유). Kubernetes Secret `rag-chat-secrets`(`global.chatSecretName`)로 관리한다.
-- Secret 은 `*_FILE` 환경변수가 가리키는 파일 마운트로만 로딩하고, 애플리케이션 내부에서는 `SecretStr`/bytes 로만 보관하여 로그·응답·repr 에 노출하지 않는다.
+- Secret 은 `*_FILE` 환경변수가 가리키는 파일 마운트로만 로딩하고, 애플리케이션 내부에서는 `SecretStr`/bytes 로만 보관하여 로그·응답·repr 에 노출하지 않는다. DB 비밀번호(`postgres_password`)도 `SecretStr` 로 보관한다.
+- Secret 파일이 없거나 비어 있으면 **fail-closed** 로 동작한다: 빈 키로 서명·해시·검증하지 않으며, 로그인/토큰 갱신은 503(`AUTH_NOT_CONFIGURED`), 피드백은 401 로 거부하고 기동 시 누락을 error 로그로 남긴다.
 - 사용자 비밀번호: 브라우저 prehash(PBKDF2-SHA256 600k/32B) → 서버 scrypt(n=2^15, r=8, p=1) over HMAC(pepper, prehash), 저장 형식 `scrypt$n$r$p$salt$dk`. 원문 비밀번호는 전송·저장하지 않는다.
 - 세션: access token(JWT HS256, 15분)은 브라우저 메모리에만 보관, refresh 는 HttpOnly/SameSite=Strict/Secure 쿠키 + rotation(재사용 불가), DB 에는 SHA-256 해시만 저장. 비밀번호 변경 시 모든 refresh 세션을 폐기한다.
 - JWT 는 HS256 만 허용하고 `alg=none` 등은 거부하며, `exp`/`iat` 를 검증한다.
@@ -1921,7 +1925,7 @@ rag_system/
 │   ├── reranker-api/
 │   └── parser-indexer/
 ├── deploy/
-│   └── helm/rag-platform/   # Umbrella chart (Deployment/Service/PDB/NetworkPolicy/Ingress/Grafana)
+│   └── helm/rag-platform/   # 단일 chart (Deployment/Service/PDB/NetworkPolicy/Ingress/RBAC/Migration Job/Grafana)
 ├── libs/
 │   ├── common/              # ids/json/retry/cache/hashing, passwords(prehash/scrypt), jwt
 │   ├── schemas/             # 공유 Pydantic 스키마 SSOT (webchat.py 포함)
@@ -1968,7 +1972,7 @@ rag_system/
 - vLLM은 모델 로딩 시간을 고려한 Rolling 전략 사용
 - PodDisruptionBudget은 2 Replica 서비스에 적용
 - chat-gateway/chat-web 배포 전 Ingress host·TLS·WebSocket timeout·`CHAT_CORS_ORIGINS`(운영 비움 = same-origin)·Secret 마운트를 사전 검증
-- DB 업그레이드(`alembic upgrade head` → `0003_webchat`) 후 전 문서 재색인 수행
+- DB 업그레이드(`alembic upgrade head` → `0003_webchat`)는 Helm post-install/post-upgrade hook Job(`rag-db-migrate`, `migration.enabled=true`)으로 수행하고, 이후 전 문서 재색인 수행
 - 신규 버전은 테스트 Channel에서 검증 후 운영 Channel Binding에 반영
 
 ## 27. 단계별 개발 계획

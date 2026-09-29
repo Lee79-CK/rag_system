@@ -92,3 +92,29 @@ def test_password_change_policy_and_success(harness):
     assert ok.status_code == 204
     relogin = harness.login_body(email, "N3w!Password#2026")
     assert harness.client.post("/api/v1/auth/login", json=relogin).status_code == 200
+
+
+def test_login_fails_closed_without_jwt_secret(harness):
+    """JWT 키가 비면 로그인 자체를 503 으로 거부 — 빈 키로 서명한 토큰을 발급하지 않는다."""
+    harness.settings.jwt_secret_file = "/nonexistent/jwt"
+    r = harness.client.post("/api/v1/auth/login", json=harness.login_body("alice@example.com"))
+    assert r.status_code == 503 and r.json()["error"]["code"] == "AUTH_NOT_CONFIGURED"
+
+
+def test_login_fails_closed_without_pepper(harness):
+    harness.settings.password_pepper_file = "/nonexistent/pepper"
+    r = harness.client.post("/api/v1/auth/login", json=harness.login_body("alice@example.com"))
+    assert r.status_code == 503
+
+
+def test_empty_key_jwt_rejected(harness):
+    """빈 키로 서명된 토큰(공격자 위조 가능)은 서버 키가 있든 없든 401."""
+    from rag_common import jwt
+
+    forged = jwt.encode(
+        {"sub": harness.alice.id, "role": "admin", "typ": "access"}, b"", ttl_seconds=60
+    )
+    headers = {"Authorization": f"Bearer {forged}"}
+    assert harness.client.get("/api/v1/auth/me", headers=headers).status_code == 401
+    harness.settings.jwt_secret_file = "/nonexistent/jwt"
+    assert harness.client.get("/api/v1/auth/me", headers=headers).status_code == 401

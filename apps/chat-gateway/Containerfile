@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# mattermost-bridge — 빌드 컨텍스트는 **리포 루트** (uv workspace 해석):
-#   docker build -f apps/mattermost-bridge/Containerfile -t $REG/rag/mattermost-bridge:$TAG .
+# chat-gateway — Web Chat 백엔드 (REST + socket.io /ws). 빌드 컨텍스트는 **리포 루트** (uv workspace 해석):
+#   docker build -f apps/chat-gateway/Containerfile -t $REG/rag/chat-gateway:$TAG .
 # 폐쇄망: 베이스 이미지는 내부 Harbor + digest 고정(TDD §3.4). 예)
 #   --build-arg PYTHON_IMAGE=harbor.internal/library/python:3.12-slim@sha256:...
 #   --build-arg UV_IMAGE=harbor.internal/astral/uv:0.5@sha256:...
@@ -18,14 +18,13 @@ ARG UV_EXTRA=""
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
-    UV_NO_BINARY="" \
     UV_ONLY_BINARY=":all:"
 WORKDIR /app
 COPY . .
 # --frozen: uv.lock 그대로 (NFR-MAINT-004) · --no-dev · 이 서비스 패키지만 설치 (workspace 멤버는 editable)
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -n "$UV_INDEX_URL" ]; then export UV_INDEX_URL; fi; \
-    uv sync --frozen --no-dev --package mattermost-bridge ${UV_EXTRA:+--extra $UV_EXTRA}
+    uv sync --frozen --no-dev --package chat-gateway ${UV_EXTRA:+--extra $UV_EXTRA}
 
 # ---------- runtime ----------
 FROM ${PYTHON_IMAGE}
@@ -39,4 +38,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
 USER 10001
 EXPOSE 8001
 # chart 의 appServices.<svc>.command 와 동일 (values.yaml). readOnlyRootFilesystem 대응: 쓰기는 /tmp 만.
-CMD ["uvicorn", "bridge.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips=*"]

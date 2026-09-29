@@ -1,7 +1,7 @@
 id: q001
 type: single_doc
 question: "장애 등급별 대응 절차를 알려주세요."
-channel_id: channel-001
+channel_id: c0000000-0000-0000-0000-000000000001
 ground_truth:
   answer_gist: "1~4등급 구분, 등급별 보고/복구 절차"
   documents: ["장애대응매뉴얼.pdf"]

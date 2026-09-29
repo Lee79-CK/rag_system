@@ -5,11 +5,18 @@ from __future__ import annotations
 from evaluation.models import CaseResult, MetricSummary
 
 
-def _doc_match(name: str, expected: list[str]) -> bool:
-    """문서명 부분 일치(확장자·경로 차이 허용)."""
-    n = name.lower()
+def _stem(s: str) -> str:
     # str.rstrip(".pdf") 는 문자 집합 제거라 "guide_dp.pdf" → "guide_" 가 된다 → removesuffix 사용
-    return any(e.lower().removesuffix(".pdf").rstrip() in n or n in e.lower() for e in expected)
+    return s.strip().lower().removesuffix(".pdf")
+
+
+def _doc_match(name: str, expected: list[str]) -> bool:
+    """문서명 일치(확장자·경로 접두 차이 허용). 기대 문서명(stem)이 검색 문서명에 포함되어야 한다.
+
+    반대 방향(검색명 ⊂ 기대명)은 "guide_" 가 "guide_dp.pdf" 에 매칭되는 오탐을 내므로 허용하지 않는다.
+    """
+    n = _stem(name)
+    return any(es and es in n for es in (_stem(e) for e in expected))
 
 
 def recall_at_10(result: CaseResult) -> float | None:

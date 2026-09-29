@@ -1,22 +1,11 @@
 # PoC(운영) 프로파일 — values.yaml 위에 겹쳐 쓰는 override. docs/PRD.md §12 리소스, docs/TDD.md §14.
 #   helm upgrade --install rag-platform deploy/helm/rag-platform -f deploy/helm/rag-platform/values-poc.yaml
 # 이미지는 내부 Harbor digest 고정(§14.2). 리소스·replica 는 PRD §12.1~12.2 값 그대로.
-# Namespace / Secret(rag-bridge-secrets, rag-postgresql-secret, mattermost-incoming-*) 은 사전 생성 전제.
+# Namespace(라벨 rag-platform=true) / Secret(rag-chat-secrets, rag-postgresql-secret, TLS) 은 사전 생성 전제.
 global:
   imageRegistry: harbor.internal
   imageTag: "0.1.0"          # --set global.imageTag=<git-sha> 로 override
   imagePullPolicy: IfNotPresent
-<<<<<<< HEAD
-=======
-  # 사전 생성 K8s Secret (§3.4, §14.2) — Helm 값에 secret 값 미포함
-  # rag-chat-secrets 키: jwt-secret, password-pepper, feedback-signing-key (파일 마운트)
-  chatSecretName: rag-chat-secrets
-  offlineEnv:
-    HF_HUB_OFFLINE: "1"
-    TRANSFORMERS_OFFLINE: "1"
-    HF_DATASETS_OFFLINE: "1"
-    HF_HOME: /models/huggingface
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
 networkPolicy:
   ingressController:
@@ -25,47 +14,24 @@ networkPolicy:
 ingress:
   enabled: true
   className: nginx
-  host: rag.internal
-  # 운영: 인증 프록시(oauth2-proxy 등)가 X-Auth-User 를 주입한다 (DEC-003). 클라이언트 헤더는 프록시에서 제거.
+  chatHost: chat.rag.internal     # 사용자 Web Chat (chat-web + chat-gateway 동일 출처)
+  adminHost: rag.internal         # 관리자 (admin-api /api, admin-web /)
+  # 운영: 인증 프록시(oauth2-proxy 등)가 admin host 에 X-Auth-User 를 주입한다 (DEC-003). 클라이언트 헤더는 프록시에서 제거.
+  tlsSecretName: rag-chat-tls     # 필수 — HTTP 로는 브라우저 WebCrypto(prehash 로그인) 불가
   annotations: {}
 
 migration:
   enabled: true              # post-install/upgrade 마다 alembic upgrade head
 
 appServices:
-<<<<<<< HEAD
-  mattermost-bridge:
+  # 이미지/command/env/Secret 마운트는 values.yaml 기준선을 그대로 쓴다 (list 는 override 시 통째로 교체되므로 여기서 재정의 금지)
+  chat-gateway:
     replicas: 2
     resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "4", memory: 8Gi } }
-=======
-  chat-gateway:                             # Web Chat 백엔드 (REST + socket.io /ws) — TDD §7.1
-    namespace: rag-app
-    replicas: 2                             # socket.io Redis manager 로 replica 간 브로드캐스트 (sticky 불필요)
-    image: rag/chat-gateway
-    port: 8001
-    command: ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips=*"]
-    resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "4", memory: 8Gi } }
-    secretMount: { secretName: rag-chat-secrets, mountPath: /var/run/secrets/rag }
-    extraEnv:
-      - { name: JWT_SECRET_FILE, value: /var/run/secrets/rag/jwt-secret }
-      - { name: PASSWORD_PEPPER_FILE, value: /var/run/secrets/rag/password-pepper }
-      - { name: FEEDBACK_SIGNING_KEY_FILE, value: /var/run/secrets/rag/feedback-signing-key }
-      - { name: COOKIE_SECURE, value: "true" }
-      - { name: CHAT_CORS_ORIGINS, value: "" }   # 동일 출처(Ingress) 는 자동 허용
     pdbMinAvailable: 1
-  chat-web:                                 # Web Chat UI (aiops_chatbot 이식, Next.js standalone) — TDD §7.8
-    namespace: rag-app
+  chat-web:
     replicas: 2
-    image: rag/chat-web
-    port: 3000
-    command: ["node", "server.js"]
-    probePath: /health/live
     resources: { requests: { cpu: "500m", memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
-    extraEnv:
-      - { name: HOSTNAME, value: "0.0.0.0" }
-      - { name: PORT, value: "3000" }
-      - { name: NEXT_TELEMETRY_DISABLED, value: "1" }
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
     pdbMinAvailable: 1
   rag-api:
     replicas: 2
@@ -74,16 +40,10 @@ appServices:
   rag-worker:
     replicas: 2
     resources: { requests: { cpu: "4", memory: 8Gi }, limits: { cpu: "6", memory: 12Gi } }
-    secretMount: { secretName: rag-chat-secrets, mountPath: /var/run/secrets/rag }
-    extraEnv:
-      - { name: FEEDBACK_SIGNING_KEY_FILE, value: /var/run/secrets/rag/feedback-signing-key }
     pdbMinAvailable: 1
   admin-api:
     replicas: 2
     resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "3", memory: 6Gi } }
-    secretMount: { secretName: rag-chat-secrets, mountPath: /var/run/secrets/rag }
-    extraEnv:
-      - { name: PASSWORD_PEPPER_FILE, value: /var/run/secrets/rag/password-pepper }
     pdbMinAvailable: 1
   embedding-api:
     replicas: 2
@@ -117,11 +77,4 @@ data:
 
 monitoring:
   grafanaDashboards: true
-<<<<<<< HEAD
   namespace: monitoring
-=======
-
-# ---- NetworkPolicy — 브라우저 트래픽(chat-web/chat-gateway)을 허용할 Ingress Controller namespace ----
-networkPolicy:
-  ingressControllerNamespace: ingress-nginx   # 표준 ingress-nginx 설치
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

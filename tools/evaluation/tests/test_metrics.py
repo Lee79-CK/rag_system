@@ -17,7 +17,7 @@ def _case(answerable=True, docs=None, ctype="single_doc"):
         id="q",
         type=ctype,
         question="질문",
-        channel_id="channel-001",
+        channel_id="c0000000-0000-0000-0000-000000000001",
         ground_truth=GroundTruth(documents=docs or [], answerable=answerable),
     )
 

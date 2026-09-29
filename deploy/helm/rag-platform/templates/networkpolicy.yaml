@@ -61,42 +61,28 @@ spec:
             matchLabels:
               rag-platform: "true"
 {{- end }}
-{{- /* Ingress Controller → 노출 서비스 (bridge /integrations, admin-api /api, admin-web /).
-       RKE2 내장 ingress-nginx 는 kube-system 에 있으므로 values 로 NS/podSelector 를 맞춘다. */}}
-{{- range $route := .Values.ingress.routes }}
-{{- if hasKey $.Values.appServices $route.service }}
-{{- $svc := index $.Values.appServices $route.service }}
+{{- /* Ingress Controller → 브라우저 노출 서비스 (§22.1):
+       chat host  : chat-gateway(:8001 REST /api/v1 + WebSocket /ws) · chat-web(:3000 /)
+       admin host : admin-api(:8003 /api) · admin-web(:8080 /)
+       appServices 에 정의된 서비스만 렌더. RKE2 내장 ingress-nginx 는 kube-system 에 있으므로 values 로 NS/podSelector 를 맞춘다. */}}
+{{- range $name := $.Values.networkPolicy.exposedServices }}
+{{- if hasKey $.Values.appServices $name }}
+{{- $svc := index $.Values.appServices $name }}
 ---
-<<<<<<< HEAD
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-ingress-to-{{ $route.service }}
+  name: allow-ingress-to-{{ $name }}
   namespace: {{ $svc.namespace }}
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: {{ $route.service }}
-=======
-# 사용자 브라우저 → chat-web(:3000) / chat-gateway(:8001, REST + WebSocket) 는 ingress-nginx 경유 (§22.1)
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-ingress-to-chat
-  namespace: rag-app
-spec:
-  podSelector:
-    matchExpressions:
-      - key: app.kubernetes.io/name
-        operator: In
-        values: [chat-gateway, chat-web]
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
+      app.kubernetes.io/name: {{ $name }}
   policyTypes: ["Ingress"]
   ingress:
     - from:
         - namespaceSelector:
             matchLabels:
-<<<<<<< HEAD
               kubernetes.io/metadata.name: {{ $ic.namespace }}
           {{- with $ic.podSelector }}
           podSelector:
@@ -131,9 +117,3 @@ spec:
 {{- end }}
 {{- end }}
 {{- end }}
-=======
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressControllerNamespace | default "ingress-nginx" }}
-      ports:
-        - { protocol: TCP, port: 8001 }
-        - { protocol: TCP, port: 3000 }
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

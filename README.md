@@ -18,7 +18,7 @@ TDD §15 로드맵 **M1–M12 구현 완료** (M12 = Web Chat 전환). 로컬은
 
 | 지표 | 결과 |
 |---|---|
-| Python 테스트 | **159 passed** (Docker 가용 시 실 Qdrant 격리 테스트 포함 · Docker 없으면 1 skipped) |
+| Python 테스트 | **182 passed** (`make test` = testpaths `libs`·`apps`·`tests`, Docker 가용 시 실 Qdrant 격리 테스트 포함 · Docker 없으면 181 passed, 1 skipped) · `tools/*` 7건은 `uv run pytest tools` 로 별도 실행 |
 | Lint | `ruff check .` / `ruff format --check .` clean |
 | Helm | `helm lint` clean (values / values-poc / values-lab) |
 | admin-web | `npm run build` (tsc + vite) OK |
@@ -26,17 +26,17 @@ TDD §15 로드맵 **M1–M12 구현 완료** (M12 = Web Chat 전환). 로컬은
 
 | 구성요소 | 위치 | 테스트 |
 |---|---|---|
-| 공유 스키마/유틸 (M1) | `libs/schemas·common·observability·chat-adapter` | 34 |
-| chat-gateway (M2 → v2.0) | `apps/chat-gateway` (REST + socket.io) | 40 |
-| admin-api + Alembic (M3) | `apps/admin-api` | 24 |
-| embedding/reranker (M4) | `apps/embedding-api`·`apps/reranker-api` | 20 |
-| parser-indexer (M5) | `apps/parser-indexer` | 13 |
-| rag domain/worker/streaming/feedback (M6) | `apps/rag-api` | 15 |
+| 공유 스키마/유틸 (M1) | `libs/schemas·common·observability·chat-adapter` | 37 |
+| chat-gateway (M2 → v2.0) | `apps/chat-gateway` (REST + socket.io) | 44 |
+| admin-api + Alembic (M3) | `apps/admin-api` | 33 |
+| embedding/reranker (M4) | `apps/embedding-api`·`apps/reranker-api` | 21 |
+| parser-indexer (M5) | `apps/parser-indexer` | 16 |
+| rag domain/worker/streaming/feedback (M6) | `apps/rag-api` | 18 |
 | p95 측정 (M7) | `scripts/measure_latency.py` | — |
 | admin-web (M8) | `apps/admin-web` (React + Vite) | build |
 | Channel 격리 Gate (M9) | `tests/channel-isolation` (CH-001~010) | 12 |
 | Helm/NetworkPolicy/Ingress/모니터링 (M10) | `deploy/helm/rag-platform` | helm lint |
-| 평가 runner + perf (M11) | `tools/evaluation`, `tests/performance`, `tests/contract` | 7 |
+| 평가 runner + perf (M11) | `tools/evaluation`·`tools/mock-llm`, `tests/performance`, `tests/contract` | 8 (tools 7 + contract 1) |
 | **Web Chat UI (M12)** | `apps/chat-web` (Next.js 15, aiops_chatbot 이식) | typecheck/build |
 
 **로컬 실행 캐비엇**: 이 저장소는 Intel macOS(GPU 없음)에서 개발되어 실 모델 의존성(`torch`/`FlagEmbedding`)은
@@ -49,9 +49,10 @@ GPU 노드에서는 `uv sync --extra models` 로 실 엔진을 활성화한다. 
 
 > **명령 안내**: 아래 §2~§9의 일부 `make` 타깃/스크립트는 운영 절차를 설명하는 예시로, 현재 저장소에
 > 실제 구현된 것은 다음이다 — `make install lint fmt test test-cov test-isolation test-integration
-> evaluate perf-chat-burst mock-llm qdrant-init seed seed-users openapi chat-gateway chat-web-dev
-> chat-web-build infra-up infra-down clean`, 스크립트는 `scripts/export_openapi.py`·`measure_latency.py`·
-> `seed_dev.sql`·`create_chat_user.py`. 그 외(`make dev`, `verify-wheels`, `build-images`, `test-e2e`,
+> evaluate perf-chat-burst mock-llm build-images push-images helm-lint helm-template qdrant-init seed
+> seed-users openapi chat-gateway chat-web-dev chat-web-build infra-up infra-down clean`, 스크립트는
+> `scripts/export_openapi.py`·`measure_latency.py`·`seed_dev.sql`·`create_chat_user.py`, 이미지 빌드는
+> `apps/*/Containerfile`(8종), 업로드용 샘플 문서는 `samples/`. 그 외(`make dev`, `verify-wheels`, `test-e2e`,
 > `seed-vectors`, `perf-peak/soak` 등)는 배포 파이프라인 확장 시 추가 예정인 계획 항목이다.
 
 ## 목차
@@ -302,8 +303,19 @@ kubectl -n rag-app create secret generic rag-chat-secrets \
   --from-file=feedback-signing-key=secrets/rag/feedback-signing-key
 ```
 
-- Helm 은 `appServices.<svc>.secretMount`(chat-gateway / rag-worker / admin-api)로 `/var/run/secrets/rag` 에 파일 마운트하고
-  `*_FILE` env 로 경로만 전달합니다. values 에는 Secret **이름**(`global.chatSecretName`)만 기입합니다.
+```bash
+# PostgreSQL 비밀번호 (key=password) — DB 를 쓰는 네임스페이스마다 동일 값으로 생성
+for ns in rag-app rag-data rag-ingestion; do
+  kubectl -n $ns create secret generic rag-postgresql-secret --from-literal=password='<pg-password>'
+done
+```
+
+- Helm 은 `appServices.<svc>.secretMount.keys` 에 나열한 키만 `/var/run/secrets/rag` 에 파일로 투영(defaultMode `0440`)하고
+  `*_FILE` env(`JWT_SECRET_FILE`/`PASSWORD_PEPPER_FILE`/`FEEDBACK_SIGNING_KEY_FILE`)를 자동 주입합니다 —
+  chat-gateway=3키, rag-worker=`feedback-signing-key`, admin-api=`password-pepper`.
+  values 에는 Secret **이름**(`global.chatSecretName: rag-chat-secrets`, `global.postgres.existingSecret: rag-postgresql-secret`)만 기입합니다.
+- Secret 파일이 없거나 비면 **fail-closed**: chat-gateway 는 기동 시 `startup.*_missing` error 로그, 로그인/refresh 는 503 `AUTH_NOT_CONFIGURED`,
+  피드백은 401. rag-worker 는 서명 키가 없으면 피드백 토큰을 붙이지 않습니다.
 - JWT 키 교체: 모든 access token 무효화(최대 15분 후 refresh 로 재발급). 피드백 키 교체: 이전 답변의 피드백 버튼이 401(정상).
 
 ---
@@ -318,6 +330,8 @@ uv run alembic -c src/admin/db/migrations/alembic.ini upgrade head
 # rev.1: TDD §5 DDL · rev.2: feedback_enabled · rev.3(0003_webchat): Mattermost 제거 → chat_* 테이블
 # ⚠ v1.x DB 를 rev.3 으로 올린 경우 Channel id 가 UUID 로 재매핑되므로 전 문서 재색인이 필요합니다.
 ```
+
+K8s 에서는 `migration.enabled=true` 시 Helm hook Job `rag-db-migrate` 가 install/upgrade 마다 같은 명령을 실행합니다 (§7.3).
 
 ### 4.2 샘플 데이터 주입
 
@@ -447,7 +461,18 @@ curl -s -X POST localhost:8003/api/v1/documents -H 'X-Auth-User: cklee' \
 # 2) 색인 Job 생성 → CLI 실행
 curl -s -X POST localhost:8003/api/v1/documents/<document_id>/reindex -H 'X-Auth-User: cklee'
 uv run --package parser-indexer python -m ingestion.main --index-job-id <index_job_id>
+
+# (대안) 업로드와 색인 Job 생성을 한 번에 — 응답의 index_job_id 로 바로 CLI 실행
+curl -s -X POST localhost:8003/api/v1/documents -H 'X-Auth-User: cklee' \
+  -F file=@samples/<파일> -F allowed_channel_ids=c0000000-0000-0000-0000-000000000001 \
+  -F start_indexing=true
 ```
+
+- `allowed_channel_ids` 는 채널 UUID(`chat_channels.id`) — 반복 필드 또는 콤마 구분. 비UUID 는 422 `INVALID_CHANNEL_ID`, 미존재 채널은 404.
+- 색인 트리거는 `INDEX_JOB_TRIGGER` 로 선택합니다: `none`(기본 — `index_jobs` 행만 생성, 위 CLI 로 수동 실행) /
+  `k8s`(클러스터 내 admin-api 가 ConfigMap `parser-indexer-job-template` 으로 parser-indexer Job 생성). 트리거 실패는
+  `index_jobs.error = "TRIGGER_FAILED[...]"` 로 기록되고 요청 자체는 성공합니다.
+- 샘플 문서와 업로드 예시는 `samples/README.md` 참고.
 
 ### 5.4 Mock LLM (GPU 없는 로컬)
 
@@ -476,8 +501,8 @@ API 만으로 확인하려면 `tests/performance/locustfile.py` 의 로그인/�
 
 ```bash
 make lint              # ruff + mypy (py312 타깃)
-make test              # 전체 테스트 (159 passed)
-make test-integration  # tests/contract — mock-llm SSE ↔ openai SDK LLMClient.stream 계약
+make test              # 전체 테스트 (182 passed; Docker 없으면 181 passed, 1 skipped)
+make test-integration  # tests/contract(mock-llm SSE ↔ openai SDK LLMClient.stream 계약) + test_ch_qdrant.py(실 Qdrant)
 make test-isolation    # ★ CH-001~010 Channel 격리 — 배포 차단 Gate
 make chat-web-build    # chat-web typecheck + next build (standalone)
 ```
@@ -512,18 +537,23 @@ make test-isolation
 ### 7.1 이미지 빌드
 
 ```bash
-# 개별 (Containerfile 은 배포 파이프라인에서 관리 — 저장소 미포함)
+# 개별 — Python 서비스는 리포 루트 컨텍스트 (apps/{chat-gateway,rag-api,admin-api,embedding-api,reranker-api,parser-indexer}/Containerfile)
 docker build -f apps/chat-gateway/Containerfile \
   -t harbor.internal/rag/chat-gateway:$(git rev-parse --short HEAD) .
-# chat-web: `npm ci && npm run build` 후 .next/standalone + .next/static 을 Node 22 런타임 이미지에 복사
-#           (NEXT_PUBLIC_* 는 build 시 고정 — 운영은 NEXT_PUBLIC_WS_URL 비움 = same-origin)
+# chat-web — 컨텍스트 = apps/chat-web (Next standalone, node server.js :3000, uid 10001)
+#            NEXT_PUBLIC_* 는 build 시 고정 — 운영은 NEXT_PUBLIC_WS_URL 비움 = same-origin
+docker build -f apps/chat-web/Containerfile \
+  -t harbor.internal/rag/chat-web:$(git rev-parse --short HEAD) apps/chat-web
+# admin-web — 컨텍스트 = apps/admin-web (nginx :8080 비루트)
 
-# 전체 (Makefile)
-make build-images TAG=$(git rev-parse --short HEAD)
+# 전체 8종 (Makefile) — REG 기본 registry.local:5000, TAG 기본 git short sha
+make build-images REG=harbor.internal TAG=$(git rev-parse --short HEAD)
+make push-images  REG=harbor.internal TAG=$(git rev-parse --short HEAD)
 ```
 
-- Base image: 승인된 `harbor.internal/library/python:3.12-slim@sha256:...` (digest 고정, `latest` 금지)
-- 빌드 시 내부 PyPI만 참조: `--build-arg PIP_INDEX_URL=https://nexus.internal.example/...`
+- Base image: 승인된 `harbor.internal/library/python:3.12-slim@sha256:...` (digest 고정, `latest` 금지) — `--build-arg PYTHON_IMAGE=... UV_IMAGE=...` (web 은 `NODE_IMAGE`)
+- 빌드 시 내부 PyPI만 참조: `--build-arg UV_INDEX_URL=https://nexus.internal.example/...` (`UV_ONLY_BINARY` 로 sdist 빌드 차단). web 이미지는 `--build-arg NPM_REGISTRY=...`
+- embedding-api / reranker-api 는 `UV_EXTRA=models` 가 기본 (실 모델 엔진 포함)
 
 ### 7.2 CI/CD 파이프라인 (PRD §26.2)
 
@@ -539,7 +569,7 @@ Lint/Format → Unit Test → Contract Test → admin-web Build/Test → SAST
 ```bash
 # 사전: §3.4의 K8s Secret 생성 완료 상태
 
-helm dependency update deploy/helm/rag-platform
+make helm-lint helm-template   # values / +poc / +poc+lab 렌더 확인 (chart 는 외부 dependency 없음)
 
 helm upgrade --install rag-platform deploy/helm/rag-platform \
   -f deploy/helm/rag-platform/values-poc.yaml \
@@ -553,7 +583,11 @@ kubectl get pods -n rag-app -n rag-ai -n rag-data -n rag-ingestion
 kubectl -n rag-ai rollout status deploy/vllm-llm-0   # startupProbe 최대 10분
 ```
 
-- Namespace 배치: `rag-app`(chat-web/chat-gateway/admin/rag), `rag-ai`(vllm/embedding/reranker), `rag-data`(qdrant/pg/redis), `rag-ingestion`(parser-indexer Job)
+- Namespace 배치: `rag-app`(chat-web/chat-gateway/admin/rag), `rag-ai`(vllm/embedding/reranker), `rag-data`(qdrant/pg/redis), `rag-ingestion`(parser-indexer Job).
+  NetworkPolicy 의 cross-NS 허용은 NS 라벨 `rag-platform=true` 에 의존합니다(`namespaces.create=true` 또는 `kubectl label ns ... rag-platform=true`).
+- DB 마이그레이션: `migration.enabled=true`(values-poc/lab 기본) 면 post-install/post-upgrade hook Job `rag-db-migrate` 가
+  admin-api 이미지로 `alembic upgrade head` 를 실행합니다(admin-api 는 기동 시 마이그레이션하지 않음).
+- 색인 트리거: `INDEX_JOB_TRIGGER=k8s` 로 쓰려면 `serviceAccounts.adminApi.create=true` + `networkPolicy.apiServer.{enabled,cidrs}` 필요(values-lab 참고)
 - Ingress: chat host 의 `/api/v1`·`/ws` → chat-gateway, `/` → chat-web (동일 출처 필수 — refresh 쿠키 SameSite=Strict, WS Origin 검사). **TLS 필수** (브라우저 WebCrypto prehash)
 - chat-gateway 다중 replica: socket.io Redis manager 로 브로드캐스트, 클라이언트는 websocket 전용이라 sticky session 불필요
 - vLLM Rolling: `maxSurge=0, maxUnavailable=1` (GPU 2장 한도 내 순차 교체)

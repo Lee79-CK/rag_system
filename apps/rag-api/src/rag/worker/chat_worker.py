@@ -82,23 +82,17 @@ class WorkerDeps:
     delivery: DeliveryPort
 
 
-<<<<<<< HEAD
 async def process_chat_job(
     deps: WorkerDeps, job_id: str, request: ChatRequest
 ) -> RagCompletion | None:
-    """§7.2.1 1~15단계. 실패 시 오류 Post 게시 + job FAILED.
+    """§7.2.1 1~15단계. 실패 시 Bot Post 를 오류 안내로 갱신 + job FAILED.
 
-    RQ 재실행/중복 enqueue 로 같은 job 이 두 번 들어와도 답변이 두 번 게시되지 않도록
-    QUEUED→RUNNING 전이를 원자적으로 선점(claim)한 워커만 진행한다. 선점 실패 시 None.
+    RQ 재실행/중복 enqueue 로 같은 job 이 두 번 들어와도 Bot Post 스트리밍/최종 갱신이 중복되지 않도록
+    QUEUED→RUNNING 전이를 원자적으로 선점(claim)한 워커만 진행한다. 선점 실패 시 None (Bot Post 미변경).
     """
     if not deps.store.claim_job(job_id):
         log.warning("worker.job_already_claimed", job_id=job_id)
         return None
-=======
-async def process_chat_job(deps: WorkerDeps, job_id: str, request: ChatRequest) -> RagCompletion:
-    """§7.2.1 1~15단계. 실패 시 Bot Post 를 오류 안내로 갱신 + job FAILED."""
-    deps.store.update_job_status(job_id, "RUNNING", mark_started=True)
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
     binding = deps.binding_reader.get_binding(request.channel_id)
     if binding is None or not binding.enabled:

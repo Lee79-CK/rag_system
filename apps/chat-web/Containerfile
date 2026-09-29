@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+# chat-web — Next.js 15 standalone (`node server.js` :3000, 비루트 10001). 빌드 컨텍스트는 apps/chat-web:
+#   docker build -f apps/chat-web/Containerfile -t $REG/rag/chat-web:$TAG apps/chat-web
+# nginx 정적 서빙 불가(동적 라우트·/login CSP headers()·/health/live route handler) → Node 런타임 사용.
+# NEXT_PUBLIC_* 는 build 시 고정된다 — 운영/랩은 NEXT_PUBLIC_WS_URL 을 비워 same-origin(Ingress /ws) 으로 연결 (TDD §14.1).
+# 폐쇄망: NODE_IMAGE 를 내부 Harbor digest 로 교체, npm registry 는 --build-arg NPM_REGISTRY.
+ARG NODE_IMAGE=node:22-alpine
+
+FROM ${NODE_IMAGE} AS build
+ARG NPM_REGISTRY=""
+ARG NEXT_PUBLIC_WORKSPACE_SLUG=rag
+ARG NEXT_PUBLIC_WS_URL=""
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NEXT_PUBLIC_WORKSPACE_SLUG=${NEXT_PUBLIC_WORKSPACE_SLUG} \
+    NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && npm ci
+COPY . .
+RUN npm run typecheck && npm run build     # → .next/standalone + .next/static
+
+FROM ${NODE_IMAGE}
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
+WORKDIR /app
+COPY --from=build --chown=10001:10001 /src/.next/standalone ./
+COPY --from=build --chown=10001:10001 /src/.next/static ./.next/static
+# public/ 디렉터리가 생기면: COPY --from=build --chown=10001:10001 /src/public ./public
+USER 10001
+EXPOSE 3000
+# chart 의 appServices.chat-web.command 와 동일. readOnlyRootFilesystem 대응: 쓰기는 /tmp(emptyDir) 만.
+CMD ["node", "server.js"]

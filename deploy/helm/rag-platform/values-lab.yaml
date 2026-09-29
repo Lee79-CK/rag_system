@@ -11,8 +11,9 @@
 #   - 앱 replica 2 → 1 (P3 20코어 한계). PDB 는 minAvailable 유지 시 rollout 이 막히므로 해제(null)
 #   - 데이터 계층 용량 축소 (NVMe 1TB 공유 — 가이드 §1.4.1)
 #   - max-num-seqs 16 → 8 (GB10 메모리 대역폭 ~273GB/s 고려)
-#   - Namespace 를 chart 가 생성(라벨 rag-platform=true 포함), Ingress Controller = RKE2 내장(kube-system)
-#   - admin-web / mock-mattermost 를 appServices 로 추가 (Ingress `/` 및 E2E 게시 확인용)
+#   - Namespace 는 가이드 §4.1 에서 kubectl 로 사전 생성 + 라벨 rag-platform=true (namespaces.create=false), Ingress Controller = RKE2 내장(kube-system)
+#   - admin-web 을 appServices 로 추가 (admin host Ingress `/`)
+#   - Web Chat 은 chat host(chat.rag.lab.local), 관리자는 admin host(rag.lab.local) — 브라우저 /etc/hosts → P3 IP
 # ─────────────────────────────────────────────────────────────────────────────
 
 global:
@@ -38,8 +39,11 @@ networkPolicy:
 ingress:
   enabled: true
   className: nginx
-  host: rag.lab.local             # 접속 PC /etc/hosts → P3 IP
+  chatHost: chat.rag.lab.local    # 접속 PC /etc/hosts → P3 IP (chat-web + chat-gateway)
+  adminHost: rag.lab.local        # admin-api /api · admin-web /
   # 랩 한정: 인증 프록시가 없으므로 클라이언트가 X-Auth-User 를 직접 보낸다 (admin-web 은 localStorage override).
+  # prehash 로그인은 브라우저 WebCrypto 가 필요해 HTTPS 필수 → 자체서명 TLS Secret(가이드 §4.1) 지정
+  tlsSecretName: rag-chat-tls
   annotations: {}
 
 serviceAccounts:
@@ -87,7 +91,7 @@ modelStorage:
 
 # ---- 애플리케이션 서비스 ----
 # 공통: replica 1, PDB 해제, 리소스 축소(P3 20코어/128GB).
-# 서비스 URL / DB / Redis / Secret 경로는 values.yaml 의 dbEnv·redisEnv·bridgeSecrets·incomingSecrets 플래그와
+# 서비스 URL / DB / Redis / Secret 경로는 values.yaml 의 dbEnv·redisEnv·secretMount.keys 플래그와
 # extraEnv 기본값(in-cluster DNS)이 이미 채운다 — 여기서는 랩에서 달라지는 값만 override 한다 (리스트는 통째로 교체됨).
 appServices:
   chat-gateway:
@@ -95,21 +99,10 @@ appServices:
     pdbMinAvailable: null
     resources: { requests: { cpu: "250m", memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
     extraEnv:
-<<<<<<< HEAD
-      - { name: BRIDGE_INTERNAL_URL, value: "http://mattermost-bridge.rag-app:8001" }
-      - { name: LOG_LEVEL, value: "INFO" }
-      # Mattermost(mock) Pod 네트워크 + 접속 PC 대역. 비우면 개방(allow-all) — 랩에서도 채워 둔다
-      - { name: BRIDGE_ALLOWED_SOURCE_CIDRS, value: "10.42.0.0/16,192.168.0.0/16" }
-=======
-      - { name: REDIS_URL,     value: "redis://redis.rag-data:6379/0" }
-      - { name: POSTGRES_HOST, value: "postgresql.rag-data" }
-      - { name: JWT_SECRET_FILE,           value: /var/run/secrets/rag/jwt-secret }
-      - { name: PASSWORD_PEPPER_FILE,      value: /var/run/secrets/rag/password-pepper }
-      - { name: FEEDBACK_SIGNING_KEY_FILE, value: /var/run/secrets/rag/feedback-signing-key }
-      # 랩은 HTTP 로 접근할 수 있으나 prehash(WebCrypto) 는 HTTPS/localhost 에서만 동작 → TLS 권장
-      - { name: COOKIE_SECURE, value: "false" }
+      # 랩은 자체서명 TLS(§4.1) 로 HTTPS 접속 → Secure 쿠키 유지. HTTP 로만 쓸 경우에만 "false"
+      - { name: COOKIE_SECURE, value: "true" }
+      - { name: CHAT_CORS_ORIGINS, value: "" }   # 동일 출처(Ingress) 만 허용
       - { name: LOG_LEVEL,     value: "INFO" }
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
 
   chat-web:
     replicas: 1
@@ -126,13 +119,7 @@ appServices:
       - { name: RERANKER_API_URL,  value: "http://reranker-api.rag-ai:8005" }
       - { name: VLLM_API_URL,      value: "http://vllm-service.rag-ai:8000/v1" }
       - { name: LLM_SERVED_MODEL_NAME, value: "internal-rag-llm" }
-<<<<<<< HEAD
-      - { name: BRIDGE_INTERNAL_URL,   value: "http://mattermost-bridge.rag-app:8001" }
-      # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2)  ※ 코드가 아직 semaphore 로 강제하지 않음 — 리뷰 리포트 참조
-=======
-      - { name: FEEDBACK_SIGNING_KEY_FILE, value: /var/run/secrets/rag/feedback-signing-key }
-      # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2)
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
+      # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2) ※ 코드가 아직 semaphore 로 강제하지 않음 — 실효 동시성은 rag-worker replica 수
       - { name: CHAT_MAX_CONCURRENCY,  value: "8" }
       # tokenizer 는 LLM 노드(PGX)에만 있으므로 P3 의 rag-api 에서는 근사 카운팅 경로를 쓴다
       - { name: TOKENIZER_PATH,        value: "/models/llm/main" }
@@ -150,13 +137,8 @@ appServices:
     serviceAccountName: admin-api
     extraEnv:
       - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
-<<<<<<< HEAD
-      - { name: BRIDGE_INTERNAL_URL,   value: "http://mattermost-bridge.rag-app:8001" }
       - { name: INDEX_JOB_TRIGGER,     value: "k8s" }        # 업로드/재색인 → parser-indexer Job 자동 생성
       - { name: INDEX_JOB_NAMESPACE,   value: "rag-ingestion" }
-=======
-      - { name: PASSWORD_PEPPER_FILE,  value: /var/run/secrets/rag/password-pepper }
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
       - { name: APP_ENV,   value: "lab" }
       - { name: LOG_LEVEL, value: "INFO" }
 
@@ -187,16 +169,6 @@ appServices:
     port: 8080
     resources: { requests: { cpu: "50m", memory: 64Mi }, limits: { cpu: "500m", memory: 256Mi } }
     pdbMinAvailable: null   # nginx.conf 가 pid/temp 를 /tmp(emptyDir) 로 쓰므로 추가 볼륨 불필요
-
-  # Mattermost Incoming Webhook 수신 흉내 (tools/mock-mattermost). 게시 payload 확인용 — 운영 미배포
-  mock-mattermost:
-    namespace: rag-app
-    replicas: 1
-    image: rag/mock-mattermost
-    port: 9099
-    command: ["uvicorn", "mock_mattermost.server:app", "--host", "0.0.0.0", "--port", "9099"]
-    resources: { requests: { cpu: "50m", memory: 128Mi }, limits: { cpu: "500m", memory: 256Mi } }
-    pdbMinAvailable: null
 
 # ---- vLLM (PGX / arm64 / GPU 1) ----
 vllm:
@@ -234,28 +206,17 @@ ingestion:
     - { name: OCR_ENABLED,       value: "0" }
 
 monitoring:
-<<<<<<< HEAD
   grafanaDashboards: false        # kube-prometheus-stack 설치 후 true (가이드 §9). true 면 monitoring NS 선재 필요
-=======
-  grafanaDashboards: true
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ⚠️ chart 미지원 / 사전 준비 항목 (가이드 §4 참조)
+# ⚠️ 사전 준비 항목 (가이드 §4.1 참조)
 #
-# 1) Secret — `rag-chat-secrets`(키: jwt-secret, password-pepper, feedback-signing-key)를
-#    rag-app namespace 에 사전 생성한다. chart 는 appServices.<svc>.secretMount 로 파일 마운트만 한다.
-#
-# 2) Ingress — `ingress.enabled=true` + `ingress.chatHost` 로 chat-web/chat-gateway 동일 출처 라우팅.
-#    (/api/v1, /ws → chat-gateway · / → chat-web). admin-web 은 appServices 에 정의가 없다.
-#
-# 3) chat-web 이미지 — `apps/chat-web` 의 `next build` standalone 산출물(.next/standalone + .next/static
-#    + public)을 Node 22 런타임 이미지로 빌드해 Harbor 에 push 한다 (Containerfile 은 저장소 미포함).
-#
-# 4) POSTGRES_PASSWORD 등 DB 자격증명은 기본값(rag/rag-dev-only)을 그대로 쓴다.
-#    폐쇄망 랩 한정이며 PoC 이관 시 Secret 으로 전환할 것.
+# 1) Namespace — rag-app/rag-ai/rag-data/rag-ingestion 을 먼저 만들고 `rag-platform=true` 라벨 (NetworkPolicy 전제).
+# 2) Secret
+#    - rag-app : `rag-chat-secrets`(jwt-secret, password-pepper, feedback-signing-key), `rag-chat-tls`(자체서명 TLS)
+#    - rag-app / rag-data / rag-ingestion : `rag-postgresql-secret`(password) — global.postgres.existingSecret
+#    chart 는 appServices.<svc>.secretMount.keys 에 나열한 키만 파일로 마운트하고 *_FILE env 를 채운다.
+# 3) Ingress — chat host(`/api/v1`,`/ws` → chat-gateway · `/` → chat-web), admin host(`/api` → admin-api · `/` → admin-web).
+# 4) 이미지 — `make build-images REG=registry.local:5000 TAG=$TAG && make push-images ...`
+#    (chat-web 은 apps/chat-web/Containerfile — Next standalone, NEXT_PUBLIC_WS_URL 비움 = same-origin).
 # ─────────────────────────────────────────────────────────────────────────────
-
-# ---- NetworkPolicy — 브라우저 트래픽(chat-web/chat-gateway)을 허용할 Ingress Controller namespace ----
-networkPolicy:
-  ingressControllerNamespace: kube-system   # RKE2 번들 rke2-ingress-nginx 는 kube-system 에서 동작
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)

@@ -1,11 +1,12 @@
 """Secret 마스킹 (§11 #3, §23.4).
 
 두 층으로 마스킹한다.
-1. 키 이름: token/webhook/secret/password/signing_key/authorization 가 포함된 키의 값을 `***` 로 치환.
+1. 키 이름: token/webhook/secret/password/pepper/prehash/cookie/signing_key/authorization 가
+   포함된 키의 값을 `***` 로 치환.
 2. 값 패턴: 키 이름과 무관하게 문자열 값 안의 DSN 비밀번호(`scheme://user:pw@host`),
-   Mattermost Incoming Webhook 경로(`/hooks/<id>`), `Bearer <token>` 을 치환한다.
+   webhook 경로(`/hooks/<id>`), `Bearer <token>`, JWT(`eyJ….….…`) 를 치환한다.
    — 예외 메시지(psycopg/httpx 오류에 URL 이 포함됨)나 f-string 으로 끼어든 secret 을 위한 방어선.
-Secret 값(Outgoing Token, Incoming Webhook URL)은 로그에 절대 노출 금지 (§3.2).
+Secret 값(JWT 키·access/refresh 토큰·pepper·prehash·피드백 서명키)은 로그에 절대 노출 금지 (§3.2).
 """
 
 from __future__ import annotations
@@ -14,17 +15,29 @@ import re
 from typing import Any
 
 # 키 이름에 아래 부분 문자열이 포함되면 마스킹한다.
-_SENSITIVE_HINTS = ("token", "secret", "webhook", "password", "signing_key", "authorization")
+_SENSITIVE_HINTS = (
+    "token",
+    "secret",
+    "webhook",
+    "password",
+    "pepper",
+    "prehash",
+    "cookie",
+    "signing_key",
+    "authorization",
+)
 _MASK = "***"
 
 # 값 패턴 — 순서대로 적용.
 _VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # scheme://user:password@host → scheme://user:***@host  (DSN, Redis URL 등)
     (re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]*:)[^@\s/]+(@)"), r"\1***\2"),
-    # Mattermost Incoming Webhook: .../hooks/<key>  → .../hooks/***
+    # webhook 경로: .../hooks/<key>  → .../hooks/***
     (re.compile(r"(/hooks/)[A-Za-z0-9_-]+"), r"\1***"),
     # Authorization: Bearer <token>
     (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1***"),
+    # bare JWT (socket.io handshake auth.token 등): header.payload 는 유지, 서명부만 제거
+    (re.compile(r"\b(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.)[A-Za-z0-9_-]+"), r"\1***"),
 )
 
 

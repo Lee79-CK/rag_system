@@ -60,11 +60,7 @@ class Embedder:
             json={
                 "texts": list(texts),
                 "normalize": True,
-<<<<<<< HEAD
-            },  # embedding-api 계약 키 = texts (PRD §17.6)
-=======
             },  # PRD §17.6 계약 (embedding-api EmbeddingRequest)
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
             timeout=self._timeout,
         )
         resp.raise_for_status()

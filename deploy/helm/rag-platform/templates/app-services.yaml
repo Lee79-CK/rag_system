@@ -1,5 +1,6 @@
 {{/* 애플리케이션 서비스 Deployment + Service + PDB (§12.1). appServices map을 순회한다.
-     서비스별 플래그: dbEnv / redisEnv / bridgeSecrets / incomingSecrets / modelVolume / documentVolume
+     서비스별 플래그: dbEnv / redisEnv / secretMount.keys / modelVolume / documentVolume
+     / probePath(또는 livenessPath·readinessPath·startupPath) / startupFailureThreshold
      → 코드(config.py)가 기대하는 env 키·파일 경로를 chart 가 책임지고 채운다. */}}
 {{- range $name, $svc := .Values.appServices }}
 ---
@@ -58,11 +59,8 @@ spec:
             {{- if $svc.redisEnv }}
             {{- include "rag.redisEnv" $ | nindent 12 }}
             {{- end }}
-            {{- if $svc.bridgeSecrets }}
-            {{- include "rag.bridgeSecretEnv" $ | nindent 12 }}
-            {{- end }}
-            {{- if $svc.incomingSecrets }}
-            {{- include "rag.incomingSecretEnv" $ | nindent 12 }}
+            {{- if $svc.secretMount }}
+            {{- include "rag.chatSecretEnv" (dict "svc" $svc "root" $) | nindent 12 }}
             {{- end }}
             {{- with $svc.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -77,27 +75,16 @@ spec:
           resources:
             {{- toYaml $svc.resources | nindent 12 }}
           {{- if gt (int $svc.port) 0 }}
-          {{- /* probePath 지정 시(예: Next.js chat-web) live/ready/startup 모두 해당 경로 사용 */}}
+          {{- /* 개별 경로(livenessPath 등) > probePath(3종 공통, 예: chat-web /health/live) > /health/* */}}
           livenessProbe:
-<<<<<<< HEAD
-            httpGet: { path: {{ $svc.livenessPath | default "/health/live" }}, port: {{ $svc.port }} }
+            httpGet: { path: {{ $svc.livenessPath | default $svc.probePath | default "/health/live" }}, port: {{ $svc.port }} }
             periodSeconds: 10
           readinessProbe:
-            httpGet: { path: {{ $svc.readinessPath | default "/health/ready" }}, port: {{ $svc.port }} }
+            httpGet: { path: {{ $svc.readinessPath | default $svc.probePath | default "/health/ready" }}, port: {{ $svc.port }} }
             periodSeconds: 10
           startupProbe:
-            httpGet: { path: {{ $svc.startupPath | default "/health/startup" }}, port: {{ $svc.port }} }
+            httpGet: { path: {{ $svc.startupPath | default $svc.probePath | default "/health/startup" }}, port: {{ $svc.port }} }
             failureThreshold: {{ $svc.startupFailureThreshold | default 60 }}
-=======
-            httpGet: { path: {{ $svc.probePath | default "/health/live" }}, port: {{ $svc.port }} }
-            periodSeconds: 10
-          readinessProbe:
-            httpGet: { path: {{ $svc.probePath | default "/health/ready" }}, port: {{ $svc.port }} }
-            periodSeconds: 10
-          startupProbe:
-            httpGet: { path: {{ $svc.probePath | default "/health/startup" }}, port: {{ $svc.port }} }
-            failureThreshold: 60
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
             periodSeconds: 10
           {{- end }}
           volumeMounts:
@@ -106,7 +93,7 @@ spec:
             {{- if $svc.secretMount }}
             # Secret 파일 마운트 (*_FILE env 가 가리키는 경로) — 값은 env/로그에 노출되지 않는다 (§3.2)
             - name: secret-files
-              mountPath: {{ $svc.secretMount.mountPath | default "/var/run/secrets/rag" }}
+              mountPath: {{ $svc.secretMount.mountPath | default $.Values.secretMounts.chatSecretsPath }}
               readOnly: true
             {{- end }}
             {{- if $svc.modelVolume }}
@@ -118,16 +105,6 @@ spec:
             - name: documents
               mountPath: {{ $.Values.documentStorage.mountPath }}
             {{- end }}
-            {{- if $svc.bridgeSecrets }}
-            - name: rag-secrets
-              mountPath: {{ $.Values.secretMounts.bridgeSecretsPath }}
-              readOnly: true
-            {{- end }}
-            {{- if $svc.incomingSecrets }}
-            - name: mm-incoming
-              mountPath: {{ $.Values.secretMounts.incomingWebhookPath }}
-              readOnly: true
-            {{- end }}
             {{- range $svc.extraVolumeMounts }}
             - {{ toYaml . | nindent 14 | trim }}
             {{- end }}
@@ -137,8 +114,12 @@ spec:
         {{- if $svc.secretMount }}
         - name: secret-files
           secret:
-            secretName: {{ $svc.secretMount.secretName }}
-            defaultMode: 0400
+            secretName: {{ $svc.secretMount.secretName | default $.Values.global.chatSecretName }}
+            defaultMode: 0440   # 비루트(10001) + fsGroup 로 읽기. 필요한 키만 투영 (최소 권한)
+            items:
+              {{- range $svc.secretMount.keys }}
+              - { key: {{ . }}, path: {{ . }} }
+              {{- end }}
         {{- end }}
         {{- if $svc.modelVolume }}
         - name: models
@@ -153,15 +134,6 @@ spec:
         - name: documents
           persistentVolumeClaim:
             claimName: documents-pvc
-        {{- end }}
-        {{- if $svc.bridgeSecrets }}
-        - name: rag-secrets
-          secret:
-            secretName: {{ $.Values.global.bridgeSecretName }}
-            defaultMode: 0440
-        {{- end }}
-        {{- if $svc.incomingSecrets }}
-        {{- include "rag.incomingProjectedVolume" $ | nindent 8 }}
         {{- end }}
         {{- range $svc.extraVolumes }}
         - {{ toYaml . | nindent 10 | trim }}

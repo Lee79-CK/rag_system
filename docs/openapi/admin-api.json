@@ -152,7 +152,7 @@
           "documents"
         ],
         "summary": "Upload Document",
-        "description": "업로드 + Channel ACL(document_channel_acl) 등록.\n\nallowed_channel_ids = chat_channels.id — parser-indexer 가 Qdrant payload\n`allowed_channel_ids` 로 복사하며 build_filter() 격리의 근거가 된다 (§6.3).",
+        "description": "업로드 + Channel ACL(document_channel_acl) 등록 (+ 선택적으로 색인 Job 생성).\n\nallowed_channel_ids = chat_channels.id — parser-indexer 가 Qdrant payload\n`allowed_channel_ids` 로 복사하며 build_filter() 격리의 근거가 된다 (§6.3, FR-DOC-004).\nstart_indexing=true 면 index_jobs INSERT + Job 트리거 (FR-IDX-010, ADR-008).",
         "operationId": "upload_document_api_v1_documents_post",
         "parameters": [
           {
@@ -2231,30 +2231,18 @@
             "default": "INTERNAL"
           },
           "allowed_channel_ids": {
-<<<<<<< HEAD
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
             "title": "Allowed Channel Ids",
-            "description": "허용 Channel ID 목록(콤마 구분). 비우면 어느 채널에서도 검색되지 않는다."
+            "description": "허용 채널(chat_channels.id) — 반복 필드 또는 콤마 구분. 비우면 어느 채널에서도 검색되지 않는다."
           },
           "start_indexing": {
             "type": "boolean",
             "title": "Start Indexing",
             "description": "true 면 업로드 직후 색인 Job 생성",
             "default": false
-=======
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Allowed Channel Ids"
->>>>>>> bd76b61 (Mattermost 대신 chatbot UI 추가)
           }
         },
         "type": "object",
