@@ -85,7 +85,7 @@ documentStorage:
 modelStorage:
   create: false                   # PVC 대신 hostPath 사용 → 빈 models-pvc 를 만들지 않는다
   hostPath: /data/bulk/models     # §2.2 다운로드 위치. 컨테이너 /models 로 마운트
-                                  # → /models/embedding/bge-m3, /models/reranker/bge-reranker-v2-m3
+                                  # → /models/embedding/kure-v1 (+ 비교용 bge-m3), /models/reranker/bge-reranker-v2-m3
                                   # ※ 사전 조치: sudo chmod -R a+rX /data/bulk/models
                                   #   (Pod 는 runAsUser 10001, hostPath 에는 fsGroup 이 적용되지 않음)
 
@@ -147,12 +147,18 @@ appServices:
   embedding-api:
     replicas: 1
     pdbMinAvailable: null
-    # CPU 추론(bge-m3). P3 Core Ultra 7 265 기준 — 색인 처리량이 부족하면 cpu limit 을 올린다
+    # CPU 추론(KURE-v1 = 한글 파인튜닝 bge-m3, 568M). P3 Core Ultra 7 265 기준 — 색인 처리량이 부족하면 cpu limit 을 올린다
     resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "6", memory: 8Gi } }
     startupFailureThreshold: 90   # HDD(/data/bulk) 에서 모델 로딩 → 최대 15분 허용
     extraEnv:
-      - { name: EMBEDDING_MODEL_PATH, value: "/models/embedding/bge-m3" }
+      # 한글 PDF 랩 기본 = KURE-v1 (가이드 §5.1.2). bge-m3 와 차원(1024)·토크나이저 동일 → collection 스키마 그대로,
+      # 단 벡터 공간이 달라 모델을 바꾸면 전 문서 재색인 필수. 비교 기준선: "/models/embedding/bge-m3"
+      - { name: EMBEDDING_MODEL_PATH, value: "/models/embedding/kure-v1" }
       - { name: EMBEDDING_MOCK,       value: "0" }   # 실모델. 모델 미배치 시 "1" (이미지에 --extra models 필요)
+      # FlagEmbedding encode 기본 512 tok 절단 방지. 표 청크(최대 ≈1,100 tok)까지 포함
+      - { name: EMBEDDING_MAX_LENGTH, value: "2048" }
+      # 비대칭 모델(dragonkue/snowflake-arctic-embed-l-v2.0-ko)로 A/B 할 때만: "query: "
+      - { name: EMBEDDING_QUERY_PREFIX, value: "" }
 
   reranker-api:
     replicas: 1
@@ -215,6 +221,11 @@ ingestion:
     # CPU embedding: 64청크/요청이면 한글 문서에서 30s timeout 초과 → 작은 배치 + 넉넉한 timeout (가이드 §5.1.1)
     - { name: EMBEDDING_MAX_BATCH, value: "8" }
     - { name: EMBEDDING_TIMEOUT,   value: "120" }
+    # 한글 실측 1.87자/토큰(bge-m3·KURE-v1 토크나이저) → CHUNK_SIZE=800 이 실제 ≈800 tok 이 되게 (기본 3.3 은 영문 기준,
+    # 한글 청크가 ≈1,400 tok 로 커져 reranker max_length 1024 를 넘는다). 가이드 §5.1.2
+    - { name: CHARS_PER_TOKEN,     value: "1.9" }
+    # auto = PyMuPDF + 추출 순서가 깨진 페이지(MS Print-To-PDF)만 pdfplumber 대체
+    - { name: PDF_TEXT_ENGINE,     value: "auto" }
 
 monitoring:
   grafanaDashboards: false        # kube-prometheus-stack 설치 후 true (가이드 §9). true 면 monitoring NS 선재 필요

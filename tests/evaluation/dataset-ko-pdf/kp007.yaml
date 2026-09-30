@@ -1,0 +1,9 @@
+id: kp007
+type: multi_doc
+question: "우리 서비스가 고영향 인공지능에 해당하는지 확실하지 않으면 누구에게 확인을 요청할 수 있나요?"
+channel_id: c0000000-0000-0000-0000-000000000001
+ground_truth:
+  answer_gist: "사전 검토 후 필요 시 과학기술정보통신부장관에게 해당 여부 확인 요청 (법 제33조제1항)"
+  documents: ["5._260122_AI_evaluation_guideline.pdf", "3._260429_AI_judge_guideline.pdf"]
+  pages: [5]
+  answerable: true

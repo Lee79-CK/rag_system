@@ -156,6 +156,15 @@
             "type": "boolean",
             "title": "Normalize",
             "default": true
+          },
+          "input_type": {
+            "type": "string",
+            "enum": [
+              "query",
+              "passage"
+            ],
+            "title": "Input Type",
+            "default": "passage"
           }
         },
         "type": "object",

@@ -1,0 +1,9 @@
+id: kp008
+type: no_answer
+question: "사내 연차휴가를 다음 해로 이월할 수 있는 최대 일수는 며칠인가요?"
+channel_id: c0000000-0000-0000-0000-000000000001
+ground_truth:
+  answer_gist: "AI 가이드라인 문서군에 근거 없음 — 근거 부족 안내"
+  documents: []
+  pages: []
+  answerable: false

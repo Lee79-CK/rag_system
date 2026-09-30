@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
@@ -18,6 +20,9 @@ class EmbeddingRequest(BaseModel):
     # 필수 키. 기본값을 두면 호출자의 키 오타(예: `input`)가 200 + 빈 결과로 묻힌다 (FR-IDX-004).
     texts: list[str] = Field(...)
     normalize: bool = True
+    # 검색 질의(rag-api)는 "query", 색인 청크(parser-indexer)는 기본 "passage".
+    # EMBEDDING_QUERY_PREFIX/PASSAGE_PREFIX 가 비어 있으면(bge-m3·KURE-v1) 결과 동일.
+    input_type: Literal["query", "passage"] = "passage"
 
 
 class Usage(BaseModel):
@@ -34,7 +39,9 @@ class EmbeddingResponse(BaseModel):
 @router.post("/embeddings", response_model=EmbeddingResponse)
 def create_embeddings(payload: EmbeddingRequest, request: Request) -> EmbeddingResponse:
     engine: Engine = request.app.state.engine
-    vectors = engine.embed(payload.texts, normalize=payload.normalize)
+    vectors = engine.embed(
+        payload.texts, normalize=payload.normalize, input_type=payload.input_type
+    )
     return EmbeddingResponse(
         embeddings=vectors,
         model=engine.model_name,

@@ -1,0 +1,9 @@
+id: kp006
+type: definition
+question: "고영향 인공지능 사업자 책무 가이드라인에서 인공지능시스템의 '적응성'은 무슨 뜻인가요?"
+channel_id: c0000000-0000-0000-0000-000000000001
+ground_truth:
+  answer_gist: "초기 개발 후에도 배포 전후 입력 데이터와 상호작용하며 스스로 행동 방식을 수정·발전할 수 있는 기계학습 기반 시스템의 특성"
+  documents: ["4._260122_AI_business_responsibility_guideline-1.pdf"]
+  pages: [11]
+  answerable: true

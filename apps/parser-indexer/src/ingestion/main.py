@@ -74,6 +74,7 @@ def run_index_job(
             document_id=ctx.document_id,
             version_id=ctx.document_version_id,
             ocr_enabled=settings.ocr_enabled,
+            pdf_text_engine=settings.pdf_text_engine,
         )
         logger.info("parsed", index_job_id=index_job_id, stats=parsed.stats)
 

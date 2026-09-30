@@ -96,6 +96,19 @@ def test_dataset_loads_sample_yaml():
     assert any(not c.ground_truth.answerable for c in cases)
 
 
+def test_dataset_ko_pdf_loads_and_targets_docs_pdf():
+    """한글 PDF A/B 평가셋 (rke2 가이드 §5.1.2) — 기대 문서는 docs/pdf 파일명과 일치해야 한다."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    cases = load_dataset(root / "tests" / "evaluation" / "dataset-ko-pdf")
+    assert len(cases) >= 8
+    assert any(not c.ground_truth.answerable for c in cases)
+    expected = {d for c in cases for d in c.ground_truth.documents}
+    assert all(d.endswith(".pdf") and d[:2] in {"1.", "2.", "3.", "4.", "5."} for d in expected)
+    assert len({d[:2] for d in expected}) == 5  # 5개 문서 모두 1문항 이상
+
+
 def test_doc_match_uses_removesuffix_not_rstrip():
     """rstrip('.pdf') 는 문자 집합 제거라 'guide_dp.pdf' → 'guide_' 가 되어 오매칭을 냈다."""
     from evaluation.metrics import _doc_match

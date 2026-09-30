@@ -1368,8 +1368,16 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
 
 ### 7.3 embedding-api
 
-- FlagEmbedding `BGEM3FlagModel(EMBEDDING_MODEL_PATH, use_fp16=False)` — CPU.
+- FlagEmbedding `BGEM3FlagModel(EMBEDDING_MODEL_PATH, use_fp16=False)` — CPU. 모델은 **BGE-M3 계열(XLM-R large, 1024-dim, CLS pooling)** 이면 경로 교체만으로 바뀐다.
+  기본 `BAAI/bge-m3`, 한글 문서 랩 기본 `nlpai-lab/KURE-v1`(bge-m3 한글 파인튜닝, MIT) — 선정 근거는 RKE2 가이드 §5.1.2.
+  파인튜닝 모델은 colbert/sparse 가중치가 없어 FlagEmbedding 이 "new initialize" 경고를 남기지만 dense 경로와 무관하다.
+  **모델을 바꾸면 벡터 공간이 달라지므로 전 문서 재색인 필수** (collection 스키마는 그대로).
+- **MUST**: `encode(..., max_length=EMBEDDING_MAX_LENGTH)`(기본 2048) 를 명시한다. FlagEmbedding ≥1.3 의 기본값은 512 라
+  한글 청크(CHARS_PER_TOKEN=3.3 기준 최대 ≈1,400 tok)의 뒷부분이 벡터에서 누락된다.
+- 응답 `model` = 모델 디렉터리 이름(`bge-m3`, `kure-v1` …) — `engine_ready` 로그로 실엔진/모델 확인.
 - `POST /internal/v1/embeddings` — PRD §17.6 계약 그대로. `normalize=true` 기본. 요청 본문 `{"texts": [...]}`.
+  선택 필드 `input_type: "query"|"passage"`(기본 passage) — rag-api 질의는 `query`, parser-indexer 청크는 `passage`.
+  `EMBEDDING_QUERY_PREFIX`/`EMBEDDING_PASSAGE_PREFIX`(기본 빈 값)가 해당 입력 앞에 붙는다 (비대칭 모델 A/B 용, 예 `"query: "`).
 - **MUST**: startup 시 모델 로딩 완료 전 `/health/startup` 503. 로딩은 lifespan에서 1회.
 - **MUST**: batch size 상한 `EMBEDDING_MAX_BATCH=64`. 초과 요청은 내부 분할.
 - 호출 측 parser-indexer 는 chart(`ingestion.extraEnv`)에서 `EMBEDDING_MAX_BATCH=8`, `EMBEDDING_TIMEOUT=120` 으로 보낸다 — CPU 에서 한글 64청크/요청은 60~104초로 코드 기본 timeout(30s)을 넘는다 (실측, RKE2 가이드 §5.1.1).
@@ -1446,8 +1454,13 @@ CLI 배치. 실행: `python -m ingestion.main --index-job-id <uuid>`.
 ```
 1. index_jobs 로딩 → stage=PARSING
 2. Parser Dispatcher: 확장자별 Strategy
-   - .pdf  → pymupdf 기본. 표 감지 페이지는 pdfplumber 보완. 텍스트 비율 < 5%면
-             ocr_enabled 설정에 따라 PaddleOCR 또는 ParseFailed(사유: SCANNED_NO_OCR)
+   - .pdf  → pymupdf 기본(span 단위 — Wingdings/PUA 글머리표 복원). 표 감지 페이지는 pdfplumber 보완.
+             추출 순서가 깨진 페이지(구두점-only 줄 ≥3 & ≥5%, MS Print-To-PDF 류)는 그 페이지만
+             pdfplumber 좌표 정렬 텍스트로 대체 (PDF_TEXT_ENGINE=auto|pymupdf|pdfplumber).
+             한글 정규화(NFC, 가운뎃점 ㆍ･∙䞻→·, ｢｣→「」 — NFKC 금지: ①② 보존) + 반복 머리말/꼬리말·쪽 번호 제거.
+             이미지 전용 페이지(텍스트 <100자 + 이미지)는 stats.image_only_pages 로 보고(OCR 없이는 미색인).
+             텍스트 비율 < 5%면 ocr_enabled 설정에 따라 PaddleOCR 또는 ParseFailed(사유: SCANNED_NO_OCR)
+             (한글 공공 PDF 실측 근거: RKE2 가이드 §5.1.2)
    - .docx → python-docx / .pptx → python-pptx / .xlsx → openpyxl(시트→Markdown 표)
    - .txt/.md → 그대로 / .html → BeautifulSoup 정제
    - 암호화/손상 → ParseFailed + 명확한 error code (FR-PARSER-006)
@@ -1589,6 +1602,13 @@ MAX_UPLOAD_BYTES=104857600                       # 100 MiB
 INDEX_JOB_TRIGGER=none                           # none | k8s
 INDEX_JOB_NAMESPACE=rag-ingestion
 INDEX_JOB_TEMPLATE_CONFIGMAP=parser-indexer-job-template
+
+# embedding-api / parser-indexer — 한글 문서 (RKE2 가이드 §5.1.2)
+EMBEDDING_MAX_LENGTH=2048                        # encode max_length (FlagEmbedding 기본 512 절단 방지)
+EMBEDDING_QUERY_PREFIX=                          # 비대칭 모델만 (예: "query: "). bge-m3 / KURE-v1 은 빈 값
+EMBEDDING_PASSAGE_PREFIX=
+CHARS_PER_TOKEN=3.3                              # 청커 문자→토큰 근사. 한글 문서 위주면 1.9 (values-lab)
+PDF_TEXT_ENGINE=auto                             # auto | pymupdf | pdfplumber
 
 # 평가 / 측정 도구 (tools/evaluation, scripts/measure_latency.py)
 RAG_API_URL=http://localhost:8002                # --rag-url 기본값

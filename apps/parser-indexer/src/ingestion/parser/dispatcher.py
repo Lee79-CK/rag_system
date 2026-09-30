@@ -8,7 +8,7 @@ from rag_schemas import ParsedDocument
 
 from ingestion.parser.errors import ParseFailed
 from ingestion.parser.office_parser import parse_docx, parse_pptx, parse_xlsx
-from ingestion.parser.pdf_parser import parse_pdf
+from ingestion.parser.pdf_parser import PdfTextEngine, parse_pdf
 from ingestion.parser.text_parser import parse_html, parse_text
 
 # 지원 확장자 목록 — 검증/에러 메시지에 사용.
@@ -31,6 +31,7 @@ def parse_document(
     document_id: str,
     version_id: str,
     ocr_enabled: bool = False,
+    pdf_text_engine: PdfTextEngine = "auto",
 ) -> ParsedDocument:
     """파일 확장자로 파서를 선택하여 ParsedDocument를 반환한다.
 
@@ -42,7 +43,11 @@ def parse_document(
     match ext:
         case ".pdf":
             return parse_pdf(
-                p, document_id=document_id, version_id=version_id, ocr_enabled=ocr_enabled
+                p,
+                document_id=document_id,
+                version_id=version_id,
+                ocr_enabled=ocr_enabled,
+                text_engine=pdf_text_engine,
             )
         case ".docx":
             return parse_docx(p, document_id=document_id, version_id=version_id)

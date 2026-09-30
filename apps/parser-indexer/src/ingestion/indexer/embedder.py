@@ -60,6 +60,7 @@ class Embedder:
             json={
                 "texts": list(texts),
                 "normalize": True,
+                "input_type": "passage",  # 색인 청크 (질의는 rag-api 가 "query")
             },  # PRD §17.6 계약 (embedding-api EmbeddingRequest)
             timeout=self._timeout,
         )

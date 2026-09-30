@@ -1,0 +1,9 @@
+id: kp005
+type: single_doc
+question: "가이드라인이 TTA 신뢰할 수 있는 인공지능 개발 안내서를 주요 참조 문서로 삼은 이유는 무엇인가요?"
+channel_id: c0000000-0000-0000-0000-000000000001
+ground_truth:
+  answer_gist: "국내 환경·기술적 특성을 고려한 실무적이고 구체적인 지침 — 국내 사업자의 개발·운영 상황과 요구사항 반영"
+  documents: ["4._260122_AI_business_responsibility_guideline-1.pdf"]
+  pages: [5]
+  answerable: true

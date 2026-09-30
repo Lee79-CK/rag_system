@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,6 +50,10 @@ class Settings(BaseSettings):
 
     # ---- OCR (기본 비활성 — DEC-005) ----
     ocr_enabled: bool = False
+
+    # ---- PDF 텍스트 엔진 (가이드 §5.1.2) ----
+    # auto: PyMuPDF, 추출 순서가 깨진 페이지만 pdfplumber 로 대체 / pymupdf / pdfplumber(전 페이지, ~90배 느림)
+    pdf_text_engine: Literal["auto", "pymupdf", "pdfplumber"] = "auto"
 
     def sqlalchemy_url(self) -> str:
         """DATABASE_URL 우선, 없으면 POSTGRES_* 조합으로 psycopg URL 생성."""

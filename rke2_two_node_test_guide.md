@@ -4,6 +4,7 @@
 > 기준: TDD-RAG-CHATBOT-POC-001 + **현행 구현 기준** — 전 백엔드 Python 3.12 (uv workspace), 사용자 UI `apps/chat-web`(Next.js standalone), Helm chart `deploy/helm/rag-platform`
 > 변경(v2.0): 사용자 접점이 Mattermost 에서 **Web Chat(chat-web + chat-gateway)** 으로 바뀌었습니다. Mattermost 서버/Outgoing Webhook 설정, mock-mattermost, `rag-bridge-secrets` 는 더 이상 필요 없고, 대신 **`rag-chat-secrets` + Ingress(TLS)** 를 준비합니다. (Mattermost 는 v2.0 에서 제거)
 > 이월(v1.2 — 2026-09-10 코드 리뷰, `docs/code-review-2026-09-10.md`): **Containerfile(8종) · Alembic hook Job(`rag-db-migrate`) · admin-api RBAC/K8s 색인 트리거(`INDEX_JOB_TRIGGER=k8s`) · Namespace 라벨(`rag-platform=true`) · 배포 후 검증(§4.3)** 반영분이 v2.0 에 이월되었습니다. v1.2 의 Mattermost 전용 절차는 제외했습니다.
+> 변경(v2.1): 한글 PDF(`docs/pdf/*` 공공 가이드라인 5종) 기준으로 **임베딩 모델을 KURE-v1 로, PDF 파서를 PyMuPDF + 페이지 단위 pdfplumber 대체 + 한글 정규화로** 갱신했습니다 — 선정 근거·재색인 절차는 §5.1.2. 임베딩 입력이 FlagEmbedding 기본 512 토큰에서 잘리던 문제도 수정(`EMBEDDING_MAX_LENGTH=2048`).
 > 정정(v1.1): TDD v1.3 문서는 admin-api를 Java 21 Spring Boot로 기술하지만, **구현된 `apps/admin-api` 는 Python(FastAPI + SQLAlchemy + Alembic)** 입니다. 이 가이드는 구현을 따릅니다.
 > 대상 환경:
 > - **Master(P3)**: Lenovo ThinkStation P3 Tower Gen 2 — Core Ultra 7 265 (x86_64), RAM 128GB, RTX A400 4GB, **NVMe 1TB(OS+RKE2+fast PVC) + HDD 4TB(bulk)**, Ubuntu 24.04
@@ -255,12 +256,17 @@ sudo chmod -R a+rX /models      # Pod(runAsUser 10001) 읽기 권한 — hostPat
 ### 2.2 P3 — Embedding / Reranker (CPU, amd64)
 
 ```bash
-# P3에서 — HDD(/data/bulk)에 배치. 두 모델 합쳐 ~5GB로 NVMe를 쓸 이유가 없다.
+# P3에서 — HDD(/data/bulk)에 배치. 세 모델 합쳐 ~7GB로 NVMe를 쓸 이유가 없다.
 sudo mkdir -p /data/bulk/models && sudo chown $USER /data/bulk/models
+# 임베딩 — 랩 기본 KURE-v1 (한글 파인튜닝 bge-m3, MIT, §5.1.2). values-lab EMBEDDING_MODEL_PATH=/models/embedding/kure-v1
+hf download nlpai-lab/KURE-v1       --local-dir /data/bulk/models/embedding/kure-v1
+# 비교 기준선(A/B, §5.1.2) — 경로만 바꿔 helm upgrade + 재색인하면 전환된다
 hf download BAAI/bge-m3             --local-dir /data/bulk/models/embedding/bge-m3
 hf download BAAI/bge-reranker-v2-m3 --local-dir /data/bulk/models/reranker/bge-reranker-v2-m3
 sudo chmod -R a+rX /data/bulk/models
 ```
+
+> KURE-v1 디렉터리에는 bge-m3 의 `colbert_linear.pt`/`sparse_linear.pt` 가 없어 embedding-api 기동 로그에 FlagEmbedding 경고 `The parameters of colbert_linear and sparse linear is new initialize` 가 한 번 찍힙니다. **dense 벡터(CLS)만 쓰므로 정상**입니다.
 
 > HDD에서 로드하므로 Pod 최초 기동 시 모델 적재가 NVMe 대비 수십 초 느립니다. values-lab 은 embedding/reranker 의 `startupFailureThreshold: 90`(×10s = 15분) 을 두었습니다. 추론 중에는 모델이 페이지 캐시(RAM 128GB)에 상주하므로 **정상 상태 성능에는 영향이 없습니다.**
 >
@@ -458,7 +464,7 @@ kubectl get pvc -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name
 kubectl -n rag-app exec deploy/admin-api -- sh -c 'touch /data/documents/.probe && rm /data/documents/.probe && echo writable'
 
 # ⑤ 임베딩/리랭커가 mock 이 아닌 실엔진으로 떴는지 (모델 경로 미마운트 시 조용히 mock 으로 기동한다)
-kubectl -n rag-ai logs deploy/embedding-api | grep engine_ready     # model 값에 "-mock" 접미가 없어야 함
+kubectl -n rag-ai logs deploy/embedding-api | grep engine_ready     # model="kure-v1" (모델 디렉터리 이름). "-mock" 접미가 없어야 함
 kubectl -n rag-ai logs deploy/reranker-api  | grep engine_ready
 
 # ⑥ vLLM 모델 서빙 (rag-api 는 rag-app NS)
@@ -586,11 +592,13 @@ kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
 
 | 단계 | 실측 | 비고 |
 |---|---|---|
-| 파싱 (PyMuPDF + pdfplumber 표 추출) | **22ms/쪽** (200쪽 4.4초) | 병목 아님 |
-| 청크 | **≈ 1.06개/쪽** (최대 800tok × 3.3자 = 2,640자, 문단 경계 분할로 평균 ≈ 1,600자) | 200쪽 → 212청크 |
-| 청크 실제 토큰 (bge-m3 토크나이저) | 최대 길이(2,640자) 청크: 순수 한글 **≈ 1,413 tok** · 한글+영문 기술문서 ≈ 906 tok | 한글은 1.87자/토큰 — 청커 근사치(3.3자/토큰)보다 청크가 실제로 약 1.8배 길다 |
-| **임베딩 (bge-m3, CPU 6코어) — 병목** | 최대 길이 청크: 순수 한글 **1.63초** · 혼합 1.20초 / 1,300자 청크: 0.71초 | **색인 시간 ≈ 1~1.7초/쪽** (1.7초 = 보수적 상한) |
+| 파싱 (PyMuPDF + pdfplumber 표 추출) | **22ms/쪽** (200쪽 4.4초) · 실문서(§5.1.2, 개발 PC) 24~76ms/쪽 · **Print-To-PDF 문서 ≈ 0.36초/쪽**(pdfplumber 대체) | 병목 아님 |
+| 청크 | **≈ 1.06개/쪽** (최대 800tok × 3.3자 = 2,640자, 문단 경계 분할로 평균 ≈ 1,600자) | 200쪽 → 212청크. values-lab(`CHARS_PER_TOKEN=1.9`)은 최대 1,520자 → 실문서 ≈ 1.4~2.8개/쪽(§5.1.2, 표가 많을수록 증가) |
+| 청크 실제 토큰 (bge-m3 토크나이저) | 최대 길이(2,640자) 청크: 순수 한글 **≈ 1,413 tok** · 한글+영문 기술문서 ≈ 906 tok | 한글은 1.87자/토큰 — 청커 근사치(3.3자/토큰)보다 청크가 실제로 약 1.8배 길다 → **values-lab 은 `CHARS_PER_TOKEN=1.9`** 로 실제 ≈800 tok 에 맞춘다 |
+| **임베딩 (bge-m3, CPU 6코어) — 병목** | 최대 길이 청크: 순수 한글 **1.63초** · 혼합 1.20초 / 1,300자 청크: 0.71초 | **색인 시간 ≈ 1~1.7초/쪽** (1.7초 = 보수적 상한). ⚠ 아래 주의 참고 — **재측정 필요** |
 | Qdrant 저장 | ≈ 13KB/청크 (1024-dim float32 4KB + payload 원문) | 1,000쪽 ≈ 14MB — 랩 50Gi 기준 제약 아님 |
+
+> ⚠ **임베딩 실측치 재확인**: embedding-api 는 v2.1 이전까지 FlagEmbedding 1.4 `encode()` 를 `max_length` 없이 호출해 **입력이 512 토큰에서 잘렸습니다**. 위 임베딩 시간을 서비스 코드 경로로 쟀다면 1,413 tok 청크도 512 tok 만 계산된 값입니다. v2.1 은 `EMBEDDING_MAX_LENGTH=2048` 로 전 길이를 임베딩하되 values-lab 의 `CHARS_PER_TOKEN=1.9` 로 청크 자체를 ≈800 tok 로 줄였으므로, 청크당 시간은 비슷하거나 늘고 청크 수는 늘어납니다. §5.1.2 의 5종 업로드 때 Job 로그의 EMBEDDING 단계 소요 시간으로 **쪽당 색인 시간을 다시 기록**하세요.
 
 **chart 에 반영된 설정 2가지 — 실제 PDF 용 (기본 적용됨, 배포 후 확인만)**
 
@@ -612,22 +620,121 @@ kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
 | 절대 상한 | **100MB** (admin-api `MAX_UPLOAD_BYTES`, 초과 시 413 `FILE_TOO_LARGE`) | 업로드는 admin-api 메모리에 전체 적재(limit 2Gi) — 상향 비권장 |
 | 1,000쪽 이상 | 장/부 단위로 **분할 업로드** | 색인 ≈ 17~30분, 실패 시 재처리 비용 큼 |
 | 스캔본(이미지) PDF | **불가** | OCR 비활성(`OCR_ENABLED=0`, DEC-005) → `SCANNED_NO_OCR` 로 실패. 텍스트 레이어가 있는 PDF 만 |
+| 일부 쪽만 이미지(흐름도·표지) | 색인은 성공, **그 쪽 내용만 누락** | Job 로그 `pdf_image_only_pages` 경고 + `parsed` 의 `stats.image_only_pages` 로 확인 (§5.1.2) |
 | 여러 문서 | **순차 색인** (한 번에 1개) | embedding-api replica 1 / CPU 6코어 공유. 대량 적재는 업무 시간 외 |
 
-업로드 전 사전 점검 (페이지 수·텍스트 레이어·예상 색인 시간):
+업로드 전 사전 점검 — **parser-indexer 의 실제 파서·청커**로 돌려 쪽수·pdfplumber 대체 쪽·이미지 전용 쪽·청크 수/최대 토큰을 봅니다 (네트워크·DB 불필요, P3 또는 개발 PC):
 
 ```bash
-uv run --package parser-indexer python - <<'EOF' manual.pdf
-import sys, fitz
-d = fitz.open(sys.argv[1]); n = d.page_count
-chars = sum(len(p.get_text()) for p in d)
-print(f"{n}쪽, 텍스트 {chars:,}자 ({chars/max(n,1):.0f}자/쪽)")
-print("⚠ 텍스트 거의 없음 — 스캔본(OCR 필요)" if chars / max(n, 1) < 100 else
-      f"예상 청크 ≈ {chars/1600:.0f}개, 예상 색인 ≈ {chars/1600*1.0/60:.1f}~{chars/1600*1.63/60:.1f}분 (한글 기준)")
-EOF
+uv run --package parser-indexer python scripts/inspect_pdf.py manual.pdf            # values-lab 기준(CHARS_PER_TOKEN 1.9)
+uv run --package parser-indexer python scripts/inspect_pdf.py docs/pdf/*.pdf --show 2   # 청크 본문 미리보기
+# ✗ [SCANNED_NO_OCR] → 스캔본(OCR 필요) · ⚠ 이미지 전용 N쪽 → 그 쪽은 색인되지 않음
+# 예상 색인 시간 ≈ 청크 수 × (Job 로그로 잰 청크당 임베딩 시간)
 ```
 
 > **답변 쪽 여유**: rag-api 는 토크나이저 없이 3자/토큰으로 근사하지만 Qwen3.8 실측은 한글 1.74자/토큰입니다. 컨텍스트 예산 `MAX_CONTEXT_TOKENS=8192` 가 실제 ≈ 14,100 토큰이 되어 출력 1,024 를 더해도 vLLM `--max-model-len=16384` 안에 들어갑니다. **청크 크기(`CHUNK_SIZE`)나 `RERANK_TOP_N` 을 키우면 초과할 수 있으니** 함께 조정하세요.
+
+### 5.1.2 한글 PDF — 파서·임베딩 모델 선정 (`docs/pdf` 실문서 5종 기준)
+
+`docs/pdf/` 의 AI 기본법 가이드라인 5종(총 470쪽)을 실제로 파싱해 결함을 찾고, 그에 맞춰 파서와 임베딩 모델을 정했습니다. **5종 모두 텍스트 레이어가 있는 디지털 PDF**(스캔본 아님)라 OCR 없이 색인됩니다.
+
+**① 문서별 진단 (PyMuPDF 기존 파서 기준)**
+
+| 문서 | 생성기 | 쪽 | 발견된 결함 | v2.1 조치 |
+|---|---|---|---|---|
+| 1. 투명성 확보 | Hancom PDF (HWP 2022) | 33 | Wingdings 글머리표가 `l`·`è` 로 추출 | span 폰트명 기반 복원 → `●` `➔` |
+| 2. 안전성 확보 | macOS Quartz | 71 | 가운뎃점이 **`䞻`(U+47BB)로 858회** 추출(KoPubWorldDotum ToUnicode 결함 — "개발䞻운영"), PUA 글머리표 141 | `䞻`→`·`, PUA → `●` `•` |
+| 3. 고영향 판단 | Hancom PDF (HWP 2020) | 216 | Wingdings `Ÿ` 714, **이미지 전용 28쪽**(표지·장 표지·분야별 판단 흐름도) | 복원 / 이미지 쪽은 `image_only_pages` 로 보고 |
+| 4. 사업자 책무 | **Microsoft Print To PDF** | 111 | **읽기 순서 붕괴** — 쉼표·마침표가 독립 줄로 떨어지고 문장 조각이 뒤섞임(구두점-only 줄 2,512개, 99/111쪽) | 해당 쪽만 **pdfplumber 글자 좌표 정렬 텍스트로 대체** |
+| 5. 영향평가 | Hancom PDF | 39 | Wingdings `§`, 쪽 번호 `- 4 -` | 복원 / 쪽 번호 제거 |
+| 공통 | — | — | 반복 머리말("인공지능 안정성 확보 가이드라인" 66쪽), `ㆍ` `･` `∙` `｢｣` 혼용 | 머리말/꼬리말·쪽 번호 제거, `·` `「」` 로 통일(NFC. NFKC 는 `①②` 항 번호를 뭉개므로 미사용) |
+
+**② 파서 선정**
+
+| 후보 | 판정 | 근거 |
+|---|---|---|
+| **PyMuPDF** (기존) | ✅ 기본 유지 | HWP 산출물 읽기 순서 정상, 216쪽 0.2초. 단 span 단위로 조립해 폰트명(Wingdings)을 보고 글머리표 복원 |
+| **pdfplumber `extract_text`** | ✅ **깨진 쪽만** 대체 (`PDF_TEXT_ENGINE=auto`) | 문서 4 를 완벽 복원(구두점-only 줄 2,512 → 0). 대신 ~90배 느려(111쪽 37.7초) 전 쪽 적용은 하지 않음. 판정: 쪽의 구두점-only 줄 ≥3 이고 ≥5% (정상 문서 최대 2줄/3%, 문서 4 최대 77줄/52%) |
+| PyMuPDF `sort=True` | ❌ | 줄 순서는 좋아지나 줄 안 조각 순서는 여전히 깨짐("반영하였다특히한국정보통신기술협회. ,") |
+| Docling / Marker / Unstructured hi_res | ❌ (이 랩) | 레이아웃·OCR 모델(torch) 반입이 추가로 필요. 텍스트 레이어가 온전한 이 문서군에서는 위 조합으로 결함이 해소되어 이득이 작음 |
+| OCR (PaddleOCR PP-OCRv5 korean 등) | ⏸ 보류 | 필요한 곳은 문서 3 의 흐름도 ~10쪽뿐. `OCR_ENABLED=0` 유지, §9 확장 과제 |
+
+**파서 결과 (개발 PC 실측, `scripts/inspect_pdf.py`, values-lab 청킹)**
+
+| 문서 | 파싱 | pdfplumber 대체 | 글리프 보정 | 머리말/쪽번호 제거 | 이미지 전용 쪽 | 청크(표) | 최대 청크 |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.8s | 0 | 126 | 59줄 | 3 (표지 등) | 48 (19) | 1,487자 ≈ 795 tok |
+| 2 | 3.6s | 0 | 1,018 | 140줄 | 1 | 101 (30) | 1,661자 ≈ 888 tok |
+| 3 | 16.4s | 0 | 1,381 | 191줄 | **28** | 318 (116) | 2,035자 ≈ 1,088 tok (표) |
+| 4 | 39.9s | **99쪽** | 1,130 | 110줄 | 1 | 311 (193) | 1,518자 ≈ 812 tok |
+| 5 | 1.6s | 0 | 241 | 37줄 | 1 | 105 (61) | 1,519자 ≈ 812 tok |
+
+> 남은 한계: 문서 2 의 위첨자 `10²⁶` 이 `10²乀`, 일부 화살표 글머리표가 `丼` 로 추출됩니다(폰트 결함, 소수라 미보정). 문서 3 의 흐름도(예: p.30 "에너지 분야 고영향 판단") 안 글자는 이미지라 검색되지 않습니다.
+
+**③ 임베딩 모델 선정**
+
+| 모델 | 크기 / 차원 / 최대 길이 | 라이선스 | 한글 검색 (공개 벤치마크) | 교체 비용 | 판정 |
+|---|---|---|---|---|---|
+| `BAAI/bge-m3` (기존) | 568M / 1024 / 8192 | MIT | MTEB-ko-retrieval Recall@1 0.518 · NDCG@1 0.598 ¹ / ko-leaderboard 검색 평균 79.30 ² | — | 비교 기준선 |
+| **`nlpai-lab/KURE-v1`** | 568M / 1024 / 8192 (bge-m3 한글 파인튜닝) | MIT | **0.526 · 0.606** ¹ / **80.76** ² | **경로만 교체** — 차원·토크나이저·CLS pooling 동일, 접두어 없음, collection 스키마 그대로 | ✅ **랩 기본** |
+| `dragonkue/snowflake-arctic-embed-l-v2.0-ko` | 568M / 1024 / 8192 | Apache-2.0 | 82.14 ² | 질의에 `query: ` 접두어 필요 → `EMBEDDING_QUERY_PREFIX="query: "` 로 지원 | A/B 후보 |
+| `dragonkue/BGE-m3-ko` | 568M / 1024 / 8192 | Apache-2.0 | 0.524 · 0.604 ¹ | 경로만 교체 | 대안 |
+| `Qwen/Qwen3-Embedding-0.6B` | 0.6B / 1024 / 32K | Apache-2.0 | 75.88 ² | last-token pooling·지시문 — 엔진 코드 변경 필요 | ❌ (한글 점수 낮음) |
+| `Qwen/Qwen3-Embedding-4B` | 4B | Apache-2.0 | 81.37 ² | P3 CPU 로는 bge-m3 대비 ~7배 연산, PGX GPU 는 vLLM 점유 | ❌ (이 랩) |
+
+¹ KURE-v1 모델 카드의 MTEB-ko-retrieval 표(Top-1 평균) · ² [ko-embedding-leaderboard](https://github.com/OnAnd0n/ko-embedding-leaderboard) 검색 평균. **공개 벤치마크는 일반 도메인**이라 이 법령·가이드라인 문서군에서의 우열은 아래 ⑤ A/B 로 확정합니다. KURE-v1 을 기본으로 둔 이유는 점수 차보다 **"경로 교체만으로 되고 실패 시 되돌리기 쉽다"** 는 점입니다.
+
+리랭커는 `bge-reranker-v2-m3`(다국어, `RERANKER_MAX_LENGTH=1024`) 유지 — values-lab 은 `CHARS_PER_TOKEN=1.9` 로 청크를 ≈800 tok 로 줄였으므로 질의 + 청크가 1024 안에 들어갑니다(표 청크 일부만 초과·절단).
+
+**④ 적용된 설정 (values-lab, 코드 기본값)**
+
+| 키 | 값 | 이유 |
+|---|---|---|
+| `EMBEDDING_MODEL_PATH` (embedding-api) | `/models/embedding/kure-v1` | ③ |
+| `EMBEDDING_MAX_LENGTH` (embedding-api) | `2048` (코드 기본도 2048) | **버그 수정** — FlagEmbedding 1.4 `encode()` 기본 512 tok 절단. 표 청크(최대 ≈1,100 tok)까지 포함 |
+| `EMBEDDING_QUERY_PREFIX` | `""` | arctic-ko A/B 때만 `"query: "` (rag-api 가 `input_type=query` 로 보냄) |
+| `CHARS_PER_TOKEN` (ingestion) | `1.9` | 한글 실측 1.87자/토큰 → `CHUNK_SIZE=800` 이 실제 ≈800 tok |
+| `PDF_TEXT_ENGINE` (ingestion) | `auto` | ② (`pymupdf` = 대체 끔, `pdfplumber` = 전 쪽 — 느림) |
+
+**⑤ 5종 업로드 · 모델 전환 · A/B**
+
+```bash
+# (a) 5종 업로드 — title 을 파일명 stem 으로 둬야 평가셋(tests/evaluation/dataset-ko-pdf) 문서 매칭이 된다. 순차 색인(§5.1.1)
+for f in docs/pdf/*.pdf; do
+  curl -s -X POST $ADMIN/api/v1/documents -H 'X-Auth-User: cklee' \
+    -F "file=@$f" -F "title=$(basename "$f" .pdf)" -F 'category=AI기본법' -F 'department=AI정책' \
+    -F 'security_level=INTERNAL' -F 'allowed_channel_ids=c0000000-0000-0000-0000-000000000001' \
+    -F 'start_indexing=true' | jq -c '.data | {index_job_id, index_job_status}'
+  sleep 5
+  kubectl -n rag-ingestion wait --for=condition=complete --timeout=30m \
+    job/$(kubectl -n rag-ingestion get jobs --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}')
+done
+# 파싱 통계 확인 — pdfplumber_text_pages(문서 4 → 99쪽), image_only_pages(문서 3 → 28쪽), repaired_glyphs
+kubectl -n rag-ingestion logs job/<index-job-...> | grep -E '"parsed"|pdf_image_only_pages'
+
+# (b) 평가 (§7.1 port-forward 상태) — 모델별로 리포트를 남긴다
+RAG_API_URL=http://localhost:8002 uv run python -m evaluation.runner \
+  --dataset tests/evaluation/dataset-ko-pdf --out reports/eval_ko_pdf_kure-v1.md
+
+# (c) 모델 전환 (예: KURE-v1 → bge-m3 기준선). ★ 차원이 같아 섞여도 오류가 나지 않고 검색 품질만 무너진다 → 반드시 전량 재색인
+#   1) values-lab 의 EMBEDDING_MODEL_PATH 변경 → helm upgrade → engine_ready 의 model 값 확인(§4.3 ⑤)
+#   2) 기존 벡터 삭제 + collection 재생성 (색인 Job 과 같은 NS/이미지 — NetworkPolicy 통과)
+kubectl -n rag-ingestion run qdrant-drop --rm -i --restart=Never \
+  --image=$REG/rag/parser-indexer:$TAG --labels=app.kubernetes.io/part-of=rag-platform \
+  --overrides='{"spec":{"nodeSelector":{"kubernetes.io/arch":"amd64"}}}' \
+  --command -- python -c "from qdrant_client import QdrantClient; print(QdrantClient('http://qdrant.rag-data:6333').delete_collection('rag_chunks_v1'))"
+#      → True 확인 후 §4.4 (2) qdrant-init 재실행
+#   3) 전 문서 재색인 (순차)
+for id in $(curl -s $ADMIN/api/v1/documents -H 'X-Auth-User: cklee' | jq -r '.data[].id'); do
+  curl -s -X POST $ADMIN/api/v1/documents/$id/reindex -H 'X-Auth-User: cklee' | jq -c .
+  sleep 5
+  kubectl -n rag-ingestion wait --for=condition=complete --timeout=30m \
+    job/$(kubectl -n rag-ingestion get jobs --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}')
+done
+#   4) (b) 를 --out reports/eval_ko_pdf_bge-m3.md 로 반복 → 두 리포트 diff. Recall@10 이 높은 쪽을 PoC(values-poc) 에 반영
+```
+
+> A/B 는 **8문항**(`dataset-ko-pdf`, 정의·단일/다중 문서·근거 없음 포함)이라 방향성 확인용입니다. 차이가 1문항 수준이면 KURE-v1 유지(교체 비용 0), arctic-ko 가 뚜렷이 앞서면 `EMBEDDING_QUERY_PREFIX="query: "` 와 함께 채택하세요.
 
 ### 5.2 브라우저 Web Chat E2E
 
@@ -732,6 +839,9 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 
 | 증상 | 조치 |
 |---|---|
+| 한글 PDF 답변이 엉뚱한 문장 조각을 근거로 든다 / 근거에 `, .` 가 줄마다 끼어 있다 | 읽기 순서가 깨진 PDF(MS Print-To-PDF 등). Job 로그 `parsed` 의 `pdfplumber_text_pages` 가 비어 있으면 `PDF_TEXT_ENGINE` 이 `pymupdf` 로 덮였는지 확인(`auto` 권장), 재색인 (§5.1.2 ②) |
+| 임베딩 모델 교체 후 검색 품질이 급락(오류 없음) | 이전 모델 벡터가 collection 에 남아 섞임 — 차원이 같아 오류가 나지 않는다. §5.1.2 ⑤(c) 로 collection 삭제·재생성 후 전량 재색인 |
+| embedding-api 로그 `colbert_linear and sparse linear is new initialize` | KURE-v1 등 bge-m3 파인튜닝 모델은 colbert/sparse 가중치가 없음 — dense 만 쓰므로 무시 (§2.2) |
 | `helm install` 이 `namespaces "monitoring" not found` | `monitoring.grafanaDashboards=true` 인데 NS 가 없음 — values-lab 기본은 false. kube-prometheus-stack 설치 후 켤 것 |
 | `helm install` 이 hook Job `rag-db-migrate` 실패로 종료 | PostgreSQL 이 5분(30×10s) 내 준비되지 않음(이미지 pull/PVC Pending) 또는 `rag-postgresql-secret` 누락. `kubectl -n rag-app logs job/rag-db-migrate`, `kubectl -n rag-data describe pod postgresql-0`. 원인 해결 후 `helm upgrade` 재실행 |
 | 테이블 없음 / admin-api 500 (`relation ... does not exist`) | `migration.enabled=false` 로 설치했거나 hook 이 돌지 않음 — §4.2 `alembic current` 확인, 비어 있으면 fallback `upgrade head` |
@@ -780,6 +890,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 - **모니터링**: kube-prometheus-stack 설치 후 `monitoring.grafanaDashboards=true` 로 `helm upgrade` — chart 가 `rag-grafana-dashboards` ConfigMap(sidecar 라벨 `grafana_dashboard: "1"`, 질문 ACK p95 · 답변 지연 p95 · 큐 깊이 · WebSocket 연결 · 근거부족 · 만족률 · 위조 피드백 토큰 · embedding/rerank 지연 패널)을 `monitoring` NS 에 생성합니다. 2-디스크 구성에서는 `node_filesystem_avail_bytes{mountpoint=~"/|/data/.*"}` 알람을 최우선으로 — NVMe 소진이 이 랩의 단일 최대 장애 요인입니다.
 - **PGX Grace CPU 활용**: embedding/reranker 를 arm64 로도 빌드(`docker buildx build --platform linux/amd64,linux/arm64`)해 PGX 에 배치하면 색인 처리량 향상. taint 정책 재설계 필요.
 - **vLLM 2-replica 모사**: 단일 GPU 에서 MPS/시간분할은 비권장 — HA(NFR-HA-002)는 순차 재기동 테스트로 대체.
+- **이미지 전용 쪽 OCR**(§5.1.2): 흐름도·도표 안 한글(문서 3 의 분야별 판단 흐름도 등)을 검색하려면 `stats.image_only_pages` 쪽만 골라 OCR 하는 경로가 필요합니다. 후보는 PaddleOCR PP-OCRv5 한국어 인식 모델(또는 그 ONNX 변환을 쓰는 RapidOCR) — 모델 파일 반입·로컬 경로 로딩, TDD §7.7 의 격리 `ocr-worker` 설계를 따릅니다.
 - **디스크 1개 추가 시**: `/data/bulk` 에서 **레지스트리를 분리**(`/data/registry`)하는 것이 효과가 가장 큼. 색인 Job 의 문서 읽기와 이미지 push/pull IO 경합이 사라집니다.
 - **PoC 이관 전 코드 과제**(`docs/code-review-2026-09-10.md` 잔여): Settings→파이프라인 연동, async 핸들러 내 동기 I/O 제거(chat-gateway `SqlChatStore`, admin 업로드), rate limit 원자화, 문서 삭제 시 Qdrant 비활성화, mock 엔진 silent fallback 차단, 100문항 평가셋·LLM-judge, `CHAT_MAX_CONCURRENCY` 강제, admin-api `/index-jobs` 조회 API.
 
@@ -796,10 +907,11 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 - [ ] §4.3 ①~⑧: alembic head, Secret 파일 마운트(gateway 3 / worker 1 / admin-api 1, `startup.*_missing` 0), PVC 티어(DB=local-fast, documents=local-bulk), 문서 볼륨 쓰기, **실엔진 기동(`-mock` 없음)**, `/v1/models`, Ingress(rag-chat/rag-admin)·NetPol(`allow-ingress-to-*` 4 + `allow-admin-api-to-apiserver`), NVMe 70% 미만
 - [ ] seed + qdrant-init + seed-users(동일 pepper) 완료
 - [ ] 업로드(`start_indexing=true`) → **K8s 색인 Job COMPLETED**, 문서 ACTIVE
+- [ ] 한글 PDF 5종(§5.1.2) 색인 COMPLETED — 문서 4 `pdfplumber_text_pages` 99쪽·문서 3 `image_only_pages` 28쪽 확인, `engine_ready model=kure-v1`, `dataset-ko-pdf` 평가 리포트(모델별) 기록, 쪽당 색인 시간 재측정(§5.1.1 ⚠)
 - [ ] Ingress(HTTPS) 경유 브라우저 E2E: 로그인→질문→스트리밍 답변(+근거 표·피드백 버튼)→피드백 👍/👎/위조 401, 비멤버 채널 차단
 - [ ] WebSocket 60초 이상 유휴 유지(timeout annotation), `curl https://chat.rag.lab.local/health/live` 200
 - [ ] NetworkPolicy 차단/허용 확인(np-probe), NS 라벨 제거 실험, vLLM 재기동 복원, worker 삭제 시 중복 게시 없음
-- [ ] `make lint && make test` green(182, Docker 없으면 181+1 skipped), `make test-isolation` green, `make test-integration`(Docker) green
+- [ ] `make lint && make test` green(200, Docker 없으면 199+1 skipped), `make test-isolation` green, `make test-integration`(Docker) green
 - [ ] `make evaluate` → `reports/evaluation_report.md` 생성, **4지표** 목표 대비 판정 기록 (6문항 한계 명시), SIMILARITY_THRESHOLD 확정
 - [ ] ACK p95 ≤ 2s / 검색 p95 ≤ 1s 판정, 생성 성능은 참고치 기록
 - [ ] 운영과의 의도적 차이(replica, PDB, hostPath, vLLM podSecurityContext 예외, X-Auth-User 클라이언트 신뢰, 자체서명 TLS) 리포트 기록

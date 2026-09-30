@@ -1,0 +1,9 @@
+id: kp002
+type: single_doc
+question: "위험완화조치를 시행한 인공지능사업자는 어떤 사항을 문서화해야 하나요?"
+channel_id: c0000000-0000-0000-0000-000000000001
+ground_truth:
+  answer_gist: "위험 식별번호·명칭, 시행 시점, 조치 방법, 조치 결과(재평가 결과 포함)를 문서화·기록관리 (고시 제6조 ④)"
+  documents: ["2._260122_AI_safety_ensure_guideline.pdf"]
+  pages: [11]
+  answerable: true

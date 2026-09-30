@@ -6,7 +6,7 @@
 Monorepo (uv workspace). **구현 현황: M1–M12 구현 완료** (M12 = Web Chat 전환, 로컬 mock LLM/mock 엔진 기준).
 2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md` — v1.x Mattermost 기준, 역사 기록)의 수정은 v2.0 에 이월됨
 (Containerfile·Alembic hook Job·K8s 색인 트리거/RBAC·claim_job 멱등·RQ timeout·SecretStr·마스킹·fail-closed).
-검증: `183 passed` (Docker 없으면 실 Qdrant CH-001 1 skipped) · ruff clean · `helm lint`(values / +poc / +poc+lab) clean · admin-web / chat-web build OK.
+검증: `200 passed` (Docker 없으면 실 Qdrant CH-001 1 skipped) · ruff clean · `helm lint`(values / +poc / +poc+lab) clean · admin-web / chat-web build OK.
 알려진 미구현(리뷰 §7 중 v2.0 에 유효한 것): Settings 테이블→rag-api 연동(60s 캐시), 문서 삭제 시 Qdrant 비활성화/파일 삭제,
 mock 엔진 silent fallback 차단, async 핸들러 내 동기 I/O(chat-gateway SqlChatStore·admin 업로드), rate limit 비원자(INCR→EXPIRE),
 CHAT_MAX_CONCURRENCY 미강제, 평가셋 100문항·LLM-judge, Circuit Breaker, admin-api `/index-jobs` 조회 API.
@@ -41,10 +41,11 @@ CHAT_MAX_CONCURRENCY 미강제, 평가셋 100문항·LLM-judge, Circuit Breaker,
 - `tools/mock-llm` (mock_llm) — 로컬 OpenAI-compatible mock LLM, `stream:true` SSE 지원 (`make mock-llm`)
 - `tools/evaluation` (evaluation) — RAG 품질 평가 runner (`make evaluate`)
 - `samples/` — E2E 용 샘플 문서(.md), 업로드 예시는 `samples/README.md` (ACL = 채널 UUID)
+- `docs/pdf/` — 한글 공공 PDF 5종(RKE2 한글 색인 테스트용, git 미추적). 파서/임베딩 선정 근거 = rke2 가이드 §5.1.2, A/B 평가셋 `tests/evaluation/dataset-ko-pdf`
 - `tests/channel-isolation` — CH-001~010 격리 Gate / `tests/contract` mock-llm SSE 계약 / `tests/evaluation` 데이터셋 / `tests/performance` locust
 - `deploy/helm/rag-platform` — 단일 Helm chart (Deployment/Service/PDB/NetworkPolicy/Ingress/Namespace/RBAC/Alembic hook Job/Grafana). `values.yaml` 기본 → `values-poc.yaml`(운영 override) → `values-lab.yaml`(RKE2 랩 override). Secret 은 `appServices.<svc>.secretMount.keys` 로 필요한 키만 마운트
 - `apps/*/Containerfile` — Python 서비스는 빌드 컨텍스트 = 리포 루트, `chat-web`·`admin-web` 은 자체 디렉터리. `make build-images REG= TAG=`
-- `scripts/` — `export_openapi.py`, `measure_latency.py`(p95), `seed_dev.sql`, `create_chat_user.py`
+- `scripts/` — `export_openapi.py`, `measure_latency.py`(p95), `seed_dev.sql`, `create_chat_user.py`, `inspect_pdf.py`(업로드 전 PDF 파싱/청크 점검)
 
 ## Commands
 - `make install`        # uv sync (workspace)

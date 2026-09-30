@@ -1,0 +1,9 @@
+id: kp004
+type: definition
+question: "인공지능기본법에서 국내대리인은 어떤 자를 말하나요?"
+channel_id: c0000000-0000-0000-0000-000000000001
+ground_truth:
+  answer_gist: "국내 주소·영업소가 없는 인공지능사업자로서 이용자 수·매출액 등 대통령령 기준 해당자 — 안전관리의무 이행 결과 제출, 고영향 확인 요청, 책무 이행 지원 수행 (제36조)"
+  documents: ["3._260429_AI_judge_guideline.pdf"]
+  pages: [11]
+  answerable: true
