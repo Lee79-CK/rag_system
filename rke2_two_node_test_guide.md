@@ -5,6 +5,7 @@
 > 변경(v2.0): 사용자 접점이 Mattermost 에서 **Web Chat(chat-web + chat-gateway)** 으로 바뀌었습니다. Mattermost 서버/Outgoing Webhook 설정, mock-mattermost, `rag-bridge-secrets` 는 더 이상 필요 없고, 대신 **`rag-chat-secrets` + Ingress(TLS)** 를 준비합니다. (Mattermost 는 v2.0 에서 제거)
 > 이월(v1.2 — 2026-09-10 코드 리뷰, `docs/code-review-2026-09-10.md`): **Containerfile(8종) · Alembic hook Job(`rag-db-migrate`) · admin-api RBAC/K8s 색인 트리거(`INDEX_JOB_TRIGGER=k8s`) · Namespace 라벨(`rag-platform=true`) · 배포 후 검증(§4.3)** 반영분이 v2.0 에 이월되었습니다. v1.2 의 Mattermost 전용 절차는 제외했습니다.
 > 변경(v2.1): 한글 PDF(`docs/pdf/*` 공공 가이드라인 5종) 기준으로 **임베딩 모델을 KURE-v1 로, PDF 파서를 PyMuPDF + 페이지 단위 pdfplumber 대체 + 한글 정규화로** 갱신했습니다 — 선정 근거·재색인 절차는 §5.1.2. 임베딩 입력이 FlagEmbedding 기본 512 토큰에서 잘리던 문제도 수정(`EMBEDDING_MAX_LENGTH=2048`).
+> 변경(v2.2): LLM 모델을 PGX 의 **`/home/cheolkyulee/models/<모델 디렉터리>`** 에서 로딩하도록 바꾸고(현재 `Qwen3.8-27B-FP8`), **모델 교체를 `vllm.modelDir` 값 하나로** 할 수 있게 했습니다(chart 가 `--model=/models/<modelDir>` 를 생성) — §2.1.1.
 > 정정(v1.1): TDD v1.3 문서는 admin-api를 Java 21 Spring Boot로 기술하지만, **구현된 `apps/admin-api` 는 Python(FastAPI + SQLAlchemy + Alembic)** 입니다. 이 가이드는 구현을 따릅니다.
 > 대상 환경:
 > - **Master(P3)**: Lenovo ThinkStation P3 Tower Gen 2 — Core Ultra 7 265 (x86_64), RAM 128GB, RTX A400 4GB, **NVMe 1TB(OS+RKE2+fast PVC) + HDD 4TB(bulk)**, Ubuntu 24.04
@@ -20,7 +21,7 @@
 | Helm 배포 / NetworkPolicy / Ingress / Probe / Secret 마운트 / hook Job / RBAC 등 K8s 매니페스트 전체 | ✅ | **PoC 배포와 동일 chart·동일 방식** — 이 환경의 최대 가치 |
 | RAG 파이프라인 전체 (E2E) | ✅ | Ingress 경유 — 업로드 → K8s 색인 Job → 브라우저 Web Chat (로그인 → 스트리밍 답변 → 피드백) |
 | Web Chat WebSocket(socket.io `/ws`) Ingress 경유 동작 | ✅ | ingress-nginx websocket + timeout annotation, TLS |
-| **답변 품질 (Qwen3.8-27B 실물)** | ✅ | PGX 통합 메모리 128GB — 27B FP8(~31GB) 여유 구동, KV cache 공간 충분 |
+| **답변 품질 (Qwen3.8-27B 실물)** | ✅ | PGX 통합 메모리 128GB — 27B FP8(~29GB) 여유 구동, KV cache 공간 충분 |
 | `make evaluate` 품질 평가 | ⚠️ 부분 | **현재 데이터셋 6문항**(`tests/evaluation/dataset/q001~q006`), 지표 4종(Recall@10 · Citation Precision · 무근거 안전응답 · 근거 응답률). **Faithfulness/LLM-judge 는 미구현** — 100문항·judge 는 작성 과제 |
 | Channel 격리 (CH-001~010) | ✅ | `make test-isolation` 은 **클러스터와 무관한 로컬 pytest**(in-memory fake). 실 Qdrant 검증(`test_ch_qdrant.py`)은 Docker(testcontainers) 필요 — P3 에서 `make test-integration` |
 | 성능 목표 수치 (p95 30s @ 동시 10~15) | ⚠️ 참고치 | GB10 메모리 대역폭(~273GB/s) 특성상 decode 속도는 운영 GPU(H100 등)와 다름. **동시 4~8 기준 경향 측정** |
@@ -95,7 +96,7 @@ P3의 물리 디스크는 **NVMe 1TB, HDD 4TB 2개뿐**입니다. **OS·RKE2·et
 | PostgreSQL / Qdrant / Redis PVC | **NVMe 1TB** | `/data/fast` | StorageClass `local-fast` (성능 필수) |
 | 문서 원본 PVC(`documents-pvc`) / 이미지 레지스트리 / 백업 | **HDD 4TB** | `/data/bulk` | StorageClass `local-bulk` |
 | 모델 아티팩트 (embedding/reranker) | **HDD 4TB** | `/data/bulk/models` | hostPath 마운트 (§2.2) |
-| 모델 아티팩트 (LLM) | PGX SSD 4TB | `/models/llm` | hostPath 마운트 (§2.1) |
+| 모델 아티팩트 (LLM) | PGX SSD 4TB | `/home/cheolkyulee/models/<모델>` | hostPath 마운트 (§2.1) — 모델별 디렉터리, `vllm.modelDir` 로 선택 |
 
 > 레지스트리·문서 원본·모델·백업이 HDD 4TB 한 스핀들을 공유합니다. 용량은 충분하지만 **IO 경합**이 생깁니다 — 대량 색인 Job과 이미지 push/pull을 동시에 돌리지 마세요 (§8).
 
@@ -230,28 +231,85 @@ echo "${P3_IP} registry.local" | sudo tee -a /etc/hosts   # 양쪽 노드 + 접�
 
 ### 2.1 PGX — LLM (Qwen3.8-27B 실물 구동)
 
-랩 LLM 은 **`Qwen/Qwen3.8-27B-FP8`** (Apache-2.0) 입니다. dense 27B · FP8 체크포인트 ~31GB 로 통합 메모리 128GB 에 KV cache 포함 여유 있게 적재됩니다.
+랩 LLM 은 **`Qwen/Qwen3.8-27B-FP8`** (Apache-2.0) 이며, PGX 의 **`/home/cheolkyulee/models/Qwen3.8-27B-FP8`** 에 받아 두었습니다(≈29GB). dense 27B · FP8 체크포인트로 통합 메모리 128GB 에 KV cache 포함 여유 있게 적재됩니다.
+
+**모델 디렉터리 구조 — 모델별 하위 디렉터리를 나란히 둔다**
+
+```text
+/home/cheolkyulee/models/            ← values-lab  vllm.modelHostPath  (컨테이너 /models 로 마운트, readOnly)
+├── Qwen3.8-27B-FP8/                 ← values-lab  vllm.modelDir (현재)  → --model=/models/Qwen3.8-27B-FP8
+└── Qwen3.8-27B-NVFP4/               ← 교체 후보 (같은 qwen3_5 계열, compressed-tensors NVFP4 ≈22GB)
+```
+
+chart 는 `vllm.modelDir` 로 `--model=/models/<modelDir>` 를, `vllm.servedModelName`(`internal-rag-llm`)으로 `--served-model-name` 을 **직접 생성**합니다. `vllm.args` 에는 이 둘을 넣지 않습니다(넣으면 `helm template` 단계에서 실패하도록 막아 두었습니다). 서빙 이름이 고정이라 **모델을 바꿔도 rag-api/worker 설정은 그대로**입니다.
 
 | 항목 | 값 | 랩 설정에 미치는 영향 |
 |---|---|---|
 | 아키텍처 | `Qwen3_5ForConditionalGeneration` (`qwen3_5`) — 64층 중 48층 linear attention 하이브리드 | **vLLM ≥ 0.17.0 필요** (§3 이미지 태그 확인). 구버전은 `architecture not supported` 로 기동 실패 |
+| 양자화 | `config.json` 의 `quantization_config.quant_method=fp8` | vLLM 이 자동 인식 — `--quantization` 지정 불필요 |
 | 모달리티 | vision-language (이미지/비디오 입력 가능) | 텍스트 RAG 이므로 `--language-model-only` 로 vision tower 미적재 → 메모리·KV cache 확보 |
 | thinking | **기본 on** (`<think>…</think>` 후 답변) | 앱이 요청마다 `chat_template_kwargs.enable_thinking=false` 전송(`LLM_ENABLE_THINKING=false`, 기본값) + vLLM `--reasoning-parser=qwen3` 로 혹시 켜져도 추론이 `content` 에 섞이지 않게 분리 |
 | 컨텍스트 | 네이티브 262,144 (YaRN 으로 1M) | 랩은 `--max-model-len=16384` — RAG 예산(MAX_CONTEXT_TOKENS 8192 + 출력 1024)에 충분 |
-| 서빙 이름 | `--served-model-name=internal-rag-llm` (변경 없음) | rag-api/worker 설정 변경 불필요 — 모델 교체는 `/models/llm/main` 내용 교체만으로 끝난다 |
+| MTP head | `mtp.safetensors` 포함 | (선택) `--speculative-config` 로 디코드 가속 — values-lab 주석 참고 |
+| 서빙 이름 | `--served-model-name=internal-rag-llm` (`vllm.servedModelName`, 변경 없음) | rag-api/worker 설정 변경 불필요 |
 
 ```bash
-# PGX에서
-sudo mkdir -p /models/llm && sudo chown $USER /models
-hf download Qwen/Qwen3.8-27B-FP8 --local-dir /models/llm/main   # ~31GB. 폐쇄망은 해시 검증된 반입 아티팩트 복사
-sudo chmod -R a+rX /models      # Pod(runAsUser 10001) 읽기 권한 — hostPath 에는 fsGroup 이 적용되지 않는다
+# PGX에서 — 이미 받아 둔 상태 확인
+ls /home/cheolkyulee/models/Qwen3.8-27B-FP8/{config.json,tokenizer.json,model.safetensors.index.json}
+python3 -c "import json;c=json.load(open('/home/cheolkyulee/models/Qwen3.8-27B-FP8/config.json'));print(c['architectures'],c['quantization_config']['quant_method'])"
+# → ['Qwen3_5ForConditionalGeneration'] fp8
 
-# 기존 Qwen3-32B 가 있던 자리라면 디렉터리를 비우고 받는다 (혼재 시 config/토크나이저 불일치로 기동 실패)
-#   rm -rf /models/llm/main && hf download ...
+# Pod 읽기 권한 — hostPath 에는 fsGroup 이 적용되지 않으므로 other 읽기(+디렉터리 실행)가 필요
+chmod -R a+rX /home/cheolkyulee/models
 ```
 
+> **권한 메모**: hostPath 는 `/home/cheolkyulee/models` 자체를 컨테이너 `/models` 로 bind mount 하므로 상위 홈 디렉터리(`drwxr-x---`)의 권한은 영향이 없습니다. 모델 디렉터리·파일만 `a+rX` 이면 비루트(uid 10001) vLLM 이 읽을 수 있습니다.
+> **경로 바꾸기**: 다른 계정/디스크로 옮기면 `values-lab.yaml` 의 `vllm.modelHostPath` 만 바꾸면 됩니다. hostPath `type: Directory` 라 경로가 없으면 Pod 가 `ContainerCreating`(`hostPath type check failed`)에 머뭅니다.
+
 > **샘플링**: 모델 권장값(non-thinking)은 `temperature=0.7, top_p=0.8, presence_penalty=1.5` 이지만, RAG 는 근거 충실도를 우선해 앱 기본 `LLM_TEMPERATURE=0.2` 를 유지합니다. 답변이 반복적이면 `LLM_TEMPERATURE` 를 0.5~0.7 로 올려 §7 평가로 비교하세요.
-> **토크나이저**: rag-api/worker 는 P3 에서 돌고 모델 파일은 PGX 에만 있으므로 토큰 수는 근사 카운터로 계산됩니다(기존과 동일). 정확한 예산이 필요하면 토크나이저 파일(`tokenizer.json` 등)만 P3 `/data/bulk/models/llm/main` 에 복사하세요.
+> **토크나이저**: rag-api/worker 는 P3 에서 돌고 모델 파일은 PGX 에만 있으므로 토큰 수는 근사 카운터로 계산됩니다(기존과 동일). 정확한 예산이 필요하면 현재 모델의 토크나이저 파일(`tokenizer.json`, `tokenizer_config.json`, `vocab.json`, `merges.txt`)만 P3 `/data/bulk/models/llm/main` 에 복사하세요(rag-api `TOKENIZER_PATH=/models/llm/main`). 모델을 바꾸면 이 복사본도 함께 교체합니다.
+
+#### 2.1.1 LLM 모델 교체 (새 모델 다운로드 시)
+
+모델 교체는 **새 디렉터리를 나란히 받고 → `vllm.modelDir` 만 바꿔 `helm upgrade`** 입니다. 기존 디렉터리를 덮어쓰지 않으므로 파일이 섞여 기동 실패하는 일이 없고, **되돌리기는 값만 원복**하면 됩니다.
+
+```bash
+# 1) PGX — 새 모델을 별도 디렉터리로 다운로드 (폐쇄망은 해시 검증된 반입 아티팩트 복사)
+hf download <org>/<NewModel> --local-dir /home/cheolkyulee/models/<NewModel>
+chmod -R a+rX /home/cheolkyulee/models/<NewModel>
+python3 -c "import json;c=json.load(open('/home/cheolkyulee/models/<NewModel>/config.json'));print(c['architectures'],c.get('quantization_config',{}).get('quant_method'))"
+
+# 2) P3 — 렌더 확인 후 교체. 영구 반영은 values-lab.yaml 의 vllm.modelDir 를 수정(SSOT), 일시 A/B 는 --set
+helm template rag-platform deploy/helm/rag-platform -f deploy/helm/rag-platform/values-poc.yaml \
+  -f deploy/helm/rag-platform/values-lab.yaml --set vllm.modelDir=<NewModel> -s templates/vllm.yaml | grep -- --model=
+helm upgrade --install rag-platform deploy/helm/rag-platform \
+  -f deploy/helm/rag-platform/values-poc.yaml -f deploy/helm/rag-platform/values-lab.yaml \
+  --set global.imageTag=$TAG --set "networkPolicy.apiServer.cidrs={${P3_IP}/32}" \
+  --set vllm.modelDir=<NewModel>          # values-lab 을 수정했다면 이 줄은 생략
+
+# 3) 확인 — args 가 바뀌어 vLLM Pod 가 재생성된다 (maxSurge 0 → 기존 Pod 종료 후 새 모델 로딩, 그동안 질문은 오류 안내)
+kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.metadata.annotations.ragplatform\.io/llm-model}'; echo
+kubectl -n rag-ai logs -f deploy/vllm-llm-0 | grep -iE "loading|ready|error"
+kubectl -n rag-app exec deploy/rag-api -- python -c "import httpx;print(httpx.get('http://vllm-service.rag-ai:8000/v1/models',timeout=10).json()['data'][0]['root'])"
+# → /models/<NewModel>   (id 는 여전히 internal-rag-llm)
+
+# 4) 품질 비교 — §7.1 평가를 모델별 리포트로 남긴다 (예: reports/eval_ko_pdf_<NewModel>.md)
+# 되돌리기: --set vllm.modelDir=Qwen3.8-27B-FP8 (또는 values-lab 원복) 후 helm upgrade
+```
+
+새 모델이 **다른 계열**이면 `values-lab.yaml` 의 `vllm.args` 중 모델 의존 항목을 함께 점검하세요:
+
+| 점검 항목 | Qwen3.8 기준 | 다른 모델일 때 |
+|---|---|---|
+| vLLM 버전 | ≥ 0.17.0 (`qwen3_5`) | 새 아키텍처 지원 버전인지 §3 명령으로 확인 |
+| `--language-model-only` | vision-language 이라 필요 | 텍스트 전용 모델이면 인자 제거(미지원 경고/오류 가능) |
+| `--reasoning-parser=qwen3` | thinking 모델 | 비-thinking 모델이면 제거, 다른 계열은 해당 parser(예: `deepseek_r1`) |
+| `LLM_ENABLE_THINKING=false` (rag-api/worker) | chat template 이 `enable_thinking` 지원 | 지원하지 않는 템플릿이면 무시되므로 그대로 둬도 무방 |
+| `--max-model-len` / `--gpu-memory-utilization` | 16384 / 0.90 | 모델 크기·네이티브 컨텍스트에 맞춰 조정(OOM 시 §8) |
+| 토크나이저 복사본 | `/data/bulk/models/llm/main` (선택) | 새 모델 토크나이저로 교체 |
+
+> 예: 같은 계열인 **`Qwen3.8-27B-NVFP4`**(이미 `/home/cheolkyulee/models` 에 있음, ≈22GB)는 args 변경 없이 `vllm.modelDir=Qwen3.8-27B-NVFP4` 만으로 교체됩니다. NVFP4(`compressed-tensors`)는 Blackwell(GB10) FP4 경로를 쓰므로 vLLM 이미지가 해당 커널을 포함하는지 로딩 로그로 확인하고, FP8 대비 품질은 §7 평가로 비교하세요.
+> 사용하지 않는 모델 디렉터리는 롤백 대상이 없을 때 `rm -rf /home/cheolkyulee/models/<OldModel>` 로 정리합니다(PGX SSD 4TB — 여유는 충분).
 
 ### 2.2 P3 — Embedding / Reranker (CPU, amd64)
 
@@ -331,8 +389,8 @@ done
 | rag-worker | 2 | 2 (유지) | 큐 재처리 시나리오(§6) 검증 |
 | vLLM replica / 배치 | `[llm-0, llm-1]` | `[llm-0]` + `nodeSelector tier=llm` + `dedicated=llm` toleration | GPU 노드 1대, 이기종 배치 |
 | `--max-num-seqs` | 16 | 8 | GB10 대역폭 |
-| LLM 모델 | 운영 모델(TDD §8) | **`Qwen/Qwen3.8-27B-FP8`** + `--language-model-only` `--reasoning-parser=qwen3`, rag-api/worker `LLM_ENABLE_THINKING=false` | §2.1 — thinking 기본 on 모델, 텍스트 전용 RAG |
-| 모델 볼륨 | `models-pvc` | **hostPath** (`/data/bulk/models`, vLLM은 `/models`) | GPU 노드와 앱 노드가 달라 단일 PVC 공유 불가 |
+| LLM 모델 | 운영 모델(TDD §8), `modelDir: llm/main` | **`vllm.modelDir: Qwen3.8-27B-FP8`** (교체 = 이 값만, §2.1.1) + `--language-model-only` `--reasoning-parser=qwen3`, rag-api/worker `LLM_ENABLE_THINKING=false` | §2.1 — thinking 기본 on 모델, 텍스트 전용 RAG |
+| 모델 볼륨 | `models-pvc` | **hostPath** (앱: `/data/bulk/models`, vLLM: `/home/cheolkyulee/models`) — 컨테이너에는 둘 다 `/models` | GPU 노드와 앱 노드가 달라 단일 PVC 공유 불가 |
 | 데이터 계층 | qdrant 500Gi / pg 200Gi / redis 20Gi | 50 / 20 / 10Gi + `local-fast` | NVMe 1TB 공유 (§1.4.1) |
 | `documents-pvc` | 1Ti (default SC=NFS) | 500Gi + `local-bulk` | HDD |
 | Namespace | 사전 생성(`namespaces.create: false`) | 동일 — §4.1 에서 kubectl 로 생성 + 라벨 | Secret 을 helm 전에 만들어야 함 |
@@ -470,6 +528,8 @@ kubectl -n rag-ai logs deploy/reranker-api  | grep engine_ready
 # ⑥ vLLM 모델 서빙 (rag-api 는 rag-app NS)
 kubectl -n rag-app exec deploy/rag-api -- python -c "import httpx;print(httpx.get('http://vllm-service.rag-ai:8000/v1/models',timeout=10).json()['data'][0]['id'])"
 # → internal-rag-llm
+kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.metadata.annotations.ragplatform\.io/llm-model}'; echo
+# → /models/Qwen3.8-27B-FP8   (vllm.modelDir — 의도한 모델인지 확인)
 
 # ⑦ Ingress / NetworkPolicy
 kubectl -n rag-app get ingress
@@ -870,7 +930,11 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | Pod `exec format error` CrashLoop / vLLM Pod가 P3로 스케줄 시도 | amd64 이미지가 PGX 에, 또는 반대로 스케줄됨 — nodeSelector/toleration 확인, `kubectl get pod -o wide`. P3 에는 nvidia.com/gpu 리소스가 없어 vLLM Pending 이 정상 |
 | PGX에서 `nvidia.com/gpu: 0` | GPU Operator toolkit Pod(pgx) 로그 확인, containerd 재시작. `driver.enabled=false` 유지 |
 | vLLM OOM/성능 급락 | 통합 메모리를 OS·타 프로세스와 공유 — PGX 에 다른 워크로드 금지(taint 유지), `--gpu-memory-utilization` 0.85 로 하향 |
-| vLLM 기동 실패 `Qwen3_5ForConditionalGeneration ... not supported` / `qwen3_5` 인식 불가 | vLLM 이미지가 0.17.0 미만 — NGC 최신 arm64 태그로 교체(§3 버전 확인 명령). 모델 디렉터리에 이전 모델 파일이 섞여 있어도 발생 → `/models/llm/main` 비우고 재다운로드 |
+| vLLM 기동 실패 `Qwen3_5ForConditionalGeneration ... not supported` / `qwen3_5` 인식 불가 | vLLM 이미지가 0.17.0 미만 — NGC 최신 arm64 태그로 교체(§3 버전 확인 명령). 다운로드가 덜 끝났거나 한 디렉터리에 두 모델을 섞어 받았어도 발생 → 새 디렉터리로 재다운로드 후 `vllm.modelDir` 지정(§2.1.1) |
+| vLLM Pod `ContainerCreating`, 이벤트 `hostPath type check failed: /home/cheolkyulee/models is not a directory` | PGX 에 `vllm.modelHostPath` 경로가 없음 — 경로 확인(`ls -ld /home/cheolkyulee/models`) 또는 values-lab 의 `modelHostPath` 수정 |
+| vLLM 로그 `... /models/<이름> ... does not appear to have a file named config.json` / `Repo id must be ...` | `vllm.modelDir` 가 실제 디렉터리 이름과 다름(대소문자 포함) — `ls /home/cheolkyulee/models` 와 비교 후 helm upgrade |
+| vLLM 로그 `PermissionError` / `Permission denied` (모델 파일) | 새로 받은 모델의 other 읽기 권한 없음 — `chmod -R a+rX /home/cheolkyulee/models/<모델>` |
+| `helm template` 이 `vllm.args 에 "--model=..." 를 넣지 마세요` 로 실패 | 구 values 의 `--model`/`--served-model-name` 인자가 남아 있음 — 삭제하고 `vllm.modelDir`/`vllm.servedModelName` 사용 |
 | 답변 본문에 `<think>` / 추론 과정이 섞임, 첫 토큰이 매우 늦음 | thinking 이 켜진 상태 — rag-api/worker env `LLM_ENABLE_THINKING=false` 확인, vLLM args 에 `--reasoning-parser=qwen3` 확인(`kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.spec.containers[0].args}'`) |
 | Qdrant 검색 1s 초과 | PVC 가 local-bulk(HDD)에 생성됨 — `kubectl get pvc -n rag-data` 로 SC 확인 후 local-fast 로 재생성 |
 | PVC가 계속 `Pending` | ① `deploy/k8s/local-path-*.yaml` 의 nodePathMap 노드 이름 불일치(§1.4.3 sed 누락) — `kubectl -n local-path-storage logs deploy/local-path-provisioner-fast` ② `WaitForFirstConsumer` 라 소비 Pod 스케줄 전엔 정상 ③ Pod 가 pgx 로 갔다면 nodePathMap 에 없어 실패 — nodeSelector 확인 |
@@ -903,7 +967,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 - [ ] **이미지 8종**(chat-gateway · rag-api · admin-api · embedding-api · reranker-api · parser-indexer · chat-web · admin-web) + vLLM arm64 + data 3종 + busybox 레지스트리 push, manifest arch 확인
 - [ ] **NS 4종 + `rag-platform=true` 라벨**, Secret 5개(`rag-chat-secrets`, `rag-chat-tls`(SAN 두 호스트), `rag-postgresql-secret`×3)
 - [ ] `helm upgrade --install` 성공(hook `rag-db-migrate` 포함), `alembic current` = `0003_webchat (head)`
-- [ ] 배치 검증 — vLLM 만 pgx, 나머지(chat-gateway·chat-web 포함) p3 (`-o wide`), **Qwen3.8-27B 로딩 완료**(startupProbe 내, `/v1/models` → `internal-rag-llm`)
+- [ ] 배치 검증 — vLLM 만 pgx, 나머지(chat-gateway·chat-web 포함) p3 (`-o wide`), **Qwen3.8-27B 로딩 완료**(startupProbe 내, `/v1/models` → `internal-rag-llm`, annotation `ragplatform.io/llm-model=/models/Qwen3.8-27B-FP8`)
 - [ ] §4.3 ①~⑧: alembic head, Secret 파일 마운트(gateway 3 / worker 1 / admin-api 1, `startup.*_missing` 0), PVC 티어(DB=local-fast, documents=local-bulk), 문서 볼륨 쓰기, **실엔진 기동(`-mock` 없음)**, `/v1/models`, Ingress(rag-chat/rag-admin)·NetPol(`allow-ingress-to-*` 4 + `allow-admin-api-to-apiserver`), NVMe 70% 미만
 - [ ] seed + qdrant-init + seed-users(동일 pepper) 완료
 - [ ] 업로드(`start_indexing=true`) → **K8s 색인 Job COMPLETED**, 문서 ACTIVE

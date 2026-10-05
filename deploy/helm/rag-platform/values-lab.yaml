@@ -188,16 +188,20 @@ vllm:
     ragplatform.io/tier: llm      # 가이드 §1.2 라벨
   tolerations:
     - { key: dedicated, value: llm, operator: Equal, effect: NoSchedule }
-  modelHostPath: /models          # PGX 로컬 경로. 모델 실체는 /models/llm/main (§2.1)
-                                  # ※ sudo chmod -R a+rX /models
+  # PGX 로컬 모델 루트 — 모델별 하위 디렉터리를 나란히 둔다 (가이드 §2.1)
+  #   /home/cheolkyulee/models/Qwen3.8-27B-FP8   ← 현재
+  #   /home/cheolkyulee/models/Qwen3.8-27B-NVFP4 ← 교체 후보
+  # 컨테이너에는 /models 로 마운트되므로 상위(/home/...) 권한은 무관, 모델 파일만 a+rX 면 된다
+  modelHostPath: /home/cheolkyulee/models
+  # ★ 모델 교체 = 이 값만 변경 후 helm upgrade (또는 --set vllm.modelDir=<디렉터리>) → --model=/models/<modelDir>
+  #   served-model-name(internal-rag-llm)은 그대로라 rag-api/worker 설정 변경 없음
+  modelDir: Qwen3.8-27B-FP8
   # NGC vLLM 이미지가 비루트(10001) 기동에 실패하면 아래 주석을 풀어 예외를 명시한다 (§22.4 — 리포트에 기록)
   podSecurityContext: {}
   # podSecurityContext: { runAsNonRoot: false, runAsUser: 0 }
-  # 랩 LLM = Qwen/Qwen3.8-27B-FP8 (dense 27B, FP8 ~31GB, 네이티브 262K ctx, vision-language + thinking 기본 on)
-  #   → /models/llm/main 에 배치 (가이드 §2.1). served-model-name 은 그대로라 앱 설정 변경 없음.
+  # 랩 LLM = Qwen/Qwen3.8-27B-FP8 (dense 27B, FP8 ~29GB, 네이티브 262K ctx, vision-language + thinking 기본 on)
+  # 아래 args 중 --language-model-only / --reasoning-parser 는 모델 계열 의존 — 다른 계열로 바꿀 때 함께 점검 (가이드 §2.1.1)
   args:
-    - --model=/models/llm/main
-    - --served-model-name=internal-rag-llm
     - --max-model-len=16384           # RAG 예산(MAX_CONTEXT_TOKENS 8192 + 출력 1024)에 충분. 네이티브 262K 까지 가능
     - --gpu-memory-utilization=0.90   # 통합 메모리 공유 — OOM 시 0.85 로 하향 (가이드 §8)
     - --dtype=auto

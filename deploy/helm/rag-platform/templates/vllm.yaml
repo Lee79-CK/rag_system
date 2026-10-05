@@ -1,5 +1,14 @@
 {{/* vLLM — llm-0/llm-1 Deployment(각 GPU 1) + 공통 Service (ADR-009, §8). */}}
 {{- $v := .Values.vllm }}
+{{- /* 모델 교체 = vllm.modelDir 만 변경. --model / --served-model-name 은 템플릿이 만든다 → args 에 중복 지정 금지 */}}
+{{- if not $v.modelDir }}{{ fail "vllm.modelDir 가 비어 있습니다 (/models 아래 LLM 디렉터리 이름)" }}{{ end }}
+{{- range $a := $v.args }}
+{{- if or (hasPrefix "--model" $a) (hasPrefix "--served-model-name" $a) }}
+{{- fail (printf "vllm.args 에 %q 를 넣지 마세요 — vllm.modelDir / vllm.servedModelName 으로 지정합니다" $a) }}
+{{- end }}
+{{- end }}
+{{- $modelPath := printf "/models/%s" (trimPrefix "/" $v.modelDir) }}
+{{- $args := concat (list (printf "--model=%s" $modelPath) (printf "--served-model-name=%s" $v.servedModelName)) $v.args }}
 {{- range $replica := $v.replicas }}
 ---
 apiVersion: apps/v1
@@ -24,6 +33,8 @@ spec:
       labels:
         app.kubernetes.io/name: vllm
         vllm-replica: {{ $replica }}
+      annotations:
+        ragplatform.io/llm-model: {{ $modelPath | quote }}   # 현재 서빙 중인 모델 디렉터리 (kubectl describe 로 확인)
     spec:
       securityContext:
         {{- /* NGC vLLM 이미지가 root 전제라면 vllm.podSecurityContext 로 runAsNonRoot/runAsUser 를 덮어쓴다 (예외는 문서화 §22.4) */}}
@@ -39,7 +50,7 @@ spec:
       containers:
         - name: vllm
           image: {{ include "rag.image" (dict "image" $v.image "root" $) }}
-          args: {{ toJson $v.args }}
+          args: {{ toJson $args }}
           securityContext:
             {{- toYaml $.Values.containerSecurityContext | nindent 12 }}
             readOnlyRootFilesystem: {{ $v.securityContext.readOnlyRootFilesystem }}
