@@ -221,8 +221,20 @@ EOF
 sudo systemctl restart rke2-server   # P3
 sudo systemctl restart rke2-agent    # PGX (동일 파일 배치 후)
 
-# P3 의 Docker 도 insecure registry 로 등록 (push 용): /etc/docker/daemon.json → {"insecure-registries":["registry.local:5000"]}
 echo "${P3_IP} registry.local" | sudo tee -a /etc/hosts   # 양쪽 노드 + 접속 PC
+
+# P3 의 Docker 도 insecure registry 로 등록 (push 용). 빠뜨리면 make push-images 가
+#   "http: server gave HTTP response to HTTPS client" 로 실패한다.
+# daemon.json 이 이미 있으면 덮어쓰지 말고 "insecure-registries" 키만 병합할 것.
+[ -s /etc/docker/daemon.json ] && cat /etc/docker/daemon.json
+sudo tee /etc/docker/daemon.json <<'EOF'
+{
+  "insecure-registries": ["registry.local:5000"]
+}
+EOF
+sudo systemctl restart docker            # registry 컨테이너는 --restart=always 라 자동 복구
+docker info | grep -A3 "Insecure Registries"   # registry.local:5000 이 보여야 함
+curl -s http://registry.local:5000/v2/_catalog # {"repositories":[...]} 응답 확인
 ```
 
 ---
@@ -944,6 +956,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | 색인 Job 이 평소보다 훨씬 느림 | HDD 한 대에 문서 원본 + registry + 모델 공존 — 이미지 push/pull, 다중 색인 Job 동시 실행을 피하고 순차 실행. `iostat -x 2 /dev/sda` 로 `%util` 확인 |
 | PVC 삭제 후에도 HDD 용량 미반환 | `local-bulk` 는 `reclaimPolicy: Retain` — `kubectl get pv \| grep Released` 후 `sudo rm -rf /data/bulk/pvc/pvc-<uid>` 수동 정리 |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
+| `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 의 `/etc/docker/daemon.json`(`"insecure-registries":["registry.local:5000"]`) 작성 후 `sudo systemctl restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |
 | RKE2 재부팅 후 워크로드 미복귀 | `systemctl status rke2-server`(P3)/`rke2-agent`(PGX), PGX 절전 설정 비활성 |
 
