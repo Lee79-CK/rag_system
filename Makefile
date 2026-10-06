@@ -3,7 +3,7 @@
 
 UV ?= uv
 
-.PHONY: help install lint fmt test test-cov test-isolation test-integration \
+.PHONY: help check-image-vars install lint fmt test test-cov test-isolation test-integration \
         evaluate perf-chat-burst mock-llm qdrant-init seed seed-users openapi \
         chat-gateway chat-web-dev chat-web-build \
         build-images push-images helm-lint helm-template infra-up infra-down clean
@@ -51,7 +51,10 @@ perf-chat-burst: # 질문 Burst 부하 (ACK p95 ≤ 2s, §8.5) — CHAT_EMAIL/CH
 mock-llm: # 로컬 OpenAI-compatible mock LLM (:8010) — §5.4
 	$(UV) run python -m mock_llm.server
 
-build-images: # 컨테이너 이미지 8종 빌드 (REG=... TAG=...). embedding/reranker 는 --extra models 포함(UV_EXTRA=models 기본)
+check-image-vars: # REG/TAG 가 빈 값으로 넘어오면(make ... REG=$$REG 인데 셸 변수 미설정) 잘린 이미지 경로로 실행되는 것을 차단
+	@test -n "$(REG)" -a -n "$(TAG)" || { echo "REG/TAG 가 비어 있음 (REG='$(REG)' TAG='$(TAG)'). export REG/TAG 하거나 인자 없이 실행 — 기본값 registry.local:5000 / git short sha" >&2; exit 1; }
+
+build-images: check-image-vars # 컨테이너 이미지 8종 빌드 (REG=... TAG=...). embedding/reranker 는 --extra models 포함(UV_EXTRA=models 기본)
 	for app in $(PY_IMAGES); do \
 	  docker build -f apps/$$app/Containerfile -t $(REG)/rag/$$app:$(TAG) . || exit 1; \
 	done
@@ -59,7 +62,7 @@ build-images: # 컨테이너 이미지 8종 빌드 (REG=... TAG=...). embedding/
 	  docker build -f apps/$$app/Containerfile -t $(REG)/rag/$$app:$(TAG) apps/$$app || exit 1; \
 	done
 
-push-images: # build-images 로 만든 이미지 push
+push-images: check-image-vars # build-images 로 만든 이미지 push
 	for img in $(PY_IMAGES) $(WEB_IMAGES); do docker push $(REG)/rag/$$img:$(TAG) || exit 1; done
 
 helm-lint: # chart lint

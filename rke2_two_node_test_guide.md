@@ -225,14 +225,22 @@ echo "${P3_IP} registry.local" | sudo tee -a /etc/hosts   # 양쪽 노드 + 접�
 
 # P3 의 Docker 도 insecure registry 로 등록 (push 용). 빠뜨리면 make push-images 가
 #   "http: server gave HTTP response to HTTPS client" 로 실패한다.
-# daemon.json 이 이미 있으면 덮어쓰지 말고 "insecure-registries" 키만 병합할 것.
-[ -s /etc/docker/daemon.json ] && cat /etc/docker/daemon.json
-sudo tee /etc/docker/daemon.json <<'EOF'
-{
-  "insecure-registries": ["registry.local:5000"]
-}
-EOF
-sudo systemctl restart docker            # registry 컨테이너는 --restart=always 라 자동 복구
+# daemon.json 위치는 설치 방식에 따라 다르다 (readlink -f "$(command -v docker)" 로 확인):
+#   apt/docker-ce : /etc/docker/daemon.json                     → sudo systemctl restart docker
+#   snap docker   : /var/snap/docker/current/config/daemon.json → sudo snap restart docker
+# 기존 파일(snap 은 nvidia runtimes 등이 이미 있음)을 덮어쓰지 말고 "insecure-registries" 키만 병합할 것.
+DJ=/etc/docker/daemon.json; command -v docker | grep -q /snap/ && DJ=/var/snap/docker/current/config/daemon.json
+sudo mkdir -p "$(dirname "$DJ")"; [ -s "$DJ" ] || echo '{}' | sudo tee "$DJ" >/dev/null
+sudo python3 - "$DJ" <<'PY2'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+regs = d.setdefault("insecure-registries", [])
+"registry.local:5000" in regs or regs.append("registry.local:5000")
+json.dump(d, open(p, "w"), indent=4)
+PY2
+cat "$DJ"
+command -v docker | grep -q /snap/ && sudo snap restart docker || sudo systemctl restart docker
+#   registry 컨테이너는 --restart=always 라 자동 복구
 docker info | grep -A3 "Insecure Registries"   # registry.local:5000 이 보여야 함
 curl -s http://registry.local:5000/v2/_catalog # {"repositories":[...]} 응답 확인
 ```
@@ -362,6 +370,8 @@ export TAG=$(git rev-parse --short HEAD)
 export REG=registry.local:5000
 
 # 8종 빌드 + push (Makefile 변수 REG/TAG — 기본값도 registry.local:5000 / git short sha)
+# 새 터미널/재로그인 후에는 export 가 사라진다. REG=$REG 처럼 빈 값을 넘기면 기본값을 덮어쓰므로
+# 먼저 echo "$REG $TAG" 로 확인하거나, 기본값이면 인자 없이 make push-images 로 실행.
 make build-images REG=$REG TAG=$TAG
 make push-images  REG=$REG TAG=$TAG
 ```
@@ -956,7 +966,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | 색인 Job 이 평소보다 훨씬 느림 | HDD 한 대에 문서 원본 + registry + 모델 공존 — 이미지 push/pull, 다중 색인 Job 동시 실행을 피하고 순차 실행. `iostat -x 2 /dev/sda` 로 `%util` 확인 |
 | PVC 삭제 후에도 HDD 용량 미반환 | `local-bulk` 는 `reclaimPolicy: Retain` — `kubectl get pv \| grep Released` 후 `sudo rm -rf /data/bulk/pvc/pvc-<uid>` 수동 정리 |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
-| `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 의 `/etc/docker/daemon.json`(`"insecure-registries":["registry.local:5000"]`) 작성 후 `sudo systemctl restart docker` |
+| `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |
 | RKE2 재부팅 후 워크로드 미복귀 | `systemctl status rke2-server`(P3)/`rke2-agent`(PGX), PGX 절전 설정 비활성 |
 
