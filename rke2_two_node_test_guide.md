@@ -304,7 +304,7 @@ python3 -c "import json;c=json.load(open('/home/cheolkyulee/models/<NewModel>/co
 # 2) P3 — 렌더 확인 후 교체. 영구 반영은 values-lab.yaml 의 vllm.modelDir 를 수정(SSOT), 일시 A/B 는 --set
 helm template rag-platform deploy/helm/rag-platform -f deploy/helm/rag-platform/values-poc.yaml \
   -f deploy/helm/rag-platform/values-lab.yaml --set vllm.modelDir=<NewModel> -s templates/vllm.yaml | grep -- --model=
-helm upgrade --install rag-platform deploy/helm/rag-platform \
+helm upgrade --install rag-platform deploy/helm/rag-platform -n rag-platform \
   -f deploy/helm/rag-platform/values-poc.yaml -f deploy/helm/rag-platform/values-lab.yaml \
   --set global.imageTag=$TAG --set "networkPolicy.apiServer.cidrs={${P3_IP}/32}" \
   --set vllm.modelDir=<NewModel>          # values-lab 을 수정했다면 이 줄은 생략
@@ -464,6 +464,10 @@ for ns in rag-app rag-ai rag-data rag-ingestion; do
   kubectl create ns $ns --dry-run=client -o yaml | kubectl apply -f -
   kubectl label ns $ns rag-platform=true --overwrite
 done
+# Helm release 기록(sh.helm.release.v1.* Secret) 전용 NS. 앱 리소스는 템플릿이 위 4개 NS 를 직접 지정하므로
+# 여기에는 release Secret 만 생긴다 — Pod 가 없으므로 rag-platform=true 라벨 불필요. 차트가 관리하는 NS 와 분리해
+# namespaces.create=true 운영에서 uninstall 이 release 기록이 든 NS 를 지우는 일을 피한다.
+kubectl create ns rag-platform --dry-run=client -o yaml | kubectl apply -f -
 
 # 2) 로컬 secret 파일 — §4.4 seed-users 가 같은 pepper 파일을 다시 쓴다
 mkdir -p secrets/rag
@@ -506,7 +510,10 @@ export TAG=$(git rev-parse --short HEAD)   # §3 에서 push 한 태그
 make helm-lint helm-template                # 렌더 사전 검증 (poc / poc+lab)
 
 # Ingress(chat.rag.lab.local / rag.lab.local, TLS rag-chat-tls)·migration·RBAC 는 values-lab 에 이미 켜져 있다
-helm upgrade --install rag-platform deploy/helm/rag-platform \
+# release 는 항상 -n rag-platform 로 고정 (§4.1 의 release 전용 NS) — 생략하면 kubectl context 의 namespace 를 따라가므로,
+#   kubectl config set-context --current --namespace=rag-app 등을 한 뒤에는 다른 NS 에서 release 를 찾다가 ownership 오류로 실패한다.
+#   helm status / history / rollback / uninstall 도 모두 -n rag-platform
+helm upgrade --install rag-platform deploy/helm/rag-platform -n rag-platform \
   -f deploy/helm/rag-platform/values-poc.yaml \
   -f deploy/helm/rag-platform/values-lab.yaml \
   --set global.imageTag=$TAG \
@@ -987,6 +994,10 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | PVC 삭제 후에도 HDD 용량 미반환 | `local-bulk` 는 `reclaimPolicy: Retain` — `kubectl get pv \| grep Released` 후 `sudo rm -rf /data/bulk/pvc/pvc-<uid>` 수동 정리 |
 | Pod Event `Failed to pull image ... http: server gave HTTP response to HTTPS client` | 해당 노드 `/etc/rancher/rke2/registries.yaml` 의 endpoint 오타(예: `http:IP//:5000`) 또는 파일 누락 → containerd 가 미러를 못 쓰고 `https://registry.local:5000` 으로 직접 접속. `endpoint: ["http://<P3_IP>:5000"]` 로 수정 후 rke2-server/agent 재시작, `sudo grep -r server /var/lib/rancher/rke2/agent/etc/containerd/certs.d/` 로 반영 확인 |
 | `documents-pvc` Pending, Event `NodePath only supports ReadWriteOnce` | 구버전 차트(RWX documents-pvc + local-path). 현행 values-lab 은 `documentStorage.hostPath` 로 PVC 를 만들지 않음 — 차트 갱신 후 `helm upgrade`, 남은 PVC 는 `kubectl delete pvc documents-pvc -n rag-app -n rag-ingestion` |
+| helm `... exists and cannot be imported into the current release: ... "meta.helm.sh/release-namespace" must equal "rag-app": current value is "default"` | `-n rag-platform` 없이 helm 을 실행 → kubectl context namespace 에서 release 를 찾음. `helm list -A` 로 실제 위치 확인 후 그 NS 로 재실행. 예전에 `default` 에 설치했다면 `helm uninstall rag-platform -n default` 후 `-n rag-platform` 으로 재설치(StatefulSet PVC 는 유지됨) |
+| vLLM CrashLoopBackOff, 로그 `nvidia_entrypoint.sh: line 55: exec: --: invalid option` | NGC 이미지 ENTRYPOINT 는 `exec "$@"` 래퍼라 서버 명령이 필요 — values-lab `vllm.serveCommand: [vllm, serve]` 확인 (`kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.spec.containers[0].args}'` 이 `["vllm","serve",...` 로 시작) |
+| vLLM 로그 `unrecognized arguments: ...` | 이미지의 vLLM 버전에서 제거된 플래그(예: 0.29 의 `--disable-log-requests`). `vllm.args` 에서 삭제. 플래그 존재 확인: `docker run --rm --entrypoint grep <이미지> -c <flag_name> /usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py` |
+| vLLM 로그 `PermissionError: [Errno 13] Permission denied: '/.cache'` → `Model architectures [...] failed to be inspected` | 비루트 uid 10001 이 이미지 `/etc/passwd` 에 없어 `HOME=/`. 차트가 `HOME=/home/vllm`(emptyDir)·`XDG_CACHE_HOME`·`USER` 를 주입하는지 확인 — `kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.spec.containers[0].env}'` |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
 | `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |

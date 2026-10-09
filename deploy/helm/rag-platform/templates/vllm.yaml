@@ -8,7 +8,8 @@
 {{- end }}
 {{- end }}
 {{- $modelPath := printf "/models/%s" (trimPrefix "/" $v.modelDir) }}
-{{- $args := concat (list (printf "--model=%s" $modelPath) (printf "--served-model-name=%s" $v.servedModelName)) $v.args }}
+{{- /* serveCommand 는 args 맨 앞에 붙는다 — command 를 덮지 않으므로 이미지 ENTRYPOINT(NGC 의 CUDA 호환 설정 등)는 유지된다 */}}
+{{- $args := concat ($v.serveCommand | default list) (list (printf "--model=%s" $modelPath) (printf "--served-model-name=%s" $v.servedModelName)) $v.args }}
 {{- range $replica := $v.replicas }}
 ---
 apiVersion: apps/v1
@@ -58,6 +59,11 @@ spec:
             - containerPort: 8000
           env:
             {{- include "rag.offlineEnv" $ | nindent 12 }}
+            {{- /* 비루트 uid 10001 은 이미지 /etc/passwd 에 없어 HOME=/ → vLLM·flashinfer·triton 이 /.cache 생성 시
+                   PermissionError. 쓰기 가능한 emptyDir 을 HOME 으로 지정한다 (USER 는 torch getpass.getuser() 용). */}}
+            - { name: HOME, value: /home/vllm }
+            - { name: XDG_CACHE_HOME, value: /home/vllm/.cache }
+            - { name: USER, value: vllm }
           resources:
             {{- toYaml $v.resources | nindent 12 }}
           startupProbe:
@@ -68,7 +74,15 @@ spec:
             - name: models
               mountPath: /models
               readOnly: true
+            - name: home
+              mountPath: /home/vllm
+            - name: dshm
+              mountPath: /dev/shm
       volumes:
+        - name: home              # 컴파일/JIT 캐시 (torch.compile·flashinfer·triton). Pod 재생성 시 초기화
+          emptyDir: {}
+        - name: dshm              # 기본 64MB shm 은 vLLM 프로세스 간 통신에 부족 (NGC 권고 --ipc=host 대체)
+          emptyDir: { medium: Memory, sizeLimit: {{ $v.shmSize | default "8Gi" }} }
         - name: models
           {{- /* GPU 노드가 앱 노드와 다른 이기종 랩에서는 models-pvc(앱 노드 local-path)를
                  GPU 노드에서 쓸 수 없다 → 해당 노드 로컬 경로를 직접 마운트한다. */}}

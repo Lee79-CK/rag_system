@@ -199,6 +199,9 @@ vllm:
   # ★ 모델 교체 = 이 값만 변경 후 helm upgrade (또는 --set vllm.modelDir=<디렉터리>) → --model=/models/<modelDir>
   #   served-model-name(internal-rag-llm)은 그대로라 rag-api/worker 설정 변경 없음
   modelDir: Qwen3.8-27B-FP8
+  # NGC 이미지 ENTRYPOINT(/opt/nvidia/nvidia_entrypoint.sh)는 exec "$@" 래퍼라 서버 명령이 없으면
+  # "exec: --: invalid option" 으로 즉시 종료(CrashLoopBackOff). vllm serve 는 --model 플래그를 그대로 받는다.
+  serveCommand: [vllm, serve]
   # NGC vLLM 이미지가 비루트(10001) 기동에 실패하면 아래 주석을 풀어 예외를 명시한다 (§22.4 — 리포트에 기록)
   podSecurityContext: {}
   # podSecurityContext: { runAsNonRoot: false, runAsUser: 0 }
@@ -211,12 +214,14 @@ vllm:
     - --max-num-seqs=8                # 운영 16 → GB10 대역폭 고려
     - --language-model-only           # 텍스트 RAG — vision tower 미적재로 메모리/KV cache 확보
     - --reasoning-parser=qwen3        # thinking 이 켜져도 <think> 추론이 content 가 아닌 reasoning_content 로 분리
-    - --disable-log-requests
+    # --disable-log-requests 는 vLLM 0.29(NGC 26.09)에서 제거됨 → 넣으면 unrecognized arguments 로 기동 실패.
+    #   요청 로그는 기본 off (--enable-log-requests 로만 켬)
     # (선택) 내장 MTP draft head 로 디코드 가속: --speculative-config={"method":"qwen3_5_mtp","num_speculative_tokens":3}
   # 통합 메모리(128GB) 구조상 memory limit 을 걸면 KV cache 할당과 충돌할 수 있어 requests 만 둔다
   resources:
     requests: { cpu: "8", memory: 32Gi }
-    limits:   { nvidia.com/gpu: 1 }
+    # Helm 은 맵을 deep-merge 하므로 values.yaml 의 limits.cpu/memory(16/96Gi)가 남는다 → null 로 명시 삭제
+    limits:   { nvidia.com/gpu: 1, cpu: null, memory: null }
 
 # ---- parser-indexer Job 템플릿 (POSTGRES_* 는 dbEnv 헬퍼가 채운다) ----
 ingestion:

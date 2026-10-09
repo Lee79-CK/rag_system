@@ -193,6 +193,9 @@ vllm:
   # 모델 디렉터리 = /models 아래 상대 경로 → 템플릿이 --model=/models/<modelDir> 를 만든다.
   # 모델 교체는 새 디렉터리를 받아 이 값만 바꾸고 helm upgrade (args 에 --model / --served-model-name 넣지 말 것)
   modelDir: llm/main
+  # args 앞에 붙일 실행 명령. 비우면 이미지 ENTRYPOINT 가 서버를 띄운다고 가정(vllm/vllm-openai).
+  # ENTRYPOINT 가 단순 래퍼(exec "$@")인 이미지(NGC nvcr.io/nvidia/vllm)는 [vllm, serve] 가 필요하다.
+  serveCommand: []
   args:
     - --max-model-len=16384
     - --gpu-memory-utilization=0.92
@@ -206,6 +209,7 @@ vllm:
   # 이미지가 root 전제(NGC 등)면 여기서 덮어쓴다 — 예: { runAsNonRoot: false, runAsUser: 0 } (§22.4 예외 문서화 필수)
   podSecurityContext: {}
   modelHostPath: ""            # 지정 시 models-pvc 대신 GPU 노드 로컬 경로를 마운트 (이기종 랩)
+  shmSize: 8Gi                 # /dev/shm (Memory emptyDir) — Pod 메모리 사용량에 포함된다
 
 # ---- 스케줄링 기본값 (미지정 = 제약 없음) ----
 nodeSelector: {}
