@@ -53,4 +53,8 @@ data:
               persistentVolumeClaim: { claimName: models-pvc }
               {{- end }}
             - name: documents
+              {{- if .Values.documentStorage.hostPath }}
+              hostPath: { path: {{ .Values.documentStorage.hostPath | quote }}, type: Directory }
+              {{- else }}
               persistentVolumeClaim: { claimName: documents-pvc }
+              {{- end }}

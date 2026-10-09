@@ -79,8 +79,11 @@ data:
     resources: { requests: { cpu: "500m", memory: 1Gi } }
 
 documentStorage:
-  storageClass: local-bulk        # 문서 원본 → HDD (지정하지 않으면 default SC=local-fast(NVMe) 로 새어 들어간다)
-  size: 500Gi
+  # local-path(local-bulk)는 RWX 미지원 + NS 별 PVC 가 서로 다른 디렉터리 → admin-api(rag-app) 업로드를
+  # indexer Job(rag-ingestion)이 못 본다. 앱 Pod 가 모두 P3(amd64) 고정이므로 HDD hostPath 하나를 공유한다.
+  hostPath: /data/bulk/documents  # → 컨테이너 /data/documents. documents-pvc 는 만들지 않음
+                                  # ※ 사전 조치: sudo install -d -o 10001 -g 10001 -m 0750 /data/bulk/documents
+                                  #   (admin-api 가 uid 10001 로 쓰기, hostPath 에는 fsGroup 미적용)
 
 modelStorage:
   create: false                   # PVC 대신 hostPath 사용 → 빈 models-pvc 를 만들지 않는다

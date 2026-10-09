@@ -132,8 +132,12 @@ spec:
         {{- end }}
         {{- if $svc.documentVolume }}
         - name: documents
+          {{- if $.Values.documentStorage.hostPath }}
+          hostPath: { path: {{ $.Values.documentStorage.hostPath | quote }}, type: Directory }
+          {{- else }}
           persistentVolumeClaim:
             claimName: documents-pvc
+          {{- end }}
         {{- end }}
         {{- range $svc.extraVolumes }}
         - {{ toYaml . | nindent 10 | trim }}

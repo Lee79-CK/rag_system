@@ -20,6 +20,9 @@ spec:
       storage: {{ $.Values.modelStorage.size }}
 {{- end }}
 {{- end }}
+{{- /* documentStorage.hostPath 지정 시(랩 단일 노드) PVC 를 만들지 않는다 — 두 NS 의 PVC 는 서로 다른 PV 라
+       local-path 에서는 admin-api 업로드를 indexer 가 볼 수 없고, local-path 는 RWX 도 지원하지 않는다. */}}
+{{- if not .Values.documentStorage.hostPath }}
 {{- range $ns := (list "rag-app" .Values.ingestion.namespace) }}
 ---
 apiVersion: v1
@@ -37,4 +40,5 @@ spec:
   resources:
     requests:
       storage: {{ $.Values.documentStorage.size }}
+{{- end }}
 {{- end }}

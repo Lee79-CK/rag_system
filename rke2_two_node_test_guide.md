@@ -94,7 +94,7 @@ P3의 물리 디스크는 **NVMe 1TB, HDD 4TB 2개뿐**입니다. **OS·RKE2·et
 |---|---|---|---|
 | OS / RKE2 / etcd / containerd 이미지 | NVMe 1TB | `/`, `/var/lib/rancher` | 기본 (건드리지 않음) |
 | PostgreSQL / Qdrant / Redis PVC | **NVMe 1TB** | `/data/fast` | StorageClass `local-fast` (성능 필수) |
-| 문서 원본 PVC(`documents-pvc`) / 이미지 레지스트리 / 백업 | **HDD 4TB** | `/data/bulk` | StorageClass `local-bulk` |
+| 문서 원본 / 이미지 레지스트리 / 백업 | **HDD 4TB** | `/data/bulk` (문서 원본 = `/data/bulk/documents`) | 문서 원본은 hostPath 마운트(§4 랩 차이 표), 그 외 PVC 는 StorageClass `local-bulk` |
 | 모델 아티팩트 (embedding/reranker) | **HDD 4TB** | `/data/bulk/models` | hostPath 마운트 (§2.2) |
 | 모델 아티팩트 (LLM) | PGX SSD 4TB | `/home/cheolkyulee/models/<모델>` | hostPath 마운트 (§2.1) — 모델별 디렉터리, `vllm.modelDir` 로 선택 |
 
@@ -124,6 +124,8 @@ echo "UUID=$(sudo blkid -s UUID -o value /dev/sda1) /data/bulk ext4 defaults,noa
 sudo mount -a
 findmnt /data/bulk                               # ★ HDD 디바이스가 나오는지 확인 후 다음 단계
 sudo mkdir -p /data/bulk/pvc /data/bulk/models /data/bulk/registry
+# 문서 원본(hostPath) — admin-api 가 uid 10001 로 쓰므로 소유자를 맞춘다 (hostPath 에는 fsGroup 미적용)
+sudo install -d -o 10001 -g 10001 -m 0750 /data/bulk/documents
 ```
 
 **NVMe — `/data/fast`.** 별도 디스크가 없으므로 두 가지 선택지가 있습니다.
@@ -390,13 +392,30 @@ docker pull --platform linux/arm64 nvcr.io/nvidia/vllm:<tag>
 docker tag nvcr.io/nvidia/vllm:<tag> $REG/ai/vllm-arm64:$TAG
 docker push $REG/ai/vllm-arm64:$TAG
 
+# push 확인 (P3) — 태그가 보이면 레이어 업로드 완료(manifest 는 레이어 전부 올라간 뒤 마지막에 등록됨)
+curl -s http://$REG/v2/_catalog                      # "ai/vllm-arm64" 포함
+curl -s http://$REG/v2/ai/vllm-arm64/tags/list       # {"name":"ai/vllm-arm64","tags":["<TAG>"]}
+# 플랫폼 확인 — linux/arm64 가 있어야 PGX 에서 실행 가능 (NGC 이미지는 amd64+arm64 manifest list 라 둘 다 보이는 게 정상)
+docker manifest inspect --insecure $REG/ai/vllm-arm64:$TAG | grep -A2 '"platform"'
+```
+
+PGX 에서 직접 pull 해 보면 RKE2 containerd 가 `registries.yaml`(§1.5) 경로로 실제 이미지를 받을 수 있는지까지 확인됩니다. 10GB 이상이라 HDD 레지스트리에서 수 분 걸릴 수 있습니다.
+
+```bash
+# PGX 에서
+CRICTL="sudo /var/lib/rancher/rke2/bin/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock"
+$CRICTL pull registry.local:5000/ai/vllm-arm64:<TAG>   # 실패 시 PGX 의 registries.yaml · /etc/hosts · rke2-agent 재시작 확인 (§1.5)
+$CRICTL images | grep vllm
+```
+
+```bash
 # 데이터 계층 + helper 이미지 미러 (values-lab.yaml 의 data.*.image 가 이 경로를 가리킴, busybox 는 §1.4.3/§6 용)
 for img in qdrant/qdrant:v1.12.1 postgres:16 redis:7 busybox:1.36.1; do
   name=$(basename $img); docker pull $img && docker tag $img $REG/library/$name && docker push $REG/library/$name
 done
 ```
 
-> **검증 습관**: 배포 전 `docker manifest inspect $REG/rag/rag-api:$TAG | grep architecture` — 이기종 클러스터에서 `exec format error`의 90%는 아키텍처 불일치입니다.
+> **검증 습관**: 배포 전 `docker manifest inspect --insecure $REG/rag/rag-api:$TAG | grep architecture` — 이기종 클러스터에서 `exec format error`의 90%는 아키텍처 불일치입니다.
 
 ---
 
@@ -414,7 +433,7 @@ done
 | LLM 모델 | 운영 모델(TDD §8), `modelDir: llm/main` | **`vllm.modelDir: Qwen3.8-27B-FP8`** (교체 = 이 값만, §2.1.1) + `--language-model-only` `--reasoning-parser=qwen3`, rag-api/worker `LLM_ENABLE_THINKING=false` | §2.1 — thinking 기본 on 모델, 텍스트 전용 RAG |
 | 모델 볼륨 | `models-pvc` | **hostPath** (앱: `/data/bulk/models`, vLLM: `/home/cheolkyulee/models`) — 컨테이너에는 둘 다 `/models` | GPU 노드와 앱 노드가 달라 단일 PVC 공유 불가 |
 | 데이터 계층 | qdrant 500Gi / pg 200Gi / redis 20Gi | 50 / 20 / 10Gi + `local-fast` | NVMe 1TB 공유 (§1.4.1) |
-| `documents-pvc` | 1Ti (default SC=NFS) | 500Gi + `local-bulk` | HDD |
+| 문서 원본 볼륨 | `documents-pvc` 1Ti (default SC=NFS, RWX) | **hostPath** `/data/bulk/documents` (`documentStorage.hostPath`) — PVC 미생성 | local-path 는 RWX 미지원 + NS 별 PVC 가 서로 다른 디렉터리라 admin-api(rag-app) 업로드를 indexer(rag-ingestion)가 못 봄. 앱 Pod 가 모두 P3 고정이라 hostPath 공유 |
 | Namespace | 사전 생성(`namespaces.create: false`) | 동일 — §4.1 에서 kubectl 로 생성 + 라벨 | Secret 을 helm 전에 만들어야 함 |
 | Ingress Controller | `networkPolicy.ingressController.namespace: ingress-nginx` | `kube-system` + podSelector `app.kubernetes.io/name: rke2-ingress-nginx` | RKE2 내장 컨트롤러 위치 |
 | Ingress host | chat `chat.rag.internal` / admin `rag.internal` | chat `chat.rag.lab.local` / admin `rag.lab.local` (TLS `rag-chat-tls`) | — |
@@ -431,7 +450,7 @@ chart 가 **코드가 기대하는 경로/키를 책임지고 채우는** 항목
 | `JWT_SECRET_FILE`, `PASSWORD_PEPPER_FILE`, `FEEDBACK_SIGNING_KEY_FILE` (파일) | Secret `rag-chat-secrets`(`global.chatSecretName`) 중 **`appServices.<svc>.secretMount.keys` 에 나열한 키만** items 로 투영해 `/var/run/secrets/rag`(`secretMounts.chatSecretsPath`) 에 마운트(`defaultMode 0440`) + 해당 `*_FILE` env 자동 주입. chat-gateway = `jwt-secret`·`password-pepper`·`feedback-signing-key` 3키 / rag-worker = `feedback-signing-key` / admin-api = `password-pepper` (rag-api 는 없음) |
 | `POSTGRES_HOST/PORT/USER/DB/PASSWORD` | `global.postgres.*`(host `postgresql.rag-data`) + `secretKeyRef` Secret `rag-postgresql-secret`(key `password`) — 앱(`dbEnv`)·색인 Job·마이그레이션 Job·PostgreSQL StatefulSet(initdb) 공통 |
 | `REDIS_URL`, `RQ_REDIS_URL` | `global.redisUrl` (`redisEnv` — chat-gateway / rag-api / rag-worker) |
-| `DOCUMENT_STORAGE_PATH=/data/documents` (admin-api 쓰기, indexer 읽기) | `documents-pvc` 를 admin-api(rag-app)·indexer Job(rag-ingestion)에 마운트 (PVC 는 두 NS 에 각각 생성) |
+| `DOCUMENT_STORAGE_PATH=/data/documents` (admin-api 쓰기, indexer 읽기) | 랩은 hostPath `/data/bulk/documents` 를 admin-api(rag-app)·indexer Job(rag-ingestion)에 공통 마운트 (운영은 `documents-pvc` 를 두 NS 에 각각 생성) |
 | Alembic `upgrade head` | `migration.enabled=true` → post-install/upgrade hook Job **`rag-db-migrate`**(admin-api 이미지, 10s 간격 30회 재시도) |
 | K8s 색인 Job 생성 권한 | `serviceAccounts.adminApi.create=true` → SA `admin-api`(rag-app) + Role/RoleBinding `rag-index-job-creator`(rag-ingestion: configmaps `parser-indexer-job-template` get, jobs create/get/list) + (apiServer.enabled 시) NetworkPolicy `allow-admin-api-to-apiserver` |
 
@@ -537,11 +556,12 @@ kubectl -n rag-app logs deploy/chat-gateway | grep -c "startup.*_missing"    # 0
 
 # ③ PVC 가 맞는 티어에 생성되었는지
 kubectl get pvc -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,SC:.spec.storageClassName,SIZE:.spec.resources.requests.storage,STATUS:.status.phase'
-# data-qdrant-0 / data-postgresql-0 / data-redis-0 → local-fast ; documents-pvc(rag-app, rag-ingestion) → local-bulk
-# models-pvc 는 modelStorage.create=false 이므로 없는 것이 정상
+# data-qdrant-0 / data-postgresql-0 / data-redis-0 → local-fast
+# documents-pvc · models-pvc 는 랩에서 hostPath 를 쓰므로 없는 것이 정상 (documentStorage.hostPath / modelStorage.create=false)
 
 # ④ admin-api 가 문서 볼륨에 쓸 수 있는지
 kubectl -n rag-app exec deploy/admin-api -- sh -c 'touch /data/documents/.probe && rm /data/documents/.probe && echo writable'
+# Permission denied → P3 에서 sudo chown 10001:10001 /data/bulk/documents (§1.4.2)
 
 # ⑤ 임베딩/리랭커가 mock 이 아닌 실엔진으로 떴는지 (모델 경로 미마운트 시 조용히 mock 으로 기동한다)
 kubectl -n rag-ai logs deploy/embedding-api | grep engine_ready     # model="kure-v1" (모델 디렉터리 이름). "-mock" 접미가 없어야 함
@@ -940,7 +960,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | 질문은 게시되는데 답변이 실시간으로 안 뜸(새로고침하면 보임) / WS 핸드셰이크 403, gateway 로그 `... is not an accepted origin` | WS Origin 거부 또는 경로 문제 — ① chat-web 을 `NEXT_PUBLIC_WS_URL` 을 채운 채 빌드(교차 출처로 연결 → Origin 거부. 비운 채 재빌드) ② Ingress 에 `/ws` 경로 누락 ③ `networkPolicy.ingressController.namespace/podSelector` 와 실제 ingress-nginx 불일치(§4.5) |
 | WS 가 약 60초마다 끊겼다 재연결 | `proxy-read-timeout`/`proxy-send-timeout` annotation 미적용 — `kubectl -n rag-app get ingress rag-chat -o yaml` 확인 |
 | 로그인이 새로고침마다 풀림 | refresh 쿠키 미전송 — chat-web 과 chat-gateway 가 서로 다른 host 로 노출됨(SameSite=Strict), 또는 `COOKIE_SECURE=true` 인데 HTTP 접속 |
-| 업로드 500, admin-api 로그 `Read-only file system` | `documents-pvc` 미마운트 — `kubectl -n rag-app get deploy admin-api -o jsonpath='{.spec.template.spec.volumes[*].name}'` 에 documents 가 있는지, §4.3 ④ |
+| 업로드 500, admin-api 로그 `Read-only file system` / `Permission denied` | 문서 볼륨 미마운트 또는 `/data/bulk/documents` 소유자가 10001 아님 — `kubectl -n rag-app get deploy admin-api -o jsonpath='{.spec.template.spec.volumes[*].name}'` 에 documents 가 있는지, §4.3 ④ |
 | `index_jobs.error` 에 `TRIGGER_FAILED[k8s]: ... status=403` | admin-api ServiceAccount RBAC 누락(`serviceAccounts.adminApi.create`) 또는 `appServices.admin-api.serviceAccountName` 미지정 — `kubectl -n rag-ingestion get role,rolebinding rag-index-job-creator` |
 | `index_jobs.error` 에 `TRIGGER_FAILED[k8s]: ... ConnectError` | admin-api → apiserver egress 차단 — `networkPolicy.apiServer.cidrs` 가 P3 IP 가 아님 (`--set` 확인, `kubectl -n rag-app get netpol allow-admin-api-to-apiserver -o yaml`) |
 | PDF 업로드가 `413 Request Entity Too Large` (HTML 응답) | `rag-admin` Ingress 에 `proxy-body-size: 100m` annotation 이 없음(구 chart 로 배포 / 다른 IngressClass) → 최신 chart 로 `helm upgrade` 또는 `ingress.adminProxyBodySize` 확인 (§5.1.1). JSON `FILE_TOO_LARGE` 면 admin-api 100MB 상한 초과 → 파일 분할 |
@@ -965,6 +985,8 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | `/data/bulk` 가 비어 있는데 NVMe 만 참 | HDD 마운트 전에 디렉터리/registry/PVC 를 만든 케이스 — `findmnt /data/bulk`. 마운트 해제 → 루트 FS 의 `/data/bulk` 잔여물 삭제 → 재마운트 |
 | 색인 Job 이 평소보다 훨씬 느림 | HDD 한 대에 문서 원본 + registry + 모델 공존 — 이미지 push/pull, 다중 색인 Job 동시 실행을 피하고 순차 실행. `iostat -x 2 /dev/sda` 로 `%util` 확인 |
 | PVC 삭제 후에도 HDD 용량 미반환 | `local-bulk` 는 `reclaimPolicy: Retain` — `kubectl get pv \| grep Released` 후 `sudo rm -rf /data/bulk/pvc/pvc-<uid>` 수동 정리 |
+| Pod Event `Failed to pull image ... http: server gave HTTP response to HTTPS client` | 해당 노드 `/etc/rancher/rke2/registries.yaml` 의 endpoint 오타(예: `http:IP//:5000`) 또는 파일 누락 → containerd 가 미러를 못 쓰고 `https://registry.local:5000` 으로 직접 접속. `endpoint: ["http://<P3_IP>:5000"]` 로 수정 후 rke2-server/agent 재시작, `sudo grep -r server /var/lib/rancher/rke2/agent/etc/containerd/certs.d/` 로 반영 확인 |
+| `documents-pvc` Pending, Event `NodePath only supports ReadWriteOnce` | 구버전 차트(RWX documents-pvc + local-path). 현행 values-lab 은 `documentStorage.hostPath` 로 PVC 를 만들지 않음 — 차트 갱신 후 `helm upgrade`, 남은 PVC 는 `kubectl delete pvc documents-pvc -n rag-app -n rag-ingestion` |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
 | `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |
@@ -991,7 +1013,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 - [ ] **NS 4종 + `rag-platform=true` 라벨**, Secret 5개(`rag-chat-secrets`, `rag-chat-tls`(SAN 두 호스트), `rag-postgresql-secret`×3)
 - [ ] `helm upgrade --install` 성공(hook `rag-db-migrate` 포함), `alembic current` = `0003_webchat (head)`
 - [ ] 배치 검증 — vLLM 만 pgx, 나머지(chat-gateway·chat-web 포함) p3 (`-o wide`), **Qwen3.8-27B 로딩 완료**(startupProbe 내, `/v1/models` → `internal-rag-llm`, annotation `ragplatform.io/llm-model=/models/Qwen3.8-27B-FP8`)
-- [ ] §4.3 ①~⑧: alembic head, Secret 파일 마운트(gateway 3 / worker 1 / admin-api 1, `startup.*_missing` 0), PVC 티어(DB=local-fast, documents=local-bulk), 문서 볼륨 쓰기, **실엔진 기동(`-mock` 없음)**, `/v1/models`, Ingress(rag-chat/rag-admin)·NetPol(`allow-ingress-to-*` 4 + `allow-admin-api-to-apiserver`), NVMe 70% 미만
+- [ ] §4.3 ①~⑧: alembic head, Secret 파일 마운트(gateway 3 / worker 1 / admin-api 1, `startup.*_missing` 0), PVC 티어(DB=local-fast, documents=hostPath `/data/bulk/documents`), 문서 볼륨 쓰기, **실엔진 기동(`-mock` 없음)**, `/v1/models`, Ingress(rag-chat/rag-admin)·NetPol(`allow-ingress-to-*` 4 + `allow-admin-api-to-apiserver`), NVMe 70% 미만
 - [ ] seed + qdrant-init + seed-users(동일 pepper) 완료
 - [ ] 업로드(`start_indexing=true`) → **K8s 색인 Job COMPLETED**, 문서 ACTIVE
 - [ ] 한글 PDF 5종(§5.1.2) 색인 COMPLETED — 문서 4 `pdfplumber_text_pages` 99쪽·문서 3 `image_only_pages` 28쪽 확인, `engine_ready model=kure-v1`, `dataset-ko-pdf` 평가 리포트(모델별) 기록, 쪽당 색인 시간 재측정(§5.1.1 ⚠)

@@ -222,6 +222,7 @@ documentStorage:
   storageClass: ""
   size: 1Ti
   mountPath: /data/documents   # admin-api(DOCUMENT_STORAGE_PATH) / parser-indexer 공통
+  hostPath: ""                 # 지정 시 PVC 대신 hostPath 공유(단일 노드 랩 전용 — admin-api·indexer 가 같은 노드여야 함)
 
 # ---- 데이터 계층 (rag-data namespace) ----
 data:
