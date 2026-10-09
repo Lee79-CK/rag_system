@@ -617,3 +617,101 @@ def test_fr_doc_008_activate_reindexes_inactive_document(client, seed, auth, Tes
     not_inactive = client.post(f"/api/v1/documents/{doc_id}/activate", headers=auth("docadmin"))
     assert not_inactive.status_code == 409
     assert not_inactive.json()["error"]["code"] == "DOCUMENT_NOT_INACTIVE"
+
+
+# ----- 색인 Job 직렬화와 짝: 같은 문서 중복 Job 방지 · 멈춘 Job 정리 -----
+
+
+def _add_job_at(TestSession, doc_id: str, status: str, *, minutes_ago: int, error=None) -> str:
+    import datetime as dt
+    import uuid
+
+    from admin.db.models import Document, IndexJob
+
+    with TestSession() as s:
+        doc = s.get(Document, uuid.UUID(doc_id))
+        job = IndexJob(
+            document_version_id=doc.active_version_id,
+            status=status,
+            error=error,
+            started_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=minutes_ago),
+        )
+        s.add(job)
+        s.commit()
+        return str(job.id)
+
+
+def _job(TestSession, job_id: str):
+    import uuid
+
+    from admin.db.models import IndexJob
+
+    with TestSession() as s:
+        return s.get(IndexJob, uuid.UUID(job_id))
+
+
+def test_fr_doc_009_reindex_supersedes_pending_job(client, seed, auth, TestSession):
+    """대기 Job(슬롯 대기·트리거 실패 포함)은 새 Job 으로 교체 — 같은 문서를 두 번 색인하지 않는다."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"supersede-pending", [])
+    _set_status(TestSession, doc_id, "ACTIVE")
+    old = _add_job(TestSession, doc_id, "PENDING")
+
+    resp = client.post(f"/api/v1/documents/{doc_id}/reindex", headers=auth("docadmin"))
+    assert resp.status_code == 202, resp.text
+    new = resp.json()["data"]["index_job_id"]
+    assert new != old and spy.calls == [new]
+    old_job = _job(TestSession, old)
+    assert old_job.status == "CANCELLED" and old_job.error.startswith("SUPERSEDED")
+
+
+def test_fr_doc_009_reindex_rejected_while_running(client, seed, auth, TestSession):
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"reindex-running", [])
+    _set_status(TestSession, doc_id, "INDEXING")
+    _add_job_at(TestSession, doc_id, "RUNNING", minutes_ago=5)
+
+    resp = client.post(f"/api/v1/documents/{doc_id}/reindex", headers=auth("docadmin"))
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "INDEX_JOB_RUNNING"
+    assert spy.calls == []
+
+
+def test_fr_doc_009_stale_running_job_does_not_lock_document(client, seed, auth, TestSession):
+    """Pod 강제 종료 등으로 RUNNING 에 남은 Job(INDEX_JOB_STALE_MINUTES 초과)은 FAILED 로 정리하고 진행."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"stale-running", [])
+    _set_status(TestSession, doc_id, "INDEXING")
+    stale = _add_job_at(TestSession, doc_id, "RUNNING", minutes_ago=180)
+
+    resp = client.post(f"/api/v1/documents/{doc_id}/reindex", headers=auth("docadmin"))
+    assert resp.status_code == 202, resp.text
+    assert len(spy.calls) == 1
+    job = _job(TestSession, stale)
+    assert job.status == "FAILED" and job.error.startswith("STALE_RUNNING")
+
+
+def test_fr_doc_004_patch_replaces_trigger_failed_pending_job(client, seed, auth, TestSession):
+    """트리거 실패로 실행되지 않을 대기 Job 은 재사용하지 않고 새 Job 으로 교체."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    ops, reg = _make_channels(TestSession, "rag-cloud-ops", "ai-regulation")
+    doc_id = _upload(client, auth, b"trigger-failed-pending", [ops])
+    _set_status(TestSession, doc_id, "INDEXING")
+    dead = _add_job_at(
+        TestSession, doc_id, "PENDING", minutes_ago=0, error="TRIGGER_FAILED[k8s]: 403"
+    )
+
+    resp = client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"allowed_channel_ids": [ops, reg]},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["reindex_skipped_reason"] is None
+    assert data["index_job"]["index_job_id"] != dead and len(spy.calls) == 1
+    assert _job(TestSession, dead).status == "CANCELLED"

@@ -23,6 +23,7 @@ from ingestion.indexer.qdrant_client_factory import create_qdrant_client
 from ingestion.indexer.qdrant_upserter import DocMetadata, QdrantUpserter
 from ingestion.parser.dispatcher import parse_document
 from ingestion.parser.errors import IndexFailed, ParseFailed
+from ingestion.slots import SlotWaitTimeout
 from ingestion.validator import validate_index
 
 logger = get_logger(__name__)
@@ -64,6 +65,10 @@ def run_index_job(
     try:
         # 1. index_jobs 로딩 → stage=PARSING
         ctx = repo.load_job(index_job_id)
+        if ctx.job_status in ("CANCELLED", "COMPLETED"):
+            # 대기 중 교체된 Job(재색인 시 이전 대기 Job 은 CANCELLED) 또는 이미 끝난 Job 의 재실행 — 할 일 없음
+            logger.info("index_skipped", index_job_id=index_job_id, job_status=ctx.job_status)
+            return 0
         if ctx.document_status in ("INACTIVE", "DELETED"):
             # 비활성/삭제 후 실행된 Job(대기 중이던 K8s Job 등) — 색인하면 is_active=true upsert +
             # activate_version 으로 문서가 되살아난다. 아무것도 쓰지 않고 종료(성공 종료 → Job 재시도 없음).
@@ -174,13 +179,19 @@ def main(argv: list[str] | None = None) -> int:
         timeout=settings.embedding_timeout,
     )
     try:
-        run_index_job(
-            args.index_job_id,
-            repo=repo,
-            qdrant_client=qdrant_client,
-            embedder=embedder,
-            settings=settings,
-        )
+        # 동시 색인 슬롯을 잡을 때까지 대기(PENDING, stage=WAITING) — Job 상태·ACL 은 슬롯 획득 후에 읽는다
+        with repo.index_slot(args.index_job_id, settings):
+            run_index_job(
+                args.index_job_id,
+                repo=repo,
+                qdrant_client=qdrant_client,
+                embedder=embedder,
+                settings=settings,
+            )
+    except SlotWaitTimeout as exc:
+        logger.error("index_slot_timeout", index_job_id=args.index_job_id, error=str(exc))
+        repo.mark_failed(args.index_job_id, stage="WAITING", error=f"SLOT_WAIT_TIMEOUT: {exc}")
+        return 1
     except Exception:  # noqa: BLE001
         return 1
     finally:

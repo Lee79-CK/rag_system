@@ -254,6 +254,10 @@ data:
 ingestion:
   namespace: rag-ingestion
   image: rag/parser-indexer
+  # 색인 Job Pod 리소스 — 없으면 BestEffort 라 큰 PDF 파싱이 노드 메모리를 무제한 사용하고 압박 시 먼저 축출된다.
+  # 슬롯 대기 중인 Pod 도 requests 만큼 예약하므로 requests 는 작게. limits.memory 실측(파서 단독 maxRSS):
+  #   216쪽 일반 PDF 0.66GB / 111쪽 MS Print-To-PDF(pdfplumber 대체 경로) 2.6GB → 300~500쪽 대체 경로 문서 여유분 8Gi
+  resources: { requests: { cpu: "250m", memory: 512Mi }, limits: { cpu: "2", memory: 8Gi } }
   extraEnv:
     - { name: QDRANT_URL,        value: "http://qdrant.rag-data:6333" }
     - { name: EMBEDDING_API_URL, value: "http://embedding-api.rag-ai:8004" }
@@ -262,6 +266,9 @@ ingestion:
     # CPU embedding: 64청크/요청이면 한글 문서에서 30s timeout 초과 → 작은 배치 + 넉넉한 timeout (가이드 §5.1.1)
     - { name: EMBEDDING_MAX_BATCH, value: "8" }
     - { name: EMBEDDING_TIMEOUT,   value: "120" }
+    # 동시 색인 슬롯 — 여러 문서를 한꺼번에 올려도 이 수만큼만 실행, 나머지는 PENDING(stage=WAITING) 대기.
+    # embedding-api 를 채팅 질의와 공유하므로 1 권장(늘리면 배치 timeout·채팅 지연). 가이드 §5.1.1
+    - { name: INDEX_MAX_PARALLEL,  value: "1" }
 
 monitoring:
   grafanaDashboards: true

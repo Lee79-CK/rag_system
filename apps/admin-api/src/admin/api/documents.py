@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
@@ -108,19 +109,45 @@ def _inflight_jobs(db: Session, doc: Document) -> dict[str, IndexJob]:
 
     진행 판단은 documents.status 가 아니라 index_jobs 로 한다 —
     색인 실패 시 documents.status 는 INDEXING 에 남으므로(mark_failed 는 index_jobs 만 갱신).
+    RUNNING 이 INDEX_JOB_STALE_MINUTES 를 넘으면 비정상 종료로 보고 FAILED 로 정리한다(호출자 commit 시 반영).
+    PENDING 은 동시 색인 슬롯 대기(stage=WAITING)일 수 있으므로 시간으로 판단하지 않는다.
     """
     inflight: dict[str, IndexJob] = {}
-    if doc.active_version_id is not None:
-        for j in db.execute(
-            select(IndexJob)
-            .where(
-                IndexJob.document_version_id == doc.active_version_id,
-                IndexJob.status.in_(("PENDING", "RUNNING")),
-            )
-            .order_by(IndexJob.created_at.desc())
-        ).scalars():
-            inflight.setdefault(j.status, j)
+    if doc.active_version_id is None:
+        return inflight
+    stale_before = dt.datetime.now(dt.UTC) - dt.timedelta(
+        minutes=get_settings().index_job_stale_minutes
+    )
+    for j in db.execute(
+        select(IndexJob)
+        .where(
+            IndexJob.document_version_id == doc.active_version_id,
+            IndexJob.status.in_(("PENDING", "RUNNING")),
+        )
+        .order_by(IndexJob.created_at.desc())
+    ).scalars():
+        started = j.started_at
+        if started is not None and started.tzinfo is None:  # SQLite 는 tz 를 잃는다
+            started = started.replace(tzinfo=dt.UTC)
+        if j.status == "RUNNING" and started is not None and started < stale_before:
+            j.status = "FAILED"
+            j.error = "STALE_RUNNING: 진행 없이 오래 남은 Job — 비정상 종료로 처리"
+            log.warning("documents.stale_index_job_failed", index_job_id=str(j.id))
+            continue
+        inflight.setdefault(j.status, j)
     return inflight
+
+
+def _supersede_pending(db: Session, doc: Document, reason: str) -> None:
+    """대기 Job 을 CANCELLED 로 — 이미 생성된 K8s Job 은 슬롯을 잡은 뒤 상태를 보고 아무것도 하지 않는다."""
+    for j in db.execute(
+        select(IndexJob).where(
+            IndexJob.document_version_id == doc.active_version_id,
+            IndexJob.status == "PENDING",
+        )
+    ).scalars():
+        j.status = "CANCELLED"
+        j.error = reason
 
 
 def _reject_running(inflight: dict[str, IndexJob]) -> None:
@@ -372,9 +399,13 @@ def update_document_channels(
         elif doc.status not in ("ACTIVE", "INDEXING"):
             # INACTIVE 를 재색인하면 activate_version 이 ACTIVE 로 되돌린다. UPLOADED 는 아직 미색인.
             skipped = f"STATUS_{doc.status}"
-        elif "PENDING" in inflight:
-            job = inflight["PENDING"]  # 대기 Job 은 실행 시점에 ACL 을 읽으므로 새 ACL 이 반영된다.
+        elif "PENDING" in inflight and not inflight["PENDING"].error:
+            # 대기 Job(슬롯 대기 포함)은 실행 시점에 ACL 을 읽으므로 새 ACL 이 반영된다.
+            # 트리거 실패(error 有) 대기 Job 은 실행되지 않으므로 아래에서 새 Job 으로 교체한다.
+            job = inflight["PENDING"]
             skipped = "PENDING_JOB_REUSED"
+        elif "PENDING" in inflight:
+            _supersede_pending(db, doc, "SUPERSEDED: 채널 변경으로 새 색인 Job 생성")
 
     after = sorted(new_ids)
     if changed:
@@ -485,12 +516,21 @@ def activate_document(
 
 
 def _start_index(db: Session, doc: Document, trigger: IndexJobTrigger) -> dict:
+    """재색인/재활성화 공통. 실행 중 Job 이 있으면 409, 대기 Job 은 새 Job 으로 교체(같은 문서 중복 색인 방지).
+
+    대기 Job 을 재사용하지 않는 이유: 트리거 실패·Pod 생성 실패로 영영 실행되지 않는 PENDING 일 수 있어,
+    사용자의 명시적 재색인 요청은 항상 실행 가능한 새 Job 으로 보장한다.
+    """
     if doc.active_version_id is None:
         raise api_error(
             "NO_ACTIVE_VERSION",
             "활성 버전이 없어 재색인할 수 없습니다.",
             status.HTTP_409_CONFLICT,
         )
+    inflight = _inflight_jobs(db, doc)
+    _reject_running(inflight)
+    if "PENDING" in inflight:
+        _supersede_pending(db, doc, "SUPERSEDED: 새 색인 요청으로 교체")
     job = _create_index_job(db, doc, trigger)
     return {
         "index_job_id": str(job.id),

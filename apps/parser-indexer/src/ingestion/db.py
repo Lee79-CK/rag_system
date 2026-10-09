@@ -8,10 +8,18 @@ ORM 모델은 admin-api 소유(§5)다. parser-indexer는 apps/* 간 import 금�
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from rag_observability import get_logger
 from sqlalchemy import Engine, create_engine, text
+
+from ingestion.core.config import Settings
+from ingestion.slots import acquire_slot
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -29,6 +37,7 @@ class JobContext:
     security_level: str = "INTERNAL"
     allowed_channel_ids: list[str] = field(default_factory=list)
     document_status: str = "INDEXING"
+    job_status: str = "PENDING"
 
 
 class JobRepository:
@@ -48,6 +57,7 @@ class JobRepository:
                     text(
                         """
                     SELECT ij.id AS index_job_id,
+                           ij.status AS job_status,
                            ij.document_version_id,
                            dv.document_id,
                            dv.version,
@@ -98,7 +108,65 @@ class JobRepository:
             security_level=str(row["security_level"] or "INTERNAL"),
             allowed_channel_ids=[str(c) for c in acl_rows],
             document_status=str(row["document_status"]),
+            job_status=str(row["job_status"]),
         )
+
+    @contextmanager
+    def index_slot(self, index_job_id: str, settings: Settings) -> Iterator[int]:
+        """동시 색인 슬롯(advisory lock)을 잡고 Job 이 끝날 때까지 유지한다.
+
+        전용 연결을 Job 동안 열어 둔다. 조회마다 commit 해 'idle in transaction' 을 남기지 않고,
+        끝나면 명시적으로 unlock 한다(풀에 반환된 연결에 세션 lock 이 남지 않게).
+        """
+        conn = self._engine.connect()
+        held: list[int] = []
+
+        def _try(key: int) -> bool:
+            ok = bool(conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": key}).scalar())
+            conn.commit()
+            if ok:
+                held.append(key)
+            return ok
+
+        last_log = [-1.0]
+
+        def _on_wait(elapsed: float) -> None:
+            # 첫 대기 때 stage=WAITING 표시, 로그는 60초 간격
+            if last_log[0] < 0:
+                self._mark_waiting(index_job_id)
+            if last_log[0] < 0 or elapsed - last_log[0] >= 60:
+                last_log[0] = elapsed
+                logger.info(
+                    "index_slot_waiting",
+                    index_job_id=index_job_id,
+                    waited_s=int(elapsed),
+                    max_parallel=settings.index_max_parallel,
+                )
+
+        try:
+            slot = acquire_slot(
+                _try,
+                max_parallel=settings.index_max_parallel,
+                poll_seconds=settings.index_slot_poll_seconds,
+                timeout_seconds=settings.index_slot_wait_timeout_seconds,
+                on_wait=_on_wait,
+            )
+            logger.info("index_slot_acquired", index_job_id=index_job_id, slot=slot)
+            yield slot
+        finally:
+            try:
+                for key in held:
+                    conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+                conn.commit()
+            finally:
+                conn.close()
+
+    def _mark_waiting(self, index_job_id: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("UPDATE index_jobs SET stage='WAITING' WHERE id=:jid AND status='PENDING'"),
+                {"jid": index_job_id},
+            )
 
     def mark_running(self, index_job_id: str) -> None:
         self._update(

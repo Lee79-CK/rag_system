@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     qdrant_collection: str = Field(default="rag_chunks_v1", alias="QDRANT_COLLECTION")
     qdrant_timeout: float = Field(default=10.0, alias="QDRANT_TIMEOUT")
 
+    # RUNNING 으로 이 시간(분) 넘게 남은 index_job 은 비정상 종료(Pod 강제 종료·재시도 소진)로 보고 FAILED 처리.
+    # 그대로 두면 문서의 채널 변경·비활성화·재색인이 영구히 409 로 막힌다. 최대 문서(1,000쪽 ≈ 30분)보다 넉넉히.
+    index_job_stale_minutes: int = Field(default=120, alias="INDEX_JOB_STALE_MINUTES")
+
     # --- 색인 Job 트리거 (ADR-008, §7.5) ---
     # none: index_jobs 행만 생성(로컬/CLI 실행) · k8s: kube-apiserver 로 parser-indexer Job 생성
     index_job_trigger: str = Field(default="none", alias="INDEX_JOB_TRIGGER")

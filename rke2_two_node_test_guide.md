@@ -785,7 +785,7 @@ done
 | 1,000쪽 이상 | 장/부 단위로 **분할 업로드** | 색인 ≈ 17~30분, 실패 시 재처리 비용 큼 |
 | 스캔본(이미지) PDF | **불가** | OCR 비활성(`OCR_ENABLED=0`, DEC-005) → `SCANNED_NO_OCR` 로 실패. 텍스트 레이어가 있는 PDF 만 |
 | 일부 쪽만 이미지(흐름도·표지) | 색인은 성공, **그 쪽 내용만 누락** | Job 로그 `pdf_image_only_pages` 경고 + `parsed` 의 `stats.image_only_pages` 로 확인 (§5.1.2) |
-| 여러 문서 | **순차 색인** (한 번에 1개) | embedding-api replica 1 / CPU 6코어 공유. 대량 적재는 업무 시간 외 |
+| 여러 문서 | **자동 순차 색인** — 한꺼번에 올려도 `INDEX_MAX_PARALLEL`(기본 1)개씩만 실행, 나머지는 `index_jobs.stage=WAITING` 으로 대기 | embedding-api replica 1 / CPU 6코어를 채팅 질의와 공유. 동시 실행 시 배치 timeout·채팅 지연. 대량 적재는 업무 시간 외 권장 |
 
 업로드 전 사전 점검 — **parser-indexer 의 실제 파서·청커**로 돌려 쪽수·pdfplumber 대체 쪽·이미지 전용 쪽·청크 수/최대 토큰을 봅니다 (네트워크·DB 불필요, P3 또는 개발 PC):
 
@@ -1060,6 +1060,10 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | 문서 [비활성화]/[삭제] 가 503 `SEARCH_INDEX_UNAVAILABLE` | admin-api → Qdrant 연결 실패(검색 제외를 먼저 반영하므로 상태는 그대로). admin-api env `QDRANT_URL=http://qdrant.rag-data:6333`, qdrant 파드 상태 확인 후 재시도 |
 | [재색인] 이 409 `DOCUMENT_INACTIVE` | 비활성 문서는 재색인으로 되살리지 않는다 — [활성화](`POST /documents/{id}/activate`)로 재색인 |
 | `index_jobs.status=CANCELLED` | 문서가 비활성화/삭제된 뒤 실행된 색인 Job — 정상(아무것도 쓰지 않고 종료) |
+| 색인 Job Pod 는 Running 인데 `index_jobs` 가 PENDING · `stage=WAITING` | 정상 — 동시 색인 슬롯 대기(`INDEX_MAX_PARALLEL`). 앞 Job 이 끝나면 자동 시작. 로그 `index_slot_waiting` |
+| `index_jobs.error` = `SLOT_WAIT_TIMEOUT` | 6시간 넘게 슬롯을 못 잡음 — 앞선 Job 이 비정상적으로 오래 실행 중인지 `kubectl -n rag-ingestion get pods` 확인 후 [재색인] |
+| `index_jobs.error` = `STALE_RUNNING` / `SUPERSEDED` | 각각 120분 넘게 RUNNING 에 남은 Job 정리(Pod 강제 종료 등) / 새 재색인 요청으로 교체된 대기 Job — 정상 처리 |
+| 색인 Job Pod `OOMKilled` | `ingestion.resources.limits.memory`(8Gi) 초과 — 초대형·pdfplumber 대체 경로 문서. 분할 업로드 또는 상한 상향 |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
 | `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |

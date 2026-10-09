@@ -237,6 +237,9 @@ ingestion:
     # CPU embedding: 64청크/요청이면 한글 문서에서 30s timeout 초과 → 작은 배치 + 넉넉한 timeout (가이드 §5.1.1)
     - { name: EMBEDDING_MAX_BATCH, value: "8" }
     - { name: EMBEDDING_TIMEOUT,   value: "120" }
+    # 동시 색인 슬롯 — 여러 문서를 한꺼번에 올려도 이 수만큼만 실행, 나머지는 PENDING(stage=WAITING) 대기.
+    # embedding-api 를 채팅 질의와 공유하므로 1 권장(늘리면 배치 timeout·채팅 지연). 가이드 §5.1.1
+    - { name: INDEX_MAX_PARALLEL,  value: "1" }
     # 한글 실측 1.87자/토큰(bge-m3·KURE-v1 토크나이저) → CHUNK_SIZE=800 이 실제 ≈800 tok 이 되게 (기본 3.3 은 영문 기준,
     # 한글 청크가 ≈1,400 tok 로 커져 reranker max_length 1024 를 넘는다). 가이드 §5.1.2
     - { name: CHARS_PER_TOKEN,     value: "1.9" }

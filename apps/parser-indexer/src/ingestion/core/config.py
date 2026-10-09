@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     # ---- OCR (기본 비활성 — DEC-005) ----
     ocr_enabled: bool = False
 
+    # ---- 동시 색인 슬롯 (ingestion.slots) ----
+    # 동시에 실행되는 색인 Job 수 상한. 나머지는 PENDING(stage=WAITING) 으로 대기 — 랩은 embedding-api 1개라 1 권장.
+    index_max_parallel: int = 1
+    index_slot_poll_seconds: float = 10.0
+    index_slot_wait_timeout_seconds: float = 6 * 3600.0
+
     # ---- PDF 텍스트 엔진 (가이드 §5.1.2) ----
     # auto: PyMuPDF, 추출 순서가 깨진 페이지만 pdfplumber 로 대체 / pymupdf / pdfplumber(전 페이지, ~90배 느림)
     pdf_text_engine: Literal["auto", "pymupdf", "pdfplumber"] = "auto"

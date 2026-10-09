@@ -209,7 +209,9 @@ curl -s -X POST $ADMIN/api/v1/chat/bindings/<binding_id>/disable -H "$H" | jq .d
 
 - **업로드 후 바로 색인**(기본 체크): 업로드와 동시에 색인 Job 이 생성되고, 완료되면 상태가 `ACTIVE` 가 됩니다. 체크를 해제하면 `UPLOADED` 로 남으며 나중에 **[재색인]** 으로 색인합니다(허용 채널을 먼저 정리할 때 등). API 는 `start_indexing=true`(가이드 §5.1).
 
-**권장 문서 기준**(가이드 §5.1.1): 파일당 300쪽 이하(최대 500쪽), 텍스트 PDF(**스캔 PDF 미지원** — OCR 없음), 큰 문서는 한 번에 하나씩 색인. 업로드 전 점검: `uv run --package parser-indexer python scripts/inspect_pdf.py <파일>`.
+**여러 문서를 한꺼번에 올려도 됩니다.** 색인은 시스템이 **한 번에 1개씩(`INDEX_MAX_PARALLEL`) 순서대로** 처리합니다. 나머지 문서는 `INDEXING` 상태에서 차례를 기다리며(색인 Job `stage=WAITING`), 앞 문서가 끝나면 자동으로 시작됩니다. 임베딩 서버를 채팅 질의와 함께 쓰므로 동시에 여러 개를 돌리면 오히려 느려지고 실패하기 때문입니다. 대량 적재(수십 개·수천 쪽)는 채팅이 적은 업무 시간 외에 하세요.
+
+**권장 문서 기준**(가이드 §5.1.1): 파일당 300쪽 이하(최대 500쪽), 텍스트 PDF(**스캔 PDF 미지원** — OCR 없음). 색인 시간 ≈ 쪽당 1~1.7초(300쪽 ≈ 5~9분). 업로드 전 점검: `uv run --package parser-indexer python scripts/inspect_pdf.py <파일>`.
 
 ### 5.2 색인 상태 확인
 
@@ -235,10 +237,13 @@ kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
 
 | index_jobs.status | 조치 |
 |---|---|
+| `PENDING` + stage `WAITING` | **정상** — 앞 문서 색인이 끝나기를 기다리는 중(동시 색인 슬롯) |
 | `PENDING` + error `TRIGGER_FAILED[k8s]` | K8s Job 생성 실패(RBAC/NetworkPolicy) — 가이드 §8, 원인 해결 후 [재색인] |
 | `FAILED` + stage | 해당 단계 오류. EMBEDDING `ReadTimeout` 은 큰 문서 — 가이드 §5.1.1, §8 |
 | `COMPLETED` | 성공 |
-| `CANCELLED` | 문서가 비활성화/삭제되어 취소됨 — 정상 |
+| `CANCELLED` | 정상 취소 — 문서 비활성화/삭제, 또는 새 [재색인] 요청으로 교체(error `SUPERSEDED`) |
+| `FAILED` + error `STALE_RUNNING` | 2시간 넘게 RUNNING 에 남은 Job(Pod 강제 종료 등)을 자동 정리 — [재색인] |
+| `FAILED` + error `SLOT_WAIT_TIMEOUT` | 6시간 넘게 차례를 못 받음 — 앞 Job 상태 확인 후 [재색인] |
 
 ### 5.3 허용 채널 변경 (기존 문서를 다른 채널에 연결)
 
@@ -260,7 +265,7 @@ kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
 
 ### 5.4 재색인
 
-[재색인] 은 문서를 처음부터 다시 파싱·임베딩합니다. 필요한 경우: 업로드 시 바로 색인하지 않은 문서, 색인 실패 후 재시도, 파서·임베딩 설정 변경 후. 큰 PDF 는 수 분~수십 분 걸리며 **한 번에 하나씩** 진행하세요. 비활성·삭제 문서에는 [재색인] 이 비활성화됩니다(비활성 문서는 [활성화]).
+[재색인] 은 문서를 처음부터 다시 파싱·임베딩합니다. 같은 문서가 이미 **대기 중**이면 새 요청으로 교체되고(이전 대기는 취소), **실행 중**이면 `INDEX_JOB_RUNNING` 으로 거부됩니다. 필요한 경우: 업로드 시 바로 색인하지 않은 문서, 색인 실패 후 재시도, 파서·임베딩 설정 변경 후. 큰 PDF 는 수 분~수십 분 걸립니다. 여러 문서를 연달아 눌러도 시스템이 하나씩 순서대로 처리합니다. 비활성·삭제 문서에는 [재색인] 이 비활성화됩니다(비활성 문서는 [활성화]).
 
 ### 5.5 비활성화 · 활성화 · 삭제
 
@@ -378,6 +383,7 @@ vLLM **이미지** 교체는 새 태그로 미러링 후 `vllm.imageTag` 변경(
 
 - 동시 답변 수 ≈ **rag-worker replica 수**(랩 2). `appServices.rag-worker.replicas` 조정 후 재배포. GPU 처리량을 넘기면 응답이 느려지므로 부하 시험으로 결정(가이드 §7.2).
 - vLLM 은 GPU 1장당 1개(`vllm.replicas`). 데이터 계층은 replica 1 고정, HPA 없음.
+- 동시 색인 수: `ingestion.extraEnv` 의 `INDEX_MAX_PARALLEL`(기본 1). embedding-api replica·CPU 를 늘린 경우에만 올리세요. 색인 Job Pod 메모리 상한은 `ingestion.resources`(8Gi).
 
 ---
 
@@ -490,6 +496,8 @@ sudo tar -C /data/bulk -czf /data/bulk/backup/documents-$(date +%F).tgz document
 | 업로드 413 | Ingress 본문 크기 제한 / 100MB 초과 | `proxy-body-size 100m` 확인 |
 | 색인 `TRIGGER_FAILED[k8s]` | Job 생성 RBAC/NetworkPolicy | 가이드 §8 |
 | 큰 PDF 색인 EMBEDDING 실패 | 배치·타임아웃 설정 누락 | `EMBEDDING_MAX_BATCH=8`, `EMBEDDING_TIMEOUT=120` |
+| 문서가 오래 `INDEXING` 에 머묾 | 앞 문서 색인 대기(정상) 또는 실패 | `index_jobs` 의 stage(`WAITING`=대기)·error 확인(§5.2) |
+| 색인 Job Pod `OOMKilled` | 초대형·특수 형식 PDF 메모리 초과 | 분할 업로드 또는 `ingestion.resources.limits.memory` 상향 |
 | 파드 `ImagePullBackOff` (HTTP/HTTPS 오류) | 노드 `registries.yaml` | 가이드 §1.5 |
 | vLLM 기동 실패/CrashLoop | 모델 경로·권한·버전·인자 | `kubectl -n rag-ai logs deploy/vllm-llm-0` → 가이드 §8 vLLM 항목 |
 | vLLM OOM / 급격한 지연 | GPU 통합 메모리 경합 | `--gpu-memory-utilization` 0.85 로 하향 |
@@ -575,7 +583,7 @@ kubectl -n rag-ingestion run qdrant-count --rm -i --restart=Never \
 | 대상 | 값 |
 |---|---|
 | 문서 | UPLOADED → INDEXING → ACTIVE ⇄ INACTIVE([비활성화] / [활성화]=재색인), → DELETED(종료) |
-| 색인 Job (`index_jobs`) | PENDING → RUNNING → COMPLETED / FAILED, PENDING → CANCELLED(문서 비활성/삭제) |
+| 색인 Job (`index_jobs`) | PENDING(stage=WAITING: 슬롯 대기) → RUNNING → COMPLETED / FAILED, PENDING → CANCELLED(문서 비활성/삭제·재색인 교체) |
 | 대화 작업 (`chat_jobs`) | QUEUED → RUNNING → COMPLETED / DELIVERY_FAILED / FAILED |
 | Binding 모드 | DEDICATED_CHANNEL(전용) / TRIGGER_WORD(트리거 단어) |
 | 대화 맥락 | CHANNEL(채널 컨텍스트) / THREAD(스레드 컨텍스트) / STATELESS(단발 질의) |

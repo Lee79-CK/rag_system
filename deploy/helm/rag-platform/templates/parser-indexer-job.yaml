@@ -39,6 +39,10 @@ data:
                 {{- with .Values.ingestion.extraEnv }}
                 {{- toYaml . | nindent 16 }}
                 {{- end }}
+              {{- with .Values.ingestion.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
               volumeMounts:
                 - name: models
                   mountPath: /models
