@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from admin.api.responses import envelope
-from admin.core.rbac import SYS_ADMIN, Principal, require_roles
+from admin.core.rbac import QUALITY_EVALUATOR, SYS_ADMIN, Principal, require_roles
 from admin.db.models import ChatJob
 from admin.db.session import get_db
 
@@ -36,7 +36,8 @@ def _job_view(j: ChatJob) -> dict:
 def list_chat_jobs(
     job_status: str | None = None,
     db: Session = Depends(get_db),
-    principal: Principal = Depends(require_roles(SYS_ADMIN)),
+    # 실패 Job 점검은 품질 업무이기도 하다 — admin-web 사이드바(대화 작업)와 같은 역할
+    principal: Principal = Depends(require_roles(SYS_ADMIN, QUALITY_EVALUATOR)),
 ) -> dict:
     stmt = select(ChatJob).order_by(ChatJob.queued_at.desc())
     if job_status:

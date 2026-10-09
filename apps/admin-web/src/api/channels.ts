@@ -11,10 +11,12 @@ import type {
 } from '../types';
 
 /** Web Chat 채널/Binding/멤버 — admin-api `/api/v1/chat/*` (TDD §7.5). */
-export function useChannels() {
+/** 조회 권한: SYS_ADMIN·DOC_ADMIN. 그 외 역할 화면(대시보드)은 enabled=false 로 호출하지 않는다. */
+export function useChannels(enabled = true) {
   return useQuery({
     queryKey: qk.channels,
     queryFn: () => api.get<ChannelView[]>('/chat/channels'),
+    enabled,
   });
 }
 

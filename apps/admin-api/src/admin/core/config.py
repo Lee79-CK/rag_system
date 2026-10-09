@@ -47,6 +47,11 @@ class Settings(BaseSettings):
             return Path(path).read_text(encoding="utf-8").strip().encode("utf-8")
         return b""
 
+    # --- 검색 색인(Qdrant) — 문서 비활성화/삭제를 payload is_active=false 로 즉시 반영 (FR-DOC-008) ---
+    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
+    qdrant_collection: str = Field(default="rag_chunks_v1", alias="QDRANT_COLLECTION")
+    qdrant_timeout: float = Field(default=10.0, alias="QDRANT_TIMEOUT")
+
     # --- 색인 Job 트리거 (ADR-008, §7.5) ---
     # none: index_jobs 행만 생성(로컬/CLI 실행) · k8s: kube-apiserver 로 parser-indexer Job 생성
     index_job_trigger: str = Field(default="none", alias="INDEX_JOB_TRIGGER")

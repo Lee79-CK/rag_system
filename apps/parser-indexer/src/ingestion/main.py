@@ -34,6 +34,7 @@ class SupportsJobRepo(Protocol):
     def set_stage(self, index_job_id: str, stage: str, progress: float) -> None: ...
     def set_counts(self, index_job_id: str, *, chunk_count: int, vector_count: int) -> None: ...
     def mark_completed(self, index_job_id: str) -> None: ...
+    def mark_cancelled(self, index_job_id: str, *, reason: str) -> None: ...
     def mark_failed(self, index_job_id: str, *, stage: str | None, error: str) -> None: ...
     def activate_version(self, document_id: str, version_id: str) -> None: ...
 
@@ -63,6 +64,12 @@ def run_index_job(
     try:
         # 1. index_jobs 로딩 → stage=PARSING
         ctx = repo.load_job(index_job_id)
+        if ctx.document_status in ("INACTIVE", "DELETED"):
+            # 비활성/삭제 후 실행된 Job(대기 중이던 K8s Job 등) — 색인하면 is_active=true upsert +
+            # activate_version 으로 문서가 되살아난다. 아무것도 쓰지 않고 종료(성공 종료 → Job 재시도 없음).
+            repo.mark_cancelled(index_job_id, reason=f"CANCELLED: document {ctx.document_status}")
+            logger.info("index_cancelled", index_job_id=index_job_id, status=ctx.document_status)
+            return 0
         repo.mark_running(index_job_id)
         stage = "PARSING"
         repo.set_stage(index_job_id, stage, 0.05)

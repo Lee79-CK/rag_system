@@ -60,3 +60,10 @@ def test_health_endpoints(client):
     assert ready.json()["db"] is True
     metrics = client.get("/metrics")
     assert metrics.status_code == 200
+
+
+def test_chat_jobs_readable_by_quality_evaluator(client, seed, auth):
+    """대화 작업(실패 Job 점검)은 SYS_ADMIN·QUALITY_EVALUATOR — admin-web 사이드바와 같은 역할."""
+    seed({"qe": ["QUALITY_EVALUATOR"], "docadmin": ["DOC_ADMIN"]})
+    assert client.get("/api/v1/chat-jobs", headers=auth("qe")).status_code == 200
+    assert client.get("/api/v1/chat-jobs", headers=auth("docadmin")).status_code == 403

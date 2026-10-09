@@ -36,6 +36,9 @@ class FakeRepo:
     def mark_failed(self, index_job_id, *, stage, error):
         self.failed = {"stage": stage, "error": error}
 
+    def mark_cancelled(self, index_job_id, *, reason):
+        self.cancelled = reason
+
     def activate_version(self, document_id, version_id):
         self.activated = (document_id, version_id)
 
@@ -126,3 +129,32 @@ def test_pipeline_marks_failed_on_parse_error(tmp_path):
     assert repo.completed is False
     assert repo.failed is not None
     assert repo.failed["stage"] == "PARSING"
+
+
+def test_fr_doc_008_job_for_inactive_or_deleted_document_is_cancelled(tmp_path):
+    """비활성/삭제 후 실행된 대기 Job 은 아무것도 쓰지 않는다 — upsert(is_active=true)·activate_version 이
+    문서를 되살리지 않게 (admin-api 비활성화/삭제와 짝)."""
+    f = tmp_path / "doc.txt"
+    f.write_text("본문 문장 하나. 두 번째 문장." * 20, encoding="utf-8")
+    for status in ("INACTIVE", "DELETED"):
+        ctx = JobContext(
+            index_job_id="job-1",
+            document_version_id="ver-1",
+            document_id="doc-1",
+            version=1,
+            file_path=str(f),
+            title="t",
+            document_status=status,
+        )
+        repo, qdrant = FakeRepo(ctx), FakeQdrant()
+        n = run_index_job(
+            "job-1",
+            repo=repo,
+            qdrant_client=qdrant,
+            embedder=FakeEmbedder(),
+            settings=Settings(),
+        )
+        assert n == 0
+        assert repo.cancelled == f"CANCELLED: document {status}"
+        assert qdrant.points == []
+        assert repo.activated is None and repo.completed is False and repo.stages == []

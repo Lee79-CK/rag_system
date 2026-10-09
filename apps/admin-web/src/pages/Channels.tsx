@@ -66,7 +66,7 @@ export function Channels() {
   const setEnabled = useSetBindingEnabled();
 
   const roles = (me?.roles ?? []) as Role[];
-  const canWrite = roles.length === 0 || roles.includes('SYS_ADMIN');
+  const canWrite = roles.includes('SYS_ADMIN'); // 쓰기 API 는 SYS_ADMIN 전용 (조회는 DOC_ADMIN 도 가능)
 
   const [q, setQ] = useState('');
   const [fStatus, setFStatus] = useState('');

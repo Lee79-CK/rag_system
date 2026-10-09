@@ -40,6 +40,8 @@ export interface UploadArgs {
   security_level?: string;
   /** Allowed channel ids for ACL (FR-DOC / KnowledgeScope). */
   allowed_channel_ids?: string[];
+  /** true 면 업로드 직후 색인 Job 생성 (FR-IDX-010). */
+  start_indexing?: boolean;
 }
 
 export function useUploadDocument() {
@@ -55,9 +57,13 @@ export function useUploadDocument() {
       for (const ch of args.allowed_channel_ids ?? []) {
         fd.append('allowed_channel_ids', ch);
       }
+      if (args.start_indexing) fd.append('start_indexing', 'true');
       return api.upload<UploadDocumentResult>('/documents', fd);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.documents }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.documents });
+      qc.invalidateQueries({ queryKey: ['indexJobs'] });
+    },
   });
 }
 
@@ -83,6 +89,18 @@ export function useUpdateDocumentChannels() {
     onSuccess: (_res, { id }) => {
       qc.invalidateQueries({ queryKey: qk.documents });
       qc.invalidateQueries({ queryKey: qk.document(id) });
+      qc.invalidateQueries({ queryKey: ['indexJobs'] });
+    },
+  });
+}
+
+/** INACTIVE → 재색인으로 재활성화 (현재 허용 채널로 검색 색인을 다시 쓴다). */
+export function useActivateDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<ReindexResult>(`/documents/${id}/activate`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.documents });
       qc.invalidateQueries({ queryKey: ['indexJobs'] });
     },
   });

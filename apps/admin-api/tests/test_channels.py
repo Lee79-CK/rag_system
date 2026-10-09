@@ -113,6 +113,46 @@ def test_members_add_list_remove(client, seed, auth, TestSession):
     assert rm.status_code == 200
 
 
-def test_channel_api_requires_sys_admin(client, seed, auth):
-    seed({"docadmin": ["DOC_ADMIN"]})
-    assert client.get("/api/v1/chat/channels", headers=auth("docadmin")).status_code == 403
+def test_channel_api_write_requires_sys_admin_read_allows_doc_admin(client, seed, auth):
+    """조회는 DOC_ADMIN 허용(문서 허용 채널 선택·채널 관리 읽기 전용 화면), 쓰기는 SYS_ADMIN 만."""
+    seed({"sysadmin": ["SYS_ADMIN"], "docadmin": ["DOC_ADMIN"], "auditor": ["AUDITOR"]})
+    cid = _create_channel(client, auth)
+    assert client.get("/api/v1/chat/channels", headers=auth("docadmin")).status_code == 200
+    assert client.get(f"/api/v1/chat/channels/{cid}", headers=auth("docadmin")).status_code == 200
+    assert client.get("/api/v1/chat/channels", headers=auth("auditor")).status_code == 403
+    created = client.post(
+        "/api/v1/chat/channels",
+        json={"name": "doc-made", "display_name": "x"},
+        headers=auth("docadmin"),
+    )
+    assert created.status_code == 403
+    assert (
+        client.post(
+            f"/api/v1/chat/channels/{cid}/bindings", json={}, headers=auth("docadmin")
+        ).status_code
+        == 403
+    )
+
+
+def test_channel_list_includes_bindings_and_member_count(client, seed, auth, TestSession):
+    """목록이 binding 을 빼면 admin-web 이 RAG 스위치 대신 [+ Binding] 을 그려 중복 생성을 유도한다."""
+    from admin.db.models import ChatChannelMember, ChatUser
+
+    seed({"sysadmin": ["SYS_ADMIN"]})
+    with_binding = _create_channel(client, auth, "rag-cloud-ops")
+    bid = _create_binding(client, auth, with_binding)
+    without = _create_channel(client, auth, "rag-empty")
+    with TestSession() as s:
+        u = ChatUser(email="m@example.com", display_name="m", password_hash="x")
+        s.add(u)
+        s.flush()
+        s.add(ChatChannelMember(channel_id=__import__("uuid").UUID(with_binding), user_id=u.id))
+        s.commit()
+
+    rows = {
+        c["id"]: c
+        for c in client.get("/api/v1/chat/channels", headers=auth("sysadmin")).json()["data"]
+    }
+    assert [b["id"] for b in rows[with_binding]["bindings"]] == [bid]
+    assert rows[with_binding]["member_count"] == 1
+    assert rows[without]["bindings"] == [] and rows[without]["member_count"] == 0

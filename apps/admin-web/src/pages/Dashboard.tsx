@@ -4,6 +4,7 @@ import { Surface } from '../components/ui';
 import { useDocuments } from '../api/documents';
 import { useChannels } from '../api/channels';
 import { useChatJobs } from '../api/chatJobs';
+import { useWhoami } from '../api/auth';
 import { useIndexJobs } from '../api/indexJobs';
 import { useFeedbackSummary } from '../api/feedback';
 
@@ -22,8 +23,10 @@ const FAILED = new Set(['FAILED', 'PARSE_FAILED', 'INDEX_FAILED', 'ERROR']);
 export function Dashboard() {
   const navigate = useNavigate();
   const docs = useDocuments();
-  const channels = useChannels();
-  const chatJobs = useChatJobs();
+  // 역할별로 허용된 API 만 호출 (채널 조회 SYS·DOC / 대화 작업 SYS·QE) — 403 카드 대신 해당 지표를 비워 둔다
+  const roles = useWhoami().data?.roles ?? [];
+  const channels = useChannels(roles.includes('SYS_ADMIN') || roles.includes('DOC_ADMIN'));
+  const chatJobs = useChatJobs(undefined, roles.includes('SYS_ADMIN') || roles.includes('QUALITY_EVALUATOR'));
   const indexJobs = useIndexJobs();
   const feedback = useFeedbackSummary();
 

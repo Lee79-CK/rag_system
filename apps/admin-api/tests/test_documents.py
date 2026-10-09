@@ -473,3 +473,147 @@ def test_fr_doc_003_duplicate_detail_includes_existing_status(client, seed, auth
     assert detail["existing_document_id"] == doc_id
     assert detail["existing_document_title"] == "doc.txt"
     assert detail["existing_document_status"] == "UPLOADED"
+
+
+# ----- 비활성화·삭제 → 검색 즉시 제외 / 재활성화 (FR-DOC-008) -----
+
+
+class _FakeSearchIndex:
+    def __init__(self, fail: bool = False) -> None:
+        self.deactivated: list[str] = []
+        self.fail = fail
+
+    def deactivate_document(self, document_id):
+        from admin.services.search_index import SearchIndexError
+
+        if self.fail:
+            raise SearchIndexError("ConnectError: qdrant down")
+        self.deactivated.append(document_id)
+
+
+def _search(client, fail: bool = False) -> _FakeSearchIndex:
+    from admin.services.search_index import provide_search_index
+
+    fake = _FakeSearchIndex(fail)
+    client.app.dependency_overrides[provide_search_index] = lambda: fake
+    return fake
+
+
+def _status(TestSession, doc_id: str) -> str:
+    import uuid
+
+    from admin.db.models import Document
+
+    with TestSession() as s:
+        return s.get(Document, uuid.UUID(doc_id)).status
+
+
+def _job_status(TestSession, job_id: str) -> str:
+    import uuid
+
+    from admin.db.models import IndexJob
+
+    with TestSession() as s:
+        return s.get(IndexJob, uuid.UUID(job_id)).status
+
+
+def test_fr_doc_008_deactivate_excludes_from_search_and_cancels_pending(
+    client, seed, auth, TestSession
+):
+    """DB 상태만 바꾸면 rag-api(Qdrant payload 만 필터)가 계속 인용한다 → is_active=false 를 먼저 반영."""
+    _spy(client)
+    search = _search(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"deactivate-me", [])
+    _set_status(TestSession, doc_id, "ACTIVE")
+    pending = _add_job(TestSession, doc_id, "PENDING")
+
+    resp = client.post(f"/api/v1/documents/{doc_id}/deactivate", headers=auth("docadmin"))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["status"] == "INACTIVE"
+    assert search.deactivated == [doc_id]
+    assert _job_status(TestSession, pending) == "CANCELLED"
+
+    again = client.post(f"/api/v1/documents/{doc_id}/deactivate", headers=auth("docadmin"))
+    assert again.status_code == 200
+    assert search.deactivated == [doc_id]  # 멱등 — 이미 INACTIVE 면 재호출 없음
+
+
+def test_fr_doc_008_delete_excludes_from_search(client, seed, auth, TestSession):
+    _spy(client)
+    search = _search(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"delete-me", [])
+    _set_status(TestSession, doc_id, "ACTIVE")
+
+    resp = client.delete(f"/api/v1/documents/{doc_id}", headers=auth("docadmin"))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["status"] == "DELETED"
+    assert search.deactivated == [doc_id]
+    assert _status(TestSession, doc_id) == "DELETED"
+
+
+def test_fr_doc_008_search_index_failure_keeps_status(client, seed, auth, TestSession):
+    """Qdrant 갱신 실패 시 503 + DB 불변 — 화면은 '제외됨'인데 실제 검색되는 불일치를 만들지 않는다."""
+    _spy(client)
+    _search(client, fail=True)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"qdrant-down", [])
+    _set_status(TestSession, doc_id, "ACTIVE")
+
+    for resp in (
+        client.post(f"/api/v1/documents/{doc_id}/deactivate", headers=auth("docadmin")),
+        client.delete(f"/api/v1/documents/{doc_id}", headers=auth("docadmin")),
+    ):
+        assert resp.status_code == 503
+        assert resp.json()["error"]["code"] == "SEARCH_INDEX_UNAVAILABLE"
+    assert _status(TestSession, doc_id) == "ACTIVE"
+
+
+def test_fr_doc_008_deactivate_rejected_while_index_job_running(client, seed, auth, TestSession):
+    """RUNNING Job 은 끝나면 is_active=true upsert + ACTIVE 로 되돌린다 → 완료 후 재시도."""
+    _spy(client)
+    search = _search(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"running-deactivate", [])
+    _set_status(TestSession, doc_id, "INDEXING")
+    _add_job(TestSession, doc_id, "RUNNING")
+
+    resp = client.post(f"/api/v1/documents/{doc_id}/deactivate", headers=auth("docadmin"))
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "INDEX_JOB_RUNNING"
+    assert search.deactivated == []
+    assert _status(TestSession, doc_id) == "INDEXING"
+
+
+def test_fr_doc_009_reindex_rejects_inactive_and_deleted(client, seed, auth, TestSession):
+    """재색인은 activate_version 으로 ACTIVE 를 되살리므로 비활성/삭제 문서는 거부."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    inactive = _upload(client, auth, b"reindex-inactive", [])
+    deleted = _upload(client, auth, b"reindex-deleted", [])
+    _set_status(TestSession, inactive, "INACTIVE")
+    _set_status(TestSession, deleted, "DELETED")
+
+    r1 = client.post(f"/api/v1/documents/{inactive}/reindex", headers=auth("docadmin"))
+    assert r1.status_code == 409 and r1.json()["error"]["code"] == "DOCUMENT_INACTIVE"
+    r2 = client.post(f"/api/v1/documents/{deleted}/reindex", headers=auth("docadmin"))
+    assert r2.status_code == 409 and r2.json()["error"]["code"] == "DOCUMENT_DELETED"
+    assert spy.calls == []
+
+
+def test_fr_doc_008_activate_reindexes_inactive_document(client, seed, auth, TestSession):
+    """재활성화 = 재색인 — 비활성 중 바뀐 ACL 까지 현재 값으로 payload 를 다시 쓴다."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"activate-me", [])
+    _set_status(TestSession, doc_id, "INACTIVE")
+
+    resp = client.post(f"/api/v1/documents/{doc_id}/activate", headers=auth("docadmin"))
+    assert resp.status_code == 202, resp.text
+    assert spy.calls == [resp.json()["data"]["index_job_id"]]
+    assert _status(TestSession, doc_id) == "INDEXING"
+
+    not_inactive = client.post(f"/api/v1/documents/{doc_id}/activate", headers=auth("docadmin"))
+    assert not_inactive.status_code == 409
+    assert not_inactive.json()["error"]["code"] == "DOCUMENT_NOT_INACTIVE"

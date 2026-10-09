@@ -159,6 +159,7 @@ appServices:
       - { name: DOCUMENT_STORAGE_PATH, value: "/data/documents" }
       - { name: INDEX_JOB_TRIGGER,     value: "none" }   # k8s 로 바꾸면 serviceAccounts/networkPolicy.apiServer 필요
       - { name: INDEX_JOB_NAMESPACE,   value: "rag-ingestion" }
+      - { name: QDRANT_URL,            value: "http://qdrant.rag-data:6333" }   # 비활성화/삭제 → is_active=false
   embedding-api:
     namespace: rag-ai
     replicas: 2

@@ -11,11 +11,11 @@ import uuid
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from admin.api.responses import api_error, envelope
-from admin.core.rbac import SYS_ADMIN, Principal, require_roles
+from admin.core.rbac import DOC_ADMIN, SYS_ADMIN, Principal, require_roles
 from admin.db.models import ChannelBindingRow, ChatChannel, ChatChannelMember, ChatUser
 from admin.db.session import get_db
 
@@ -144,20 +144,39 @@ def create_channel(
     return envelope(_channel_view(channel))
 
 
+# 조회는 DOC_ADMIN 도 허용 — 문서 허용 채널(ACL) 선택과 채널 관리 읽기 전용 화면에 필요. 쓰기는 SYS_ADMIN.
 @router.get("/channels")
 def list_channels(
     db: Session = Depends(get_db),
-    principal: Principal = Depends(require_roles(SYS_ADMIN)),
+    principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
 ) -> dict:
+    """목록도 상세와 같은 형태(bindings·member_count) — admin-web 채널 표·RAG 스위치·대시보드가 사용."""
     rows = db.execute(select(ChatChannel).order_by(ChatChannel.name)).scalars().all()
-    return envelope([_channel_view(c) for c in rows], count=len(rows))
+    bindings: dict[uuid.UUID, list[dict]] = {c.id: [] for c in rows}
+    for b in db.execute(select(ChannelBindingRow)).scalars():
+        if b.channel_ref in bindings:
+            bindings[b.channel_ref].append(_binding_view(b))
+    counts = dict(
+        db.execute(
+            select(ChatChannelMember.channel_id, func.count()).group_by(
+                ChatChannelMember.channel_id
+            )
+        ).all()
+    )
+    return envelope(
+        [
+            {**_channel_view(c), "bindings": bindings[c.id], "member_count": counts.get(c.id, 0)}
+            for c in rows
+        ],
+        count=len(rows),
+    )
 
 
 @router.get("/channels/{channel_id}")
 def get_channel(
     channel_id: uuid.UUID,
     db: Session = Depends(get_db),
-    principal: Principal = Depends(require_roles(SYS_ADMIN)),
+    principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
 ) -> dict:
     channel = _get_channel(db, channel_id)
     bindings = (

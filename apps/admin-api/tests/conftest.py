@@ -81,6 +81,14 @@ def client(engine, TestSession, monkeypatch):
             session.close()
 
     app.dependency_overrides[get_db] = _override_get_db
+    # 검색 색인(Qdrant)은 기본 no-op fake — 실제 네트워크 호출 금지. 테스트별로 override 해 호출을 검증한다.
+    from admin.services.search_index import provide_search_index
+
+    class _NullSearchIndex:
+        def deactivate_document(self, document_id):
+            pass
+
+    app.dependency_overrides[provide_search_index] = lambda: _NullSearchIndex()
     # 감사 미들웨어도 테스트 엔진을 사용하도록 교체.
     monkeypatch.setattr(audit_mod, "get_sessionmaker", lambda: TestSession)
 

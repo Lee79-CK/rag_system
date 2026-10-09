@@ -392,6 +392,7 @@
           "documents"
         ],
         "summary": "Delete Document",
+        "description": "논리 삭제 — 검색에서 즉시 제외(is_active=false). 원본 파일·point 는 보존(감사·복구용).",
         "operationId": "delete_document_api_v1_documents__document_id__delete",
         "parameters": [
           {
@@ -569,6 +570,68 @@
         }
       }
     },
+    "/api/v1/documents/{document_id}/activate": {
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Activate Document",
+        "description": "INACTIVE → 재색인으로 재활성화. 현재 ACL·버전으로 payload(is_active=true)를 다시 쓴다.\n\npayload is_active 만 되돌리지 않는 이유: 비활성 중에 바뀐 허용 채널(PATCH 는 ACL 만 저장)이\n재색인으로만 Qdrant 에 반영되기 때문.",
+        "operationId": "activate_document_api_v1_documents__document_id__activate_post",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "X-Auth-User",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Auth-User"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Activate Document Api V1 Documents  Document Id  Activate Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/documents/{document_id}/deactivate": {
       "post": {
         "tags": [
@@ -695,6 +758,7 @@
           "channels"
         ],
         "summary": "List Channels",
+        "description": "목록도 상세와 같은 형태(bindings·member_count) — admin-web 채널 표·RAG 스위치·대시보드가 사용.",
         "operationId": "list_channels_api_v1_chat_channels_get",
         "parameters": [
           {

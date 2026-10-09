@@ -1057,6 +1057,9 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | 채팅 답변 `⚠️ 답변 생성 중 오류`, worker 로그 `500 ... reranker-api.rag-ai:8005/internal/v1/rerank`, reranker 로그 `XLMRobertaTokenizer has no attribute prepare_for_model` | transformers 5.x 가 설치된 이미지 — FlagEmbedding 1.4 reranker 는 5.x 비호환(메타데이터는 <6 허용). `models` extra 의 `transformers<5` 상한 확인 후 이미지 재빌드: `kubectl -n rag-ai exec deploy/reranker-api -- python -c "import transformers;print(transformers.__version__)"` → 4.x |
 | 문서 채널 변경 `PATCH /api/v1/documents/{id}` 가 409 `INDEX_JOB_RUNNING` | 해당 문서 색인 Job 이 실행 중 — 이전 ACL 을 이미 읽었을 수 있어 겹쳐 재색인하지 않는다. Job 완료(`kubectl -n rag-ingestion get jobs`) 후 재시도 |
 | 채널을 바꿨는데 새 채널에서 문서가 검색되지 않음 | 재색인 미완료 또는 생략 — PATCH 응답 `reindex_skipped_reason`(STATUS_UPLOADED/STATUS_INACTIVE 는 ACL 만 저장), index Job 완료 여부 확인. 채널 binding `enabled`·멤버십도 확인 |
+| 문서 [비활성화]/[삭제] 가 503 `SEARCH_INDEX_UNAVAILABLE` | admin-api → Qdrant 연결 실패(검색 제외를 먼저 반영하므로 상태는 그대로). admin-api env `QDRANT_URL=http://qdrant.rag-data:6333`, qdrant 파드 상태 확인 후 재시도 |
+| [재색인] 이 409 `DOCUMENT_INACTIVE` | 비활성 문서는 재색인으로 되살리지 않는다 — [활성화](`POST /documents/{id}/activate`)로 재색인 |
+| `index_jobs.status=CANCELLED` | 문서가 비활성화/삭제된 뒤 실행된 색인 Job — 정상(아무것도 쓰지 않고 종료) |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
 | `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |

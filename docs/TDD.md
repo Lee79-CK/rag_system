@@ -1024,7 +1024,7 @@ def build_filter(binding: ChannelBinding) -> qdrant.Filter:
     return Filter(must=must)
 ```
 
-- 문서 삭제/비활성화: `is_active=false`로 payload set → 즉시 검색 제외 (FR-DOC-008). Vector 물리 삭제는 야간 배치.
+- 문서 삭제/비활성화: admin-api 가 `document_id` 의 전 point 에 `is_active=false` payload set → 즉시 검색 제외 (FR-DOC-008, §7.5). Vector 물리 삭제·원본 파일 삭제는 미구현(야간 배치 예정).
 - 버전 전환: 신규 version upsert + 검증 후, 구버전 point에 `is_active=false` 처리 (§7.5 재색인 시나리오).
 
 ---
@@ -1401,6 +1401,10 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
   - **허용 Channel 변경** `PATCH /api/v1/documents/{id}` (JSON `{"allowed_channel_ids": [...]}`, **전체 교체**, 빈 목록 허용=어느 채널에서도 검색 안 됨): 업로드와 같은 검증(422/404) → ACL diff 적용 + `audit_logs(action=DOCUMENT_ACL_UPDATE, detail before/after)` → 변경 시 재색인. Qdrant payload `allowed_channel_ids` 는 색인 시점에 ACL 에서 복사되므로(§7.7 step 5) **재색인이 끝나야 반영**되며, 제거한 채널도 그때까지는 검색된다. 같은 활성 버전 재색인은 point id 결정론적이라 payload 덮어쓰기다.
     - 409 `DOCUMENT_DELETED`(삭제 문서) / 409 `INDEX_JOB_RUNNING`(활성 버전에 RUNNING Job — 이전 ACL 을 이미 읽었을 수 있어 겹쳐 띄우지 않음). 진행 판단은 `documents.status` 가 아니라 `index_jobs` 로 한다(색인 실패 시 문서는 INDEXING 에 남음).
     - 재색인 생략(`reindex_skipped_reason`): `PENDING_JOB_REUSED`(대기 Job 이 실행 시 새 ACL 을 읽음) / `STATUS_UPLOADED`(미색인) / `STATUS_INACTIVE`(재색인하면 ACTIVE 로 되살아남) / `NO_ACTIVE_VERSION`. 응답 `{document, changed, added, removed, index_job, reindex_skipped_reason}`.
+  - **비활성화/삭제** (`POST /{id}/deactivate`, `DELETE /{id}`, FR-DOC-008): rag-api 는 Qdrant payload 로만 검색 범위를 정하므로 DB 상태만 바꾸면 계속 인용된다 → ① RUNNING Job 있으면 409 `INDEX_JOB_RUNNING`(끝나면 is_active=true upsert + ACTIVE 복귀) ② `admin.services.search_index` 가 `document_id` 전 point `is_active=false`(`QDRANT_URL`, 실패 시 503 `SEARCH_INDEX_UNAVAILABLE`, DB 불변) ③ PENDING Job → `CANCELLED` ④ status 커밋. 멱등(이미 INACTIVE/DELETED 면 no-op). 원본 파일·point 는 보존.
+  - parser-indexer 는 Job 시작 시 문서가 INACTIVE/DELETED 면 아무것도 쓰지 않고 `index_jobs.status=CANCELLED` 로 종료(이미 생성된 K8s Job 이 늦게 실행돼도 되살리지 않음).
+  - **재색인 제한·재활성화**: `POST /{id}/reindex` 는 DELETED 409 `DOCUMENT_DELETED`, INACTIVE 409 `DOCUMENT_INACTIVE`(재색인이 activate_version 으로 ACTIVE 를 되살리므로). INACTIVE 는 `POST /{id}/activate`(202) = 재색인 — 비활성 중 바뀐 ACL 까지 현재 값으로 payload 를 다시 쓴다.
+  - RBAC: 채널 조회(`GET /chat/channels`, `/{id}`)는 SYS_ADMIN·DOC_ADMIN(문서 허용 채널 선택), 채널·Binding·멤버 쓰기는 SYS_ADMIN. 채널 목록은 상세와 같이 `bindings`·`member_count` 포함. `/chat-jobs` 조회는 SYS_ADMIN·QUALITY_EVALUATOR. admin-web 메뉴 roles 는 이 표와 일치시키고 경로 가드(403 화면)를 둔다.
 - 색인 트리거 (`admin/services/index_trigger.py`, ADR-008): 업로드(`start_indexing=true`)·재색인(`POST /api/v1/documents/{id}/reindex`, 응답에 `index_job_id`/`trigger`/`error`) 모두 `index_jobs` INSERT 후 트리거를 호출한다. `INDEX_JOB_TRIGGER`로 선택:
   - `none`(기본, `NoopTrigger`): `index_jobs` 행만 남긴다 — 로컬/테스트는 CLI(`python -m ingestion.main --index-job-id <uuid>`)로 수동 실행.
   - `k8s`(`K8sJobTrigger`): 추가 의존성(`kubernetes` client) 없이 in-cluster ServiceAccount 토큰 + httpx 로 kube-apiserver 호출 — ① `GET /api/v1/namespaces/{INDEX_JOB_NAMESPACE}/configmaps/{INDEX_JOB_TEMPLATE_CONFIGMAP}`(chart 가 렌더한 `parser-indexer-job-template` 의 `job.yaml`) ② `__INDEX_JOB_ID__` 치환 ③ `POST /apis/batch/v1/namespaces/{ns}/jobs`(application/yaml). 필요 권한은 `templates/rbac.yaml` Role(configmaps get, jobs create/get/list) + `networkPolicy.apiServer` egress.
@@ -2040,7 +2044,7 @@ Web Chat 전환 과정에서 발견·수정한 기존(v1.x) 결함. 회귀 방�
 | 18 | (병합 복구) Secret 전체 키를 모든 서비스에 마운트 | 최소 권한 위반 | `secretMount.keys` — 서비스별 필요한 키만 `items` 투영 + `*_FILE` env 자동 (§14.1) |
 | 19 | (병합 복구) Containerfile 부재 문서 서술 | 가이드대로 빌드 불가 | `apps/*/Containerfile` 8종(+ `apps/chat-web/Containerfile` 신규) + `make build-images/push-images` (§2, §14.2) |
 
-잔여(리뷰 기준, v2.0 에도 유효): rate limit INCR→EXPIRE 비원자(M-3), async 핸들러 내 동기 I/O(H-8), 업로드 전체 메모리 적재(H-9), settings 테이블 → rag-api 캐시 미연동(§3-4), 문서 삭제 시 Qdrant 비활성화/파일 삭제 미구현(M-6), mock 엔진 silent fallback(M-2), `CHAT_MAX_CONCURRENCY` semaphore 부재(M-13), Circuit Breaker(M-17), 평가셋 100문항·LLM-judge(§3-8), admin-api `/index-jobs` 조회 API 부재.
+잔여(리뷰 기준, v2.0 에도 유효): rate limit INCR→EXPIRE 비원자(M-3), async 핸들러 내 동기 I/O(H-8), 업로드 전체 메모리 적재(H-9), settings 테이블 → rag-api 캐시 미연동(§3-4), 문서 삭제 시 원본 파일·Vector 물리 삭제 미구현(M-6 — Qdrant 비활성화는 2026-10 구현), mock 엔진 silent fallback(M-2), `CHAT_MAX_CONCURRENCY` semaphore 부재(M-13), Circuit Breaker(M-17), 평가셋 100문항·LLM-judge(§3-8), admin-api `/index-jobs` 조회 API 부재.
 
 ---
 

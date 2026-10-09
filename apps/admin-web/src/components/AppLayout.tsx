@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Tooltip } from 'antd';
+import { Result, Spin, Tooltip } from 'antd';
 import { AuthUserSwitcher } from './AuthUserSwitcher';
 import { useWhoami } from '../api/auth';
 import { useChatJobs } from '../api/chatJobs';
+import { errorMessage } from './QueryState';
 import type { Role } from '../types';
 
 /**
@@ -100,7 +101,7 @@ const NAV: NavGroup[] = [
     items: [
       { path: '/channels', label: '채널 관리', icon: 'channels', title: 'Web Chat 채널 · Binding · 멤버', roles: ['SYS_ADMIN', 'DOC_ADMIN'] },
       { path: '/chat-users', label: '채팅 사용자', icon: 'chat', title: '채팅 사용자', roles: ['SYS_ADMIN'] },
-      { path: '/chat-jobs', label: '대화 작업', icon: 'chat', title: '대화 작업', roles: ['SYS_ADMIN', 'QUALITY_EVALUATOR', 'DOC_ADMIN'], badge: 'dead' },
+      { path: '/chat-jobs', label: '대화 작업', icon: 'chat', title: '대화 작업', roles: ['SYS_ADMIN', 'QUALITY_EVALUATOR'], badge: 'dead' },
     ],
   },
   {
@@ -138,20 +139,22 @@ function fmtKst(d: Date): string {
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { data: me } = useWhoami();
-  const chatJobs = useChatJobs();
+  const whoami = useWhoami();
+  const me = whoami.data;
   const now = useNow();
 
   const roles = (me?.roles ?? []) as Role[];
-  // Dev / unknown identity (no roles) sees everything; real roles apply RBAC.
-  const canAccess = (item: NavDef) => roles.length === 0 || item.roles.some((r) => roles.includes(r));
+  // 메뉴 roles 는 admin-api require_roles 와 같아야 한다. 신원 확인 전/실패 시에는 아무 메뉴도 열지 않는다.
+  const canAccess = (item: NavDef) => item.roles.some((r) => roles.includes(r));
+  const chatJobs = useChatJobs(undefined, roles.includes('SYS_ADMIN') || roles.includes('QUALITY_EVALUATOR'));
 
   const active =
     ALL_ITEMS.map((n) => n.path)
       .filter((k) => (k === '/' ? location.pathname === '/' : location.pathname.startsWith(k)))
       .sort((a, b) => b.length - a.length)[0] ?? '/';
 
-  const screenTitle = ALL_ITEMS.find((n) => n.path === active)?.title ?? '대시보드';
+  const activeItem = ALL_ITEMS.find((n) => n.path === active);
+  const screenTitle = activeItem?.title ?? '대시보드';
 
   const deadCount =
     chatJobs.data?.filter((j) => DEAD_LETTER_STATUSES.has((j.status ?? '').toUpperCase())).length ?? 0;
@@ -351,7 +354,24 @@ export function AppLayout() {
           </div>
 
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 24 }}>
-            <Outlet />
+            {/* 경로 가드 — 사이드바 비활성화만으로는 URL 직접 입력을 막지 못한다 */}
+            {whoami.isLoading ? (
+              <Spin style={{ display: 'block', marginTop: 80 }} />
+            ) : whoami.error ? (
+              <Result
+                status="403"
+                title="관리자 신원을 확인할 수 없습니다"
+                subTitle={`${errorMessage(whoami.error)} — 우측 상단 접속 사용자를 확인하세요.`}
+              />
+            ) : activeItem && !canAccess(activeItem) ? (
+              <Result
+                status="403"
+                title="이 화면에 접근할 권한이 없습니다"
+                subTitle={`필요한 역할: ${activeItem.roles.join(' / ')}`}
+              />
+            ) : (
+              <Outlet />
+            )}
           </div>
         </div>
       </div>

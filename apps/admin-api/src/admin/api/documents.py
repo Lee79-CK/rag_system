@@ -2,7 +2,8 @@
 
 업로드(크기/확장자/sha256 중복검사 FR-DOC-002/003, 허용 Channel ACL FR-DOC-004), 목록, 상세, 버전,
 재색인(index_jobs INSERT + Job 트리거 — admin.services.index_trigger, ADR-008), 비활성화/삭제,
-허용 Channel 변경(PATCH — ACL 교체 후 자동 재색인으로 Qdrant payload 반영).
+허용 Channel 변경(PATCH — ACL 교체 후 자동 재색인으로 Qdrant payload 반영),
+비활성화/삭제(Qdrant is_active=false 를 먼저 반영 후 상태 커밋) · 재활성화(재색인).
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from admin.db.models import (
 )
 from admin.db.session import get_db
 from admin.services.index_trigger import IndexJobTrigger, provide_index_trigger
+from admin.services.search_index import SearchIndex, SearchIndexError, provide_search_index
 from admin.services.storage import NFSStorage
 
 log = get_logger("admin.documents")
@@ -99,6 +101,43 @@ def _get_doc(db: Session, document_id: uuid.UUID) -> Document:
     if doc is None:
         raise api_error("NOT_FOUND", "문서를 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
     return doc
+
+
+def _inflight_jobs(db: Session, doc: Document) -> dict[str, IndexJob]:
+    """활성 버전의 PENDING/RUNNING Job (상태별 최신 1건).
+
+    진행 판단은 documents.status 가 아니라 index_jobs 로 한다 —
+    색인 실패 시 documents.status 는 INDEXING 에 남으므로(mark_failed 는 index_jobs 만 갱신).
+    """
+    inflight: dict[str, IndexJob] = {}
+    if doc.active_version_id is not None:
+        for j in db.execute(
+            select(IndexJob)
+            .where(
+                IndexJob.document_version_id == doc.active_version_id,
+                IndexJob.status.in_(("PENDING", "RUNNING")),
+            )
+            .order_by(IndexJob.created_at.desc())
+        ).scalars():
+            inflight.setdefault(j.status, j)
+    return inflight
+
+
+def _reject_running(inflight: dict[str, IndexJob]) -> None:
+    if "RUNNING" in inflight:
+        raise api_error(
+            "INDEX_JOB_RUNNING",
+            "색인이 진행 중입니다. 완료 후 다시 시도하세요.",
+            status.HTTP_409_CONFLICT,
+            index_job_id=str(inflight["RUNNING"].id),
+        )
+
+
+def _reject_deleted(doc: Document, action: str) -> None:
+    if doc.status == "DELETED":
+        raise api_error(
+            "DOCUMENT_DELETED", f"삭제된 문서는 {action}할 수 없습니다.", status.HTTP_409_CONFLICT
+        )
 
 
 def _version_view(v: DocumentVersion) -> dict:
@@ -304,33 +343,12 @@ def update_document_channels(
     point id 가 결정론적이라 같은 활성 버전 재색인은 payload 덮어쓰기다(중복 없음).
     """
     doc = _get_doc(db, document_id)
-    if doc.status == "DELETED":
-        raise api_error(
-            "DOCUMENT_DELETED", "삭제된 문서는 채널을 변경할 수 없습니다.", status.HTTP_409_CONFLICT
-        )
+    _reject_deleted(doc, "채널을 변경")
     new_ids = _validated_channel_ids(db, body.allowed_channel_ids)
 
-    # 진행 중 Job 판단은 documents.status 가 아니라 index_jobs 로 한다 —
-    # 색인 실패 시 documents.status 는 INDEXING 에 남으므로(mark_failed 는 index_jobs 만 갱신).
-    inflight: dict[str, IndexJob] = {}
-    if doc.active_version_id is not None:
-        for j in db.execute(
-            select(IndexJob)
-            .where(
-                IndexJob.document_version_id == doc.active_version_id,
-                IndexJob.status.in_(("PENDING", "RUNNING")),
-            )
-            .order_by(IndexJob.created_at.desc())
-        ).scalars():
-            inflight.setdefault(j.status, j)
-    if "RUNNING" in inflight:
-        # 실행 중 Job 은 이미 이전 ACL 을 읽었을 수 있어, 새 Job 을 겹쳐 띄우면 늦게 끝나는 쪽 payload 가 남는다.
-        raise api_error(
-            "INDEX_JOB_RUNNING",
-            "색인이 진행 중입니다. 완료 후 다시 시도하세요.",
-            status.HTTP_409_CONFLICT,
-            index_job_id=str(inflight["RUNNING"].id),
-        )
+    inflight = _inflight_jobs(db, doc)
+    # 실행 중 Job 은 이미 이전 ACL 을 읽었을 수 있어, 새 Job 을 겹쳐 띄우면 늦게 끝나는 쪽 payload 가 남는다.
+    _reject_running(inflight)
 
     before = _channel_ids(db, doc.id)
     added = [c for c in new_ids if c not in before]
@@ -431,25 +449,89 @@ def reindex_document(
     principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
     trigger: IndexJobTrigger = Depends(provide_index_trigger),
 ) -> dict:
-    doc = db.get(Document, document_id)
-    if doc is None:
-        raise api_error("NOT_FOUND", "문서를 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
+    doc = _get_doc(db, document_id)
+    _reject_deleted(doc, "재색인")
+    if doc.status == "INACTIVE":
+        # 재색인은 activate_version 으로 ACTIVE 를 되살린다 — 비활성 문서는 명시적 [활성화] 로만.
+        raise api_error(
+            "DOCUMENT_INACTIVE",
+            "비활성 문서는 재색인할 수 없습니다. 먼저 활성화하세요.",
+            status.HTTP_409_CONFLICT,
+        )
+    return envelope(_start_index(db, doc, trigger))
+
+
+@router.post("/{document_id}/activate", status_code=status.HTTP_202_ACCEPTED)
+def activate_document(
+    document_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
+    trigger: IndexJobTrigger = Depends(provide_index_trigger),
+) -> dict:
+    """INACTIVE → 재색인으로 재활성화. 현재 ACL·버전으로 payload(is_active=true)를 다시 쓴다.
+
+    payload is_active 만 되돌리지 않는 이유: 비활성 중에 바뀐 허용 채널(PATCH 는 ACL 만 저장)이
+    재색인으로만 Qdrant 에 반영되기 때문.
+    """
+    doc = _get_doc(db, document_id)
+    if doc.status != "INACTIVE":
+        raise api_error(
+            "DOCUMENT_NOT_INACTIVE",
+            "비활성 상태인 문서만 활성화할 수 있습니다.",
+            status.HTTP_409_CONFLICT,
+            status=doc.status,
+        )
+    return envelope(_start_index(db, doc, trigger))
+
+
+def _start_index(db: Session, doc: Document, trigger: IndexJobTrigger) -> dict:
     if doc.active_version_id is None:
         raise api_error(
             "NO_ACTIVE_VERSION",
             "활성 버전이 없어 재색인할 수 없습니다.",
             status.HTTP_409_CONFLICT,
         )
-
     job = _create_index_job(db, doc, trigger)
-    return envelope(
-        {
-            "index_job_id": str(job.id),
-            "status": job.status,
-            "trigger": trigger.name,
-            "error": job.error,
-        }
-    )
+    return {
+        "index_job_id": str(job.id),
+        "status": job.status,
+        "trigger": trigger.name,
+        "error": job.error,
+    }
+
+
+def _exclude_from_search(
+    db: Session, doc: Document, new_status: str, search_index: SearchIndex
+) -> None:
+    """검색 제외 후 상태 커밋 (FR-DOC-008).
+
+    순서: ① RUNNING Job 이 있으면 거부(끝나면 is_active=true 로 upsert + ACTIVE 로 되돌림)
+          ② Qdrant 전 point is_active=false — 실패 시 503, DB 불변
+          ③ PENDING Job 은 CANCELLED (parser-indexer 도 INACTIVE/DELETED 문서 Job 은 건너뜀)
+          ④ documents.status 커밋
+    """
+    inflight = _inflight_jobs(db, doc)
+    _reject_running(inflight)
+    try:
+        search_index.deactivate_document(str(doc.id))
+    except SearchIndexError as exc:
+        raise api_error(
+            "SEARCH_INDEX_UNAVAILABLE",
+            "검색 색인을 갱신하지 못했습니다. 잠시 후 다시 시도하세요. (문서 상태는 변경되지 않음)",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+    if "PENDING" in inflight:
+        for j in db.execute(
+            select(IndexJob).where(
+                IndexJob.document_version_id == doc.active_version_id,
+                IndexJob.status == "PENDING",
+            )
+        ).scalars():
+            j.status = "CANCELLED"
+            j.error = f"CANCELLED: document {new_status}"
+    doc.status = new_status
+    db.commit()
+    log.info("documents.excluded_from_search", document_id=str(doc.id), status=new_status)
 
 
 @router.post("/{document_id}/deactivate")
@@ -457,12 +539,12 @@ def deactivate_document(
     document_id: uuid.UUID,
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
+    search_index: SearchIndex = Depends(provide_search_index),
 ) -> dict:
-    doc = db.get(Document, document_id)
-    if doc is None:
-        raise api_error("NOT_FOUND", "문서를 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
-    doc.status = "INACTIVE"
-    db.commit()
+    doc = _get_doc(db, document_id)
+    _reject_deleted(doc, "비활성화")
+    if doc.status != "INACTIVE":
+        _exclude_from_search(db, doc, "INACTIVE", search_index)
     return envelope(_doc_view(doc, _channel_ids(db, doc.id)))
 
 
@@ -471,11 +553,10 @@ def delete_document(
     document_id: uuid.UUID,
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
+    search_index: SearchIndex = Depends(provide_search_index),
 ) -> dict:
-    doc = db.get(Document, document_id)
-    if doc is None:
-        raise api_error("NOT_FOUND", "문서를 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
-    # 논리 삭제: 검색 제외는 is_active=false payload set(야간 배치)와 정합 (FR-DOC-008).
-    doc.status = "DELETED"
-    db.commit()
+    """논리 삭제 — 검색에서 즉시 제외(is_active=false). 원본 파일·point 는 보존(감사·복구용)."""
+    doc = _get_doc(db, document_id)
+    if doc.status != "DELETED":
+        _exclude_from_search(db, doc, "DELETED", search_index)
     return envelope({"id": str(document_id), "status": doc.status})

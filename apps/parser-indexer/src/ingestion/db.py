@@ -28,6 +28,7 @@ class JobContext:
     department: str | None = None
     security_level: str = "INTERNAL"
     allowed_channel_ids: list[str] = field(default_factory=list)
+    document_status: str = "INDEXING"
 
 
 class JobRepository:
@@ -54,7 +55,8 @@ class JobRepository:
                            d.title,
                            d.category,
                            d.department,
-                           d.security_level
+                           d.security_level,
+                           d.status AS document_status
                     FROM index_jobs ij
                     JOIN document_versions dv ON dv.id = ij.document_version_id
                     JOIN documents d ON d.id = dv.document_id
@@ -95,6 +97,7 @@ class JobRepository:
             department=row["department"],
             security_level=str(row["security_level"] or "INTERNAL"),
             allowed_channel_ids=[str(c) for c in acl_rows],
+            document_status=str(row["document_status"]),
         )
 
     def mark_running(self, index_job_id: str) -> None:
@@ -125,6 +128,16 @@ class JobRepository:
                     "completed_at=:now WHERE id=:jid"
                 ),
                 {"now": datetime.now(UTC), "jid": index_job_id},
+            )
+
+    def mark_cancelled(self, index_job_id: str, *, reason: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE index_jobs SET status='CANCELLED', error=:err, completed_at=:now "
+                    "WHERE id=:jid"
+                ),
+                {"err": reason[:2000], "now": datetime.now(UTC), "jid": index_job_id},
             )
 
     def mark_failed(self, index_job_id: str, *, stage: str | None, error: str) -> None:

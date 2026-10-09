@@ -935,7 +935,7 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 | FR-DOC-005 | 문서 처리 상태를 Admin Web에서 확인할 수 있어야 한다.                  | P0   | Uploaded/Parsing/Indexing/Active/Failed 표시 |
 | FR-DOC-006 | 실패 원인 및 재시도를 지원해야 한다.                                | P0   | 실패 단계와 Error 조회, Retry 가능                  |
 | FR-DOC-007 | 새 버전을 등록하고 활성 버전을 관리할 수 있어야 한다.                      | P1   | Version 전환                                 |
-| FR-DOC-008 | 문서를 삭제하면 검색 대상에서 즉시 제외해야 한다.                         | P0   | Qdrant Filter 또는 Vector 삭제                 |
+| FR-DOC-008 | 문서를 삭제하면 검색 대상에서 즉시 제외해야 한다.                         | P0   | Qdrant Filter 또는 Vector 삭제 — 비활성화/삭제 시 admin-api 가 해당 문서 point `is_active=false` 를 먼저 반영(실패 시 503·상태 불변), 재활성화는 `POST /documents/{id}/activate`(재색인). `test_fr_doc_008_*` |
 | FR-DOC-009 | 문서 재색인을 요청할 수 있어야 한다.                                | P0   | Job 생성 및 완료 — 재색인 또는 업로드 `start_indexing=true` 시 `index_jobs` 생성, `INDEX_JOB_TRIGGER=k8s` 면 parser-indexer K8s Job 자동 생성(`none` 은 CLI 수동 실행). `test_reindex_calls_trigger` |
 | FR-DOC-010 | 문서 원본과 파싱 결과의 무결성을 확인할 수 있어야 한다.                     | P1   | Hash 및 처리 통계 제공                            |
 

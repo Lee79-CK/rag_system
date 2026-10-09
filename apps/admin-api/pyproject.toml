@@ -16,6 +16,8 @@ dependencies = [
     "orjson>=3.10",
     "structlog>=24.1",
     "prometheus-client>=0.20",
+    # 문서 비활성화/삭제 시 Qdrant payload is_active=false (서버 v1.12.1 과 minor 차이 ≤1)
+    "qdrant-client>=1.12,<1.14",
     "rag-schemas",
     "rag-common",
     "rag-observability",

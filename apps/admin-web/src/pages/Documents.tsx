@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
+  Checkbox,
   Descriptions,
   Drawer,
   Form,
@@ -12,6 +13,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -21,6 +23,7 @@ import { ApiError } from '../api/client';
 import { QueryState, errorMessage } from '../components/QueryState';
 import { StatusBadge, Surface, Mono } from '../components/ui';
 import {
+  useActivateDocument,
   useDeactivateDocument,
   useDeleteDocument,
   useDocumentVersions,
@@ -44,7 +47,7 @@ const STATUS_OPTIONS = ['ACTIVE', 'INDEXING', 'UPLOADED', 'INACTIVE', 'FAILED', 
 const SKIP_REASON: Record<string, string> = {
   NO_ACTIVE_VERSION: '활성 버전이 없어 재색인하지 않았습니다.',
   STATUS_UPLOADED: '아직 색인 전 문서라 재색인하지 않았습니다. 색인 시 새 채널이 적용됩니다.',
-  STATUS_INACTIVE: '비활성 문서라 재색인하지 않았습니다(재색인 시 다시 활성화되므로).',
+  STATUS_INACTIVE: '비활성 문서라 채널만 저장했습니다. [활성화] 하면 새 채널로 다시 색인됩니다.',
   PENDING_JOB_REUSED: '대기 중인 색인 Job 이 실행될 때 새 채널이 반영됩니다.',
 };
 
@@ -102,6 +105,7 @@ export function Documents() {
   const upload = useUploadDocument();
   const reindex = useReindexDocument();
   const deactivate = useDeactivateDocument();
+  const activate = useActivateDocument();
   const remove = useDeleteDocument();
   const updateChannels = useUpdateDocumentChannels();
 
@@ -156,15 +160,20 @@ export function Documents() {
       return;
     }
     try {
-      await upload.mutateAsync({
+      const r = await upload.mutateAsync({
         file: file as File,
         title: values.title,
         category: values.category,
         department: values.department,
         security_level: values.security_level,
         allowed_channel_ids: values.allowed_channel_ids,
+        start_indexing: values.start_indexing,
       });
-      message.success('업로드 완료');
+      message.success(
+        r.index_job_id
+          ? '업로드 완료 · 색인 시작 (완료되면 상태가 ACTIVE 로 바뀝니다)'
+          : '업로드 완료 · 색인하려면 [재색인] 을 누르세요',
+      );
       closeUpload();
     } catch (e) {
       if (e instanceof ApiError && e.code === 'DUPLICATE_DOCUMENT') {
@@ -308,28 +317,56 @@ export function Documents() {
           >
             채널
           </Button>
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            loading={reindex.isPending}
-            onClick={() => runAction('재색인 요청', () => reindex.mutateAsync(row.id))}
+          {/* 재색인은 문서를 ACTIVE 로 되살리므로 비활성/삭제 문서에는 막는다 (비활성은 [활성화]) */}
+          <Tooltip
+            title={
+              row.status === 'INACTIVE'
+                ? '비활성 문서는 [활성화] 로 다시 색인합니다'
+                : row.status === 'DELETED'
+                  ? '삭제된 문서'
+                  : undefined
+            }
           >
-            재색인
-          </Button>
-          <Popconfirm
-            title="비활성화하시겠습니까?"
-            description="즉시 검색에서 제외됩니다."
-            onConfirm={() => runAction('비활성화', () => deactivate.mutateAsync(row.id))}
-          >
-            <Button size="small">비활성화</Button>
-          </Popconfirm>
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={reindex.isPending}
+              disabled={row.status === 'INACTIVE' || row.status === 'DELETED'}
+              onClick={() => runAction('재색인 요청', () => reindex.mutateAsync(row.id))}
+            >
+              재색인
+            </Button>
+          </Tooltip>
+          {row.status === 'INACTIVE' ? (
+            <Popconfirm
+              title="다시 활성화하시겠습니까?"
+              description="현재 허용 채널로 다시 색인하며, 색인이 끝나면 검색에 포함됩니다."
+              onConfirm={() => runAction('활성화(재색인) 요청', () => activate.mutateAsync(row.id))}
+            >
+              <Button size="small" loading={activate.isPending}>
+                활성화
+              </Button>
+            </Popconfirm>
+          ) : (
+            <Popconfirm
+              title="비활성화하시겠습니까?"
+              description="검색에서 즉시 제외됩니다. [활성화] 로 되돌릴 수 있습니다."
+              disabled={row.status === 'DELETED'}
+              onConfirm={() => runAction('비활성화', () => deactivate.mutateAsync(row.id))}
+            >
+              <Button size="small" disabled={row.status === 'DELETED'}>
+                비활성화
+              </Button>
+            </Popconfirm>
+          )}
           <Popconfirm
             title="문서를 삭제하시겠습니까?"
-            description="색인된 청크가 검색에서 제외됩니다."
+            description="검색에서 즉시 제외되며 되돌릴 수 없습니다. 같은 파일은 다시 업로드할 수 없습니다."
             okButtonProps={{ danger: true }}
+            disabled={row.status === 'DELETED'}
             onConfirm={() => runAction('삭제', () => remove.mutateAsync(row.id))}
           >
-            <Button size="small" danger>
+            <Button size="small" danger disabled={row.status === 'DELETED'}>
               삭제
             </Button>
           </Popconfirm>
@@ -411,7 +448,11 @@ export function Documents() {
         okText="업로드"
         cancelText="취소"
       >
-        <Form form={form} layout="vertical" initialValues={{ security_level: 'INTERNAL' }}>
+        <Form
+          form={form}
+          layout="vertical"
+          initialValues={{ security_level: 'INTERNAL', start_indexing: true }}
+        >
           <Form.Item label="파일" required>
             <Upload.Dragger
               multiple={false}
@@ -452,6 +493,9 @@ export function Documents() {
               placeholder="허용 Channel을 명시 선택하세요"
               options={channelOptions(channels.data)}
             />
+          </Form.Item>
+          <Form.Item name="start_indexing" valuePropName="checked" style={{ marginBottom: 0 }}>
+            <Checkbox>업로드 후 바로 색인 (해제하면 나중에 [재색인] 으로 색인)</Checkbox>
           </Form.Item>
         </Form>
       </Modal>
