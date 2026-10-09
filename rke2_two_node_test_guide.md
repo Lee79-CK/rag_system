@@ -674,7 +674,9 @@ curl -s -X POST $ADMIN/api/v1/documents -H 'X-Auth-User: cklee' \
 
 # 2) admin-api 가 만든 parser-indexer Job 확인 (rag-ingestion, generateName index-job-)
 kubectl -n rag-ingestion get jobs -w            # index-job-xxxxx  COMPLETIONS 1/1
-kubectl -n rag-ingestion logs job/$(kubectl -n rag-ingestion get jobs -o jsonpath='{.items[-1].metadata.name}') | tail -20
+# 완료된 Job 은 ttlSecondsAfterFinished=3600 으로 1시간 뒤 자동 삭제된다 → 없으면 "No index Job" (재색인으로 새 Job 생성)
+J=$(kubectl -n rag-ingestion get jobs --sort-by=.metadata.creationTimestamp -o name | tail -1)   # jsonpath items[-1] 은 빈 목록에서 에러
+[ -n "$J" ] && kubectl -n rag-ingestion logs $J | tail -20 || echo "No index Job (1h TTL 로 삭제됐거나 아직 생성 전)"
 # → 단계 PARSING→CHUNKING→EMBEDDING→UPSERTING→VALIDATING, index_job COMPLETED
 curl -s $ADMIN/api/v1/documents -H 'X-Auth-User: cklee' | jq '.data[] | {title,status}'     # ACTIVE
 
@@ -999,6 +1001,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | vLLM CrashLoopBackOff, 로그 `nvidia_entrypoint.sh: line 55: exec: --: invalid option` | NGC 이미지 ENTRYPOINT 는 `exec "$@"` 래퍼라 서버 명령이 필요 — values-lab `vllm.serveCommand: [vllm, serve]` 확인 (`kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.spec.containers[0].args}'` 이 `["vllm","serve",...` 로 시작) |
 | vLLM 로그 `unrecognized arguments: ...` | 이미지의 vLLM 버전에서 제거된 플래그(예: 0.29 의 `--disable-log-requests`). `vllm.args` 에서 삭제. 플래그 존재 확인: `docker run --rm --entrypoint grep <이미지> -c <flag_name> /usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py` |
 | vLLM 로그 `PermissionError: [Errno 13] Permission denied: '/.cache'` → `Model architectures [...] failed to be inspected` | 비루트 uid 10001 이 이미지 `/etc/passwd` 에 없어 `HOME=/`. 차트가 `HOME=/home/vllm`(emptyDir)·`XDG_CACHE_HOME`·`USER` 를 주입하는지 확인 — `kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.spec.containers[0].env}'` |
+| 채팅 답변 `⚠️ 답변 생성 중 오류`, worker 로그 `500 ... reranker-api.rag-ai:8005/internal/v1/rerank`, reranker 로그 `XLMRobertaTokenizer has no attribute prepare_for_model` | transformers 5.x 가 설치된 이미지 — FlagEmbedding 1.4 reranker 는 5.x 비호환(메타데이터는 <6 허용). `models` extra 의 `transformers<5` 상한 확인 후 이미지 재빌드: `kubectl -n rag-ai exec deploy/reranker-api -- python -c "import transformers;print(transformers.__version__)"` → 4.x |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
 | `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |
