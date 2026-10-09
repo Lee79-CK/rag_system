@@ -385,18 +385,21 @@ make push-images  REG=$REG TAG=$TAG
 vLLM 은 빌드하지 않고 **NVIDIA 제공 arm64 이미지**를 미러링합니다:
 
 ```bash
-# DGX Spark 지원 vLLM 이미지 (NGC) — arm64 태그 확인 후 미러. chart 의 rag.image 헬퍼가 global.imageTag 를 붙이므로 앱과 동일 $TAG 로 태깅
+# DGX Spark 지원 vLLM 이미지 (NGC) — arm64 태그 확인 후 미러. vLLM 은 앱(git sha)과 분리된 **고정 태그**를 쓴다:
+#   values-lab 의 vllm.imageTag (현재 "26.09" = NGC 26.09, vLLM 0.29.0). 앱만 재배포할 때 vLLM 이 재시작(27B 재로딩)되지 않는다.
+#   vLLM 교체 = 새 NGC 태그를 다른 이름(예: 26.10)으로 미러링 → vllm.imageTag 만 변경 → helm upgrade
+VLLM_TAG=26.09
 # ★ Qwen3.8-27B(qwen3_5) 는 vLLM ≥ 0.17.0 필요 — 태그의 vLLM 버전을 먼저 확인:
 #   docker run --rm --entrypoint python nvcr.io/nvidia/vllm:<tag> -c "import vllm; print(vllm.__version__)"
 docker pull --platform linux/arm64 nvcr.io/nvidia/vllm:<tag>
-docker tag nvcr.io/nvidia/vllm:<tag> $REG/ai/vllm-arm64:$TAG
-docker push $REG/ai/vllm-arm64:$TAG
+docker tag nvcr.io/nvidia/vllm:<tag> $REG/ai/vllm-arm64:$VLLM_TAG
+docker push $REG/ai/vllm-arm64:$VLLM_TAG
 
 # push 확인 (P3) — 태그가 보이면 레이어 업로드 완료(manifest 는 레이어 전부 올라간 뒤 마지막에 등록됨)
 curl -s http://$REG/v2/_catalog                      # "ai/vllm-arm64" 포함
-curl -s http://$REG/v2/ai/vllm-arm64/tags/list       # {"name":"ai/vllm-arm64","tags":["<TAG>"]}
+curl -s http://$REG/v2/ai/vllm-arm64/tags/list       # {"name":"ai/vllm-arm64","tags":["26.09"]}
 # 플랫폼 확인 — linux/arm64 가 있어야 PGX 에서 실행 가능 (NGC 이미지는 amd64+arm64 manifest list 라 둘 다 보이는 게 정상)
-docker manifest inspect --insecure $REG/ai/vllm-arm64:$TAG | grep -A2 '"platform"'
+docker manifest inspect --insecure $REG/ai/vllm-arm64:$VLLM_TAG | grep -A2 '"platform"'
 ```
 
 PGX 에서 직접 pull 해 보면 RKE2 containerd 가 `registries.yaml`(§1.5) 경로로 실제 이미지를 받을 수 있는지까지 확인됩니다. 10GB 이상이라 HDD 레지스트리에서 수 분 걸릴 수 있습니다.
@@ -404,7 +407,7 @@ PGX 에서 직접 pull 해 보면 RKE2 containerd 가 `registries.yaml`(§1.5) �
 ```bash
 # PGX 에서
 CRICTL="sudo /var/lib/rancher/rke2/bin/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock"
-$CRICTL pull registry.local:5000/ai/vllm-arm64:<TAG>   # 실패 시 PGX 의 registries.yaml · /etc/hosts · rke2-agent 재시작 확인 (§1.5)
+$CRICTL pull registry.local:5000/ai/vllm-arm64:26.09   # 실패 시 PGX 의 registries.yaml · /etc/hosts · rke2-agent 재시작 확인 (§1.5)
 $CRICTL images | grep vllm
 ```
 
@@ -649,6 +652,35 @@ curl -s --cacert secrets/chat.crt -o /dev/null -w "%{http_code}\n" https://rag.l
 ```
 
 > Ingress 경로는 chat host 기준 `/api/v1`·`/ws`·`/` 뿐이므로 chat-gateway 의 `/health/*` 는 Ingress 로 노출되지 않습니다 (K8s probe 전용). gateway 자체 상태는 `kubectl -n rag-app port-forward svc/chat-gateway 8001:8001` 후 `curl localhost:8001/health/ready`.
+
+
+### 4.6 소스 변경 시 재배포 (`scripts/redeploy_lab.sh`)
+
+소스를 고친 뒤에는 **커밋 → 스크립트 1회 실행**으로 끝납니다. 이미지 태그 = 커밋 sha 이므로 반드시 커밋 후 실행합니다(미커밋 변경이 있으면 스크립트가 중단).
+
+```bash
+cd ~/workspace/rag_system
+git add -A && git commit -m "..."
+scripts/redeploy_lab.sh --dry-run     # 점검 + 실행할 명령만 출력 (처음엔 권장)
+scripts/redeploy_lab.sh               # 빌드·push → helm upgrade → rollout 확인
+# 이미 push 한 커밋을 다시 배포만: scripts/redeploy_lab.sh --skip-build
+```
+
+스크립트가 하는 일 (수작업 시 실제로 났던 사고를 막는 점검 포함):
+
+| 단계 | 내용 | 막는 문제 |
+|---|---|---|
+| 사전 점검 | 미커밋 변경 거부, `TAG=git rev-parse --short HEAD`, `REG` 기본 `registry.local:5000`, `P3_IP` 자동 감지(control-plane InternalIP), 레지스트리 접속 확인 | 빈 REG/TAG(`invalid reference format`), 태그와 내용 불일치 |
+| vLLM 태그 확인 | values-lab `vllm.imageTag`(26.09) 가 레지스트리에 있는지 확인. 없으면 **현재 배포 중인 vLLM 태그를 레지스트리 서버에서 manifest 복사**(amd64+arm64 manifest list 그대로) | vLLM `ImagePullBackOff`. `docker pull`→`push` 로 옮기면 amd64 만 남아 PGX 에서 실패 |
+| 빌드·push | `make build-images push-images` 후 `rag/*` 8종 `:$TAG` 존재 확인 | push 누락 |
+| helm upgrade | `-n rag-platform` 고정, `values-poc` + `values-lab`, `global.imageTag=$TAG`, `networkPolicy.apiServer.cidrs={P3_IP/32}`, `--timeout 15m` | `-n` 누락 ownership 오류 |
+| rollout 확인 | rag-app · rag-ai Deployment 전부 `rollout status` (15분) | 배포 실패를 모르고 넘어감 |
+
+- **vLLM 은 재시작되지 않습니다** — 앱 태그와 분리되어 있어 앱만 바뀐 배포에서는 vLLM 파드가 그대로입니다. 고정 태그로 처음 전환하는 배포에서만 1회 재시작(모델 재로딩 최대 10분)됩니다.
+- 데이터 계층(postgres/qdrant/redis)은 태그 고정이라 재시작되지 않고 데이터도 유지됩니다. DB 스키마 변경이 있으면 migrate hook Job 이 helm upgrade 중 자동 실행됩니다.
+- 브라우저는 새로고침(F5)만 하면 됩니다 — JWT 키 Secret 은 그대로라 재로그인 불필요.
+- 롤백: 이전 커밋 태그로 `helm upgrade` (이미지는 레지스트리에 남아 있음) — `git checkout <이전 sha>` 후 `scripts/redeploy_lab.sh --skip-build`, 또는 `helm rollback rag-platform -n rag-platform`.
+- 수동으로 하려면 스크립트의 `[dry-run]` 출력 명령을 순서대로 실행하면 됩니다.
 
 ---
 

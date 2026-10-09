@@ -188,6 +188,8 @@ appServices:
 vllm:
   namespace: rag-ai
   image: rag/vllm-openai
+  # 비우면 global.imageTag(앱 git sha). 외부 미러 이미지는 고정 태그를 줘서 앱 재배포 때 vLLM 이 재시작(모델 재로딩)되지 않게 한다.
+  imageTag: ""
   replicas: [llm-0, llm-1]
   servedModelName: internal-rag-llm   # 앱(LLM_SERVED_MODEL_NAME)이 부르는 이름 — 모델을 바꿔도 유지
   # 모델 디렉터리 = /models 아래 상대 경로 → 템플릿이 --model=/models/<modelDir> 를 만든다.

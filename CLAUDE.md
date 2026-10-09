@@ -45,7 +45,7 @@ CHAT_MAX_CONCURRENCY 미강제, 평가셋 100문항·LLM-judge, Circuit Breaker,
 - `tests/channel-isolation` — CH-001~010 격리 Gate / `tests/contract` mock-llm SSE 계약 / `tests/evaluation` 데이터셋 / `tests/performance` locust
 - `deploy/helm/rag-platform` — 단일 Helm chart (Deployment/Service/PDB/NetworkPolicy/Ingress/Namespace/RBAC/Alembic hook Job/Grafana). `values.yaml` 기본 → `values-poc.yaml`(운영 override) → `values-lab.yaml`(RKE2 랩 override). Secret 은 `appServices.<svc>.secretMount.keys` 로 필요한 키만 마운트
 - `apps/*/Containerfile` — Python 서비스는 빌드 컨텍스트 = 리포 루트, `chat-web`·`admin-web` 은 자체 디렉터리. `make build-images REG= TAG=`
-- `scripts/` — `export_openapi.py`, `measure_latency.py`(p95), `seed_dev.sql`, `create_chat_user.py`, `inspect_pdf.py`(업로드 전 PDF 파싱/청크 점검)
+- `scripts/` — `redeploy_lab.sh`(랩 재배포: 커밋 → 빌드·push → helm upgrade, 가이드 §4.6), `export_openapi.py`, `measure_latency.py`(p95), `seed_dev.sql`, `create_chat_user.py`, `inspect_pdf.py`(업로드 전 PDF 파싱/청크 점검)
 
 ## Commands
 - `make install`        # uv sync (workspace)

@@ -1,7 +1,8 @@
 {{/* 공통 헬퍼 — docs/TDD.md §14 */}}
 
+{{- /* tag 를 넘기면 그 값을, 비우면 global.imageTag(앱 공통 git sha)를 쓴다 */}}
 {{- define "rag.image" -}}
-{{- printf "%s/%s:%s" $.root.Values.global.imageRegistry .image ($.root.Values.global.imageTag | toString) -}}
+{{- printf "%s/%s:%s" $.root.Values.global.imageRegistry .image ((.tag | default $.root.Values.global.imageTag) | toString) -}}
 {{- end -}}
 
 {{- define "rag.labels" -}}

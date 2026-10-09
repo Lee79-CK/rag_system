@@ -50,7 +50,7 @@ spec:
       {{- end }}
       containers:
         - name: vllm
-          image: {{ include "rag.image" (dict "image" $v.image "root" $) }}
+          image: {{ include "rag.image" (dict "image" $v.image "tag" $v.imageTag "root" $) }}
           args: {{ toJson $args }}
           securityContext:
             {{- toYaml $.Values.containerSecurityContext | nindent 12 }}

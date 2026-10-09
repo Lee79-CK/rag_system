@@ -184,9 +184,12 @@ appServices:
 # ---- vLLM (PGX / arm64 / GPU 1) ----
 vllm:
   replicas: [llm-0]               # 운영 [llm-0, llm-1] → GPU 노드 1대이므로 1개
-  image: ai/vllm-arm64            # 미러링 시 $TAG 로 태깅할 것 (rag.image 헬퍼가 global.imageTag 사용):
-                                  #   docker tag nvcr.io/nvidia/vllm:<tag> $REG/ai/vllm-arm64:$TAG
-                                  # ★ Qwen3.8-27B(qwen3_5 hybrid attention) 는 vLLM ≥ 0.17.0 필요 — 태그의 vLLM 버전 확인 (가이드 §3)
+  image: ai/vllm-arm64
+  # 앱 태그(global.imageTag=git sha)와 분리된 고정 태그 — 앱만 재배포할 때 vLLM 은 재시작되지 않는다.
+  #   미러링: docker tag nvcr.io/nvidia/vllm:<ngc-tag> $REG/ai/vllm-arm64:26.09 && docker push ... (가이드 §3)
+  #   vLLM 교체 = 새 태그로 미러링 후 이 값만 변경 → helm upgrade
+  # ★ Qwen3.8-27B(qwen3_5 hybrid attention) 는 vLLM ≥ 0.17.0 필요 — 태그의 vLLM 버전 확인 (가이드 §3). 현재 NGC 26.09 = vLLM 0.29.0
+  imageTag: "26.09"
   nodeSelector:
     ragplatform.io/tier: llm      # 가이드 §1.2 라벨
   tolerations:
