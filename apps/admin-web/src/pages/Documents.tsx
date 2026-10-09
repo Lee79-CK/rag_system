@@ -16,7 +16,8 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
-import { InboxOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { InboxOutlined, LinkOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { ApiError } from '../api/client';
 import { QueryState, errorMessage } from '../components/QueryState';
 import { StatusBadge, Surface, Mono } from '../components/ui';
 import {
@@ -25,13 +26,65 @@ import {
   useDocumentVersions,
   useDocuments,
   useReindexDocument,
+  useUpdateDocumentChannels,
   useUploadDocument,
 } from '../api/documents';
 import { useChannels } from '../api/channels';
-import type { DocumentView, SecurityLevel } from '../types';
+import type {
+  ChannelView,
+  DocumentView,
+  DuplicateDocumentDetail,
+  SecurityLevel,
+  UpdateDocumentChannelsResult,
+} from '../types';
 
 const SECURITY_LEVELS: SecurityLevel[] = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'SECRET'];
 const STATUS_OPTIONS = ['ACTIVE', 'INDEXING', 'UPLOADED', 'INACTIVE', 'FAILED', 'DELETED'];
+
+const SKIP_REASON: Record<string, string> = {
+  NO_ACTIVE_VERSION: '활성 버전이 없어 재색인하지 않았습니다.',
+  STATUS_UPLOADED: '아직 색인 전 문서라 재색인하지 않았습니다. 색인 시 새 채널이 적용됩니다.',
+  STATUS_INACTIVE: '비활성 문서라 재색인하지 않았습니다(재색인 시 다시 활성화되므로).',
+  PENDING_JOB_REUSED: '대기 중인 색인 Job 이 실행될 때 새 채널이 반영됩니다.',
+};
+
+/** PATCH 결과를 사용자 메시지로. 검색 반영은 재색인 완료 후라는 점을 함께 알린다. */
+function channelUpdateMessage(r: UpdateDocumentChannelsResult): string {
+  if (!r.changed) return '변경 사항이 없습니다.';
+  const diff = `채널 +${r.added.length} / -${r.removed.length}`;
+  if (r.reindex_skipped_reason) {
+    return `${diff} 저장 · ${SKIP_REASON[r.reindex_skipped_reason] ?? r.reindex_skipped_reason}`;
+  }
+  if (r.index_job?.error) return `${diff} 저장 · 재색인 트리거 실패: ${r.index_job.error}`;
+  return `${diff} 저장 · 재색인 시작 (완료 후 검색에 반영)`;
+}
+
+function channelOptions(channels: ChannelView[] | undefined) {
+  return (channels ?? []).map((c) => ({
+    label: `#${c.name} · ${c.display_name}`,
+    value: c.id, // chat_channels.id = Qdrant allowed_channel_ids (Channel 격리 키)
+  }));
+}
+
+function ChannelTags({ ids, channels }: { ids: string[]; channels?: ChannelView[] }) {
+  if (ids.length === 0) return <span style={{ color: 'var(--text-sub)' }}>-</span>;
+  return (
+    <Space size={4} wrap>
+      {ids.map((id) => {
+        const c = channels?.find((ch) => ch.id === id);
+        return c ? (
+          <Tag key={id} color="blue">
+            #{c.name}
+          </Tag>
+        ) : (
+          <Tag key={id} title={id}>
+            삭제된 채널
+          </Tag>
+        );
+      })}
+    </Space>
+  );
+}
 
 const filterSelectStyle: React.CSSProperties = {
   padding: '7px 10px',
@@ -43,16 +96,18 @@ const filterSelectStyle: React.CSSProperties = {
 };
 
 export function Documents() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const docs = useDocuments();
   const channels = useChannels();
   const upload = useUploadDocument();
   const reindex = useReindexDocument();
   const deactivate = useDeactivateDocument();
   const remove = useDeleteDocument();
+  const updateChannels = useUpdateDocumentChannels();
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | undefined>();
+  const [channelsDoc, setChannelsDoc] = useState<DocumentView | undefined>();
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [form] = Form.useForm();
 
@@ -110,12 +165,64 @@ export function Documents() {
         allowed_channel_ids: values.allowed_channel_ids,
       });
       message.success('업로드 완료');
-      setUploadOpen(false);
-      setFileList([]);
-      form.resetFields();
+      closeUpload();
     } catch (e) {
+      if (e instanceof ApiError && e.code === 'DUPLICATE_DOCUMENT') {
+        offerLinkExisting(e.detail as unknown as DuplicateDocumentDetail, values.allowed_channel_ids ?? []);
+        return;
+      }
       message.error(errorMessage(e));
     }
+  };
+
+  const closeUpload = () => {
+    setUploadOpen(false);
+    setFileList([]);
+    form.resetFields();
+  };
+
+  /** FR-DOC-003 해시 중복 → 재업로드 대신 기존 문서에 선택 채널을 추가 연결 (기존 ACL ∪ 선택). */
+  const offerLinkExisting = (dup: DuplicateDocumentDetail, selected: string[]) => {
+    const title = dup.existing_document_title ?? dup.existing_document_id;
+    if (dup.existing_document_status === 'DELETED') {
+      message.error(`동일한 내용의 삭제된 문서 '${title}' 가 있어 업로드할 수 없습니다.`);
+      return;
+    }
+    const existing = data.find((d) => d.id === dup.existing_document_id);
+    const merged = [...new Set([...(existing?.allowed_channel_ids ?? []), ...selected])];
+    const newOnes = merged.filter((id) => !(existing?.allowed_channel_ids ?? []).includes(id));
+    if (selected.length === 0 || newOnes.length === 0) {
+      message.warning(
+        `동일한 문서 '${title}' 가 이미 있습니다.${selected.length ? ' 선택한 채널에 이미 연결되어 있습니다.' : ''}`,
+      );
+      return;
+    }
+    modal.confirm({
+      title: '이미 등록된 문서입니다',
+      content: (
+        <div>
+          <p>
+            동일한 내용의 문서 <b>{title}</b> 가 이미 있습니다. 다시 업로드하는 대신 선택한 채널을
+            이 문서에 추가 연결할까요?
+          </p>
+          <ChannelTags ids={newOnes} channels={channels.data} />
+        </div>
+      ),
+      okText: '채널 연결',
+      cancelText: '취소',
+      onOk: async () => {
+        try {
+          const r = await updateChannels.mutateAsync({
+            id: dup.existing_document_id,
+            channelIds: merged,
+          });
+          message.success(channelUpdateMessage(r));
+          closeUpload();
+        } catch (err) {
+          message.error(errorMessage(err));
+        }
+      },
+    });
   };
 
   const runAction = async (label: string, fn: () => Promise<unknown>) => {
@@ -163,6 +270,11 @@ export function Documents() {
       ),
     },
     {
+      title: '허용 채널',
+      dataIndex: 'allowed_channel_ids',
+      render: (ids: string[]) => <ChannelTags ids={ids ?? []} channels={channels.data} />,
+    },
+    {
       title: '상태',
       dataIndex: 'status',
       sorter: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
@@ -187,6 +299,14 @@ export function Documents() {
         <Space size="small" wrap>
           <Button size="small" onClick={() => setDetailId(row.id)}>
             상세
+          </Button>
+          <Button
+            size="small"
+            icon={<LinkOutlined />}
+            disabled={row.status === 'DELETED'}
+            onClick={() => setChannelsDoc(row)}
+          >
+            채널
           </Button>
           <Button
             size="small"
@@ -330,16 +450,25 @@ export function Documents() {
               allowClear
               loading={channels.isLoading}
               placeholder="허용 Channel을 명시 선택하세요"
-              options={(channels.data ?? []).map((c) => ({
-                label: `#${c.name} · ${c.display_name}`,
-                value: c.id, // chat_channels.id = Qdrant allowed_channel_ids (Channel 격리 키)
-              }))}
+              options={channelOptions(channels.data)}
             />
           </Form.Item>
         </Form>
       </Modal>
 
-      <DocumentDetail id={detailId} onClose={() => setDetailId(undefined)} docs={docs.data} />
+      <DocumentChannelsModal
+        doc={channelsDoc}
+        channels={channels.data}
+        channelsLoading={channels.isLoading}
+        onClose={() => setChannelsDoc(undefined)}
+      />
+
+      <DocumentDetail
+        id={detailId}
+        onClose={() => setDetailId(undefined)}
+        docs={docs.data}
+        channels={channels.data}
+      />
     </div>
   );
 }
@@ -373,14 +502,81 @@ function Toggle({ on }: { on: boolean }) {
   );
 }
 
+/** 허용 채널 전체 교체 (PATCH /documents/{id}) — 변경 시 서버가 자동 재색인. */
+function DocumentChannelsModal({
+  doc,
+  channels,
+  channelsLoading,
+  onClose,
+}: {
+  doc?: DocumentView;
+  channels?: ChannelView[];
+  channelsLoading: boolean;
+  onClose: () => void;
+}) {
+  const { message } = App.useApp();
+  const update = useUpdateDocumentChannels();
+  const [selected, setSelected] = useState<string[]>([]);
+
+  useEffect(() => {
+    setSelected(doc?.allowed_channel_ids ?? []);
+  }, [doc]);
+
+  const save = async () => {
+    if (!doc) return;
+    try {
+      const r = await update.mutateAsync({ id: doc.id, channelIds: selected });
+      message.success(channelUpdateMessage(r));
+      onClose();
+    } catch (e) {
+      message.error(errorMessage(e));
+    }
+  };
+
+  return (
+    <Modal
+      title={`허용 채널 — ${doc?.title ?? ''}`}
+      open={!!doc}
+      onOk={save}
+      confirmLoading={update.isPending}
+      onCancel={onClose}
+      okText="저장"
+      cancelText="취소"
+      destroyOnClose
+    >
+      <p style={{ fontSize: 13, color: 'var(--text-sub)' }}>
+        선택한 채널에서만 이 문서가 검색됩니다. 변경하면 재색인 Job 이 생성되고, 재색인이 끝나야
+        검색에 반영됩니다(제거한 채널도 그때까지는 검색됨).
+      </p>
+      <Select
+        mode="multiple"
+        allowClear
+        style={{ width: '100%' }}
+        loading={channelsLoading}
+        value={selected}
+        onChange={setSelected}
+        placeholder="허용 Channel 선택"
+        options={channelOptions(channels)}
+      />
+      {selected.length === 0 && (
+        <p style={{ marginTop: 8, fontSize: 12.5, color: 'var(--danger, #d4380d)' }}>
+          채널을 모두 비우면 어느 채널에서도 검색되지 않습니다.
+        </p>
+      )}
+    </Modal>
+  );
+}
+
 function DocumentDetail({
   id,
   onClose,
   docs,
+  channels,
 }: {
   id?: string;
   onClose: () => void;
   docs?: DocumentView[];
+  channels?: ChannelView[];
 }) {
   const versions = useDocumentVersions(id);
   const doc = docs?.find((d) => d.id === id);
@@ -420,6 +616,9 @@ function DocumentDetail({
           </Descriptions.Item>
           <Descriptions.Item label="상태">
             <StatusBadge status={doc.status} />
+          </Descriptions.Item>
+          <Descriptions.Item label="허용 채널">
+            <ChannelTags ids={doc.allowed_channel_ids ?? []} channels={channels} />
           </Descriptions.Item>
         </Descriptions>
       )}

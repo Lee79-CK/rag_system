@@ -54,6 +54,8 @@ export interface DocumentView {
   security_level: string;
   status: string;
   active_version_id: string | null;
+  /** 허용 채널(chat_channels.id) — Qdrant payload allowed_channel_ids 의 원천 (FR-DOC-004). */
+  allowed_channel_ids: string[];
   created_at: string | null;
 }
 
@@ -71,11 +73,34 @@ export interface DocumentVersionView {
 export interface UploadDocumentResult {
   document: DocumentView;
   version: DocumentVersionView;
+  allowed_channel_ids: string[];
+  index_job_id?: string;
+  index_job_status?: string;
 }
 
 export interface ReindexResult {
   index_job_id: string;
   status: string;
+  trigger: string | null;
+  error: string | null;
+}
+
+/** 409 DUPLICATE_DOCUMENT 의 error.detail — 기존 문서에 채널 연결을 제안할 때 사용. */
+export interface DuplicateDocumentDetail {
+  existing_document_id: string;
+  existing_document_title: string | null;
+  existing_document_status: string | null;
+}
+
+/** PATCH /documents/{id} 결과 — ACL 교체 + 자동 재색인 (FR-DOC-004). */
+export interface UpdateDocumentChannelsResult {
+  document: DocumentView;
+  changed: boolean;
+  added: string[];
+  removed: string[];
+  index_job: ReindexResult | null;
+  /** NO_ACTIVE_VERSION | STATUS_<status> | PENDING_JOB_REUSED */
+  reindex_skipped_reason: string | null;
 }
 
 // ----- Index Jobs (index_jobs; parser-indexer §7.7) -----

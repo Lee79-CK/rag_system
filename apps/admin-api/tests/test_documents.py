@@ -189,3 +189,287 @@ def test_upload_registers_channel_acl(client, seed, auth, TestSession):
         headers=auth("docadmin"),
     )
     assert bad.status_code == 404
+
+
+# ----- PATCH /documents/{id} — 허용 Channel 변경 + 자동 재색인 (FR-DOC-004, PRD §17.8) -----
+
+
+class _SpyTrigger:
+    name = "spy"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def trigger(self, index_job_id):
+        self.calls.append(index_job_id)
+        return "index-job-xyz"
+
+
+def _spy(client) -> _SpyTrigger:
+    from admin.services.index_trigger import provide_index_trigger
+
+    spy = _SpyTrigger()
+    client.app.dependency_overrides[provide_index_trigger] = lambda: spy
+    return spy
+
+
+def _upload(client, auth, body: bytes, channel_ids: list[str]) -> str:
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("doc.txt", body, "text/plain")},
+        data={"allowed_channel_ids": channel_ids},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["data"]["document"]["id"]
+
+
+def _set_status(TestSession, doc_id: str, status: str) -> None:
+    import uuid
+
+    from admin.db.models import Document
+
+    with TestSession() as s:
+        s.get(Document, uuid.UUID(doc_id)).status = status
+        s.commit()
+
+
+def _add_job(TestSession, doc_id: str, status: str) -> str:
+    import uuid
+
+    from admin.db.models import Document, IndexJob
+
+    with TestSession() as s:
+        doc = s.get(Document, uuid.UUID(doc_id))
+        job = IndexJob(document_version_id=doc.active_version_id, status=status)
+        s.add(job)
+        s.commit()
+        return str(job.id)
+
+
+def _acl(TestSession, doc_id: str) -> list[str]:
+    import uuid
+
+    from admin.db.models import DocumentChannelAcl
+
+    with TestSession() as s:
+        rows = s.query(DocumentChannelAcl).filter_by(document_id=uuid.UUID(doc_id)).all()
+        return sorted(r.channel_id for r in rows)
+
+
+def test_fr_doc_004_patch_replaces_channel_acl_and_triggers_reindex(
+    client, seed, auth, TestSession
+):
+    """기존 문서를 새 채널에 연결(재업로드는 FR-DOC-003 으로 409) → ACL 교체 + 재색인 Job + 감사 diff."""
+    from admin.db.models import AuditLog
+
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    ops, hr, reg = _make_channels(TestSession, "rag-cloud-ops", "rag-hr", "ai-regulation")
+    doc_id = _upload(client, auth, b"patch-acl-body", [ops, hr])
+    _set_status(TestSession, doc_id, "ACTIVE")  # 색인 완료 상태
+
+    resp = client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"allowed_channel_ids": [ops, reg]},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["changed"] is True
+    assert data["added"] == [reg]
+    assert data["removed"] == [hr]
+    assert data["document"]["allowed_channel_ids"] == sorted([ops, reg])
+    assert data["reindex_skipped_reason"] is None
+    assert data["index_job"]["trigger"] == "spy"
+    assert spy.calls == [data["index_job"]["index_job_id"]]
+    assert _acl(TestSession, doc_id) == sorted([ops, reg])
+    with TestSession() as s:
+        log = s.query(AuditLog).filter_by(action="DOCUMENT_ACL_UPDATE").one()
+    assert log.actor == "docadmin"
+    assert log.target == doc_id
+    assert log.detail["before"] == sorted([ops, hr])
+    assert log.detail["after"] == sorted([ops, reg])
+
+
+def test_fr_doc_004_patch_unchanged_acl_no_reindex(client, seed, auth, TestSession):
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    (ops,) = _make_channels(TestSession, "rag-cloud-ops")
+    doc_id = _upload(client, auth, b"unchanged-acl", [ops])
+    _set_status(TestSession, doc_id, "ACTIVE")
+
+    resp = client.patch(
+        f"/api/v1/documents/{doc_id}", json={"allowed_channel_ids": [ops]}, headers=auth("docadmin")
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["changed"] is False
+    assert data["index_job"] is None
+    assert spy.calls == []
+
+
+def test_fr_doc_004_patch_rejects_unknown_or_invalid_channel(client, seed, auth, TestSession):
+    _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    (ops,) = _make_channels(TestSession, "rag-cloud-ops")
+    doc_id = _upload(client, auth, b"invalid-channel", [ops])
+
+    unknown = client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"allowed_channel_ids": [ops, "00000000-0000-0000-0000-000000000000"]},
+        headers=auth("docadmin"),
+    )
+    assert unknown.status_code == 404
+    assert unknown.json()["error"]["code"] == "CHANNEL_NOT_FOUND"
+    invalid = client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"allowed_channel_ids": ["channel-001"]},
+        headers=auth("docadmin"),
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "INVALID_CHANNEL_ID"
+    assert _acl(TestSession, doc_id) == [ops]  # 실패 시 ACL 불변
+
+
+def test_fr_doc_004_patch_deleted_document_409(client, seed, auth, TestSession):
+    _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    (ops,) = _make_channels(TestSession, "rag-cloud-ops")
+    doc_id = _upload(client, auth, b"deleted-doc", [])
+    _set_status(TestSession, doc_id, "DELETED")
+
+    resp = client.patch(
+        f"/api/v1/documents/{doc_id}", json={"allowed_channel_ids": [ops]}, headers=auth("docadmin")
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "DOCUMENT_DELETED"
+    assert _acl(TestSession, doc_id) == []
+
+
+def test_fr_doc_004_patch_running_job_409(client, seed, auth, TestSession):
+    """RUNNING Job 은 이전 ACL 을 이미 읽었을 수 있다 → 겹쳐 재색인하지 않고 거부."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    ops, reg = _make_channels(TestSession, "rag-cloud-ops", "ai-regulation")
+    doc_id = _upload(client, auth, b"running-job", [ops])
+    _set_status(TestSession, doc_id, "INDEXING")
+    job_id = _add_job(TestSession, doc_id, "RUNNING")
+
+    resp = client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"allowed_channel_ids": [ops, reg]},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "INDEX_JOB_RUNNING"
+    assert resp.json()["error"]["detail"]["index_job_id"] == job_id
+    assert _acl(TestSession, doc_id) == [ops]
+    assert spy.calls == []
+
+
+def test_fr_doc_004_patch_pending_job_reused(client, seed, auth, TestSession):
+    """PENDING Job 은 실행 시 ACL 을 읽으므로 새 Job 을 만들지 않고 그 Job 을 돌려준다."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    ops, reg = _make_channels(TestSession, "rag-cloud-ops", "ai-regulation")
+    doc_id = _upload(client, auth, b"pending-job", [ops])
+    _set_status(TestSession, doc_id, "INDEXING")
+    job_id = _add_job(TestSession, doc_id, "PENDING")
+
+    resp = client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"allowed_channel_ids": [ops, reg]},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["index_job"]["index_job_id"] == job_id
+    assert data["reindex_skipped_reason"] == "PENDING_JOB_REUSED"
+    assert spy.calls == []
+    assert _acl(TestSession, doc_id) == sorted([ops, reg])
+
+
+def test_fr_doc_004_patch_failed_indexing_status_still_reindexes(client, seed, auth, TestSession):
+    """색인 실패 문서는 documents.status=INDEXING 에 남는다 — Job 이 FAILED 면 ACL 변경 + 재색인 허용."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    ops, reg = _make_channels(TestSession, "rag-cloud-ops", "ai-regulation")
+    doc_id = _upload(client, auth, b"failed-job", [ops])
+    _set_status(TestSession, doc_id, "INDEXING")
+    _add_job(TestSession, doc_id, "FAILED")
+
+    resp = client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"allowed_channel_ids": [reg]},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert len(spy.calls) == 1
+
+
+def test_fr_doc_004_patch_inactive_or_unindexed_skips_reindex(client, seed, auth, TestSession):
+    """INACTIVE 재색인은 ACTIVE 로 되살리고, UPLOADED 는 미색인 → ACL 만 저장."""
+    spy = _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"]})
+    ops, reg = _make_channels(TestSession, "rag-cloud-ops", "ai-regulation")
+    uploaded = _upload(client, auth, b"never-indexed", [ops])
+    inactive = _upload(client, auth, b"inactive-doc", [ops])
+    _set_status(TestSession, inactive, "INACTIVE")
+
+    for doc_id, reason in ((uploaded, "STATUS_UPLOADED"), (inactive, "STATUS_INACTIVE")):
+        resp = client.patch(
+            f"/api/v1/documents/{doc_id}",
+            json={"allowed_channel_ids": [ops, reg]},
+            headers=auth("docadmin"),
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        assert data["changed"] is True
+        assert data["index_job"] is None
+        assert data["reindex_skipped_reason"] == reason
+        assert _acl(TestSession, doc_id) == sorted([ops, reg])
+    assert spy.calls == []
+
+
+def test_fr_doc_004_patch_requires_doc_admin(client, seed, auth, TestSession):
+    _spy(client)
+    seed({"docadmin": ["DOC_ADMIN"], "auditor": ["AUDITOR"]})
+    (ops,) = _make_channels(TestSession, "rag-cloud-ops")
+    doc_id = _upload(client, auth, b"rbac-doc", [])
+    resp = client.patch(
+        f"/api/v1/documents/{doc_id}", json={"allowed_channel_ids": [ops]}, headers=auth("auditor")
+    )
+    assert resp.status_code == 403
+    assert _acl(TestSession, doc_id) == []
+
+
+def test_fr_doc_004_get_includes_allowed_channel_ids(client, seed, auth, TestSession):
+    seed({"docadmin": ["DOC_ADMIN"]})
+    ops, hr = _make_channels(TestSession, "rag-cloud-ops", "rag-hr")
+    a = _upload(client, auth, b"doc-a", [ops, hr])
+    b = _upload(client, auth, b"doc-b", [])
+
+    listed = {
+        d["id"]: d["allowed_channel_ids"]
+        for d in client.get("/api/v1/documents", headers=auth("docadmin")).json()["data"]
+    }
+    assert listed == {a: sorted([ops, hr]), b: []}
+    detail = client.get(f"/api/v1/documents/{a}", headers=auth("docadmin")).json()["data"]
+    assert detail["allowed_channel_ids"] == sorted([ops, hr])
+
+
+def test_fr_doc_003_duplicate_detail_includes_existing_status(client, seed, auth, TestSession):
+    """409 detail 의 제목·상태로 admin-web 이 '기존 문서에 채널 연결'을 제안한다(DELETED 는 제외)."""
+    seed({"docadmin": ["DOC_ADMIN"]})
+    doc_id = _upload(client, auth, b"dup-detail-body", [])
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("again.txt", b"dup-detail-body", "text/plain")},
+        headers=auth("docadmin"),
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["error"]["detail"]
+    assert detail["existing_document_id"] == doc_id
+    assert detail["existing_document_title"] == "doc.txt"
+    assert detail["existing_document_status"] == "UPLOADED"

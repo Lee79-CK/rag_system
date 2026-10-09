@@ -685,6 +685,27 @@ kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
   "SELECT status, stage, error FROM index_jobs ORDER BY created_at DESC LIMIT 3;"
 ```
 
+**이미 업로드된 문서를 다른(새) 채널에 연결** — 같은 파일 재업로드는 해시 중복(FR-DOC-003)으로 409 이므로, 허용 채널을 `PATCH` 로 교체합니다. 변경 시 admin-api 가 재색인 Job 을 자동 생성하고, **재색인이 끝나야** 새 채널에서 검색됩니다(제거한 채널도 그때까지는 검색됨). admin-web 에서는 문서 목록의 **[채널]** 버튼, 또는 같은 파일 업로드 시 뜨는 "이미 등록된 문서입니다 → 채널 연결" 확인창으로 같은 동작을 합니다.
+
+```bash
+H='X-Auth-User: cklee'
+NEW=$(curl -s $ADMIN/api/v1/chat/channels -H "$H" | jq -r '.data[] | select(.name=="ai-regulation") | .id')
+# 채널 준비: binding 활성화 + 멤버 추가 (채널 생성·binding 생성은 admin-web 채널 화면 또는 POST /api/v1/chat/channels, /channels/{id}/bindings)
+#   curl -s -X POST $ADMIN/api/v1/chat/bindings/<binding_id>/enable -H "$H"
+#   curl -s -X POST $ADMIN/api/v1/chat/channels/$NEW/members -H "$H" -H 'Content-Type: application/json' -d '{"user_ids":["<chat_user_id>"]}'
+
+# docs/pdf 5종(제목 1._26…~5._26…)에 기존 채널 + 새 채널을 허용 (allowed_channel_ids = 전체 목록, 교체 의미)
+for id in $(curl -s $ADMIN/api/v1/documents -H "$H" | jq -r '.data[] | select(.title|test("^[1-5]\\._26")) | .id'); do
+  CUR=$(curl -s $ADMIN/api/v1/documents/$id -H "$H" | jq -c --arg n "$NEW" '.data.allowed_channel_ids + [$n] | unique')
+  curl -s -X PATCH $ADMIN/api/v1/documents/$id -H "$H" -H 'Content-Type: application/json' \
+    -d "{\"allowed_channel_ids\": $CUR}" | jq -c '.data | {changed, added, index_job, reindex_skipped_reason}'
+  sleep 5   # 재색인 Job 은 순차로 (216쪽 문서 포함)
+  kubectl -n rag-ingestion wait --for=condition=complete --timeout=30m \
+    $(kubectl -n rag-ingestion get jobs --sort-by=.metadata.creationTimestamp -o name | tail -1)
+done
+# 409 INDEX_JOB_RUNNING → 진행 중 색인이 끝난 뒤 재시도. reindex_skipped_reason=STATUS_INACTIVE 등은 ACL 만 저장된 것
+```
+
 `#rag-hr` 트리거 시나리오용으로 `samples/인사규정집.md` 를 `allowed_channel_ids=c0000000-0000-0000-0000-000000000002` 로 같은 방식으로 업로드해 두세요. 재색인은 `POST $ADMIN/api/v1/documents/<id>/reindex` (응답 `index_job_id`, `status`, `trigger`, `error`).
 
 > **fallback — `INDEX_JOB_TRIGGER=none` 인 경우에만**(예: values-poc 기본값으로 배포) admin-api 는 index_jobs 행만 만듭니다. 이때는 chart 가 배포한 Job 템플릿 ConfigMap 을 직접 인스턴스화합니다:
@@ -1002,6 +1023,8 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | vLLM 로그 `unrecognized arguments: ...` | 이미지의 vLLM 버전에서 제거된 플래그(예: 0.29 의 `--disable-log-requests`). `vllm.args` 에서 삭제. 플래그 존재 확인: `docker run --rm --entrypoint grep <이미지> -c <flag_name> /usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py` |
 | vLLM 로그 `PermissionError: [Errno 13] Permission denied: '/.cache'` → `Model architectures [...] failed to be inspected` | 비루트 uid 10001 이 이미지 `/etc/passwd` 에 없어 `HOME=/`. 차트가 `HOME=/home/vllm`(emptyDir)·`XDG_CACHE_HOME`·`USER` 를 주입하는지 확인 — `kubectl -n rag-ai get deploy vllm-llm-0 -o jsonpath='{.spec.template.spec.containers[0].env}'` |
 | 채팅 답변 `⚠️ 답변 생성 중 오류`, worker 로그 `500 ... reranker-api.rag-ai:8005/internal/v1/rerank`, reranker 로그 `XLMRobertaTokenizer has no attribute prepare_for_model` | transformers 5.x 가 설치된 이미지 — FlagEmbedding 1.4 reranker 는 5.x 비호환(메타데이터는 <6 허용). `models` extra 의 `transformers<5` 상한 확인 후 이미지 재빌드: `kubectl -n rag-ai exec deploy/reranker-api -- python -c "import transformers;print(transformers.__version__)"` → 4.x |
+| 문서 채널 변경 `PATCH /api/v1/documents/{id}` 가 409 `INDEX_JOB_RUNNING` | 해당 문서 색인 Job 이 실행 중 — 이전 ACL 을 이미 읽었을 수 있어 겹쳐 재색인하지 않는다. Job 완료(`kubectl -n rag-ingestion get jobs`) 후 재시도 |
+| 채널을 바꿨는데 새 채널에서 문서가 검색되지 않음 | 재색인 미완료 또는 생략 — PATCH 응답 `reindex_skipped_reason`(STATUS_UPLOADED/STATUS_INACTIVE 는 ACL 만 저장), index Job 완료 여부 확인. 채널 binding `enabled`·멤버십도 확인 |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
 | `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |

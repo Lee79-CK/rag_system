@@ -317,6 +317,76 @@
           }
         }
       },
+      "patch": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Update Document Channels",
+        "description": "허용 Channel(document_channel_acl) 전체 교체 + 변경 시 자동 재색인 (FR-DOC-004, PRD §17.8).\n\n격리는 Qdrant payload `allowed_channel_ids` 로만 이뤄지고 그 값은 색인 시점에 ACL 에서 복사되므로\n(parser-indexer), ACL 변경은 재색인이 끝나야 검색에 반영된다 — 제거한 채널도 그때까지는 검색된다.\npoint id 가 결정론적이라 같은 활성 버전 재색인은 payload 덮어쓰기다(중복 없음).",
+        "operationId": "update_document_channels_api_v1_documents__document_id__patch",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "X-Auth-User",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Auth-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Document Channels Api V1 Documents  Document Id  Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "tags": [
           "documents"
@@ -2403,6 +2473,25 @@
         },
         "type": "object",
         "title": "ChatUserUpdate"
+      },
+      "DocumentPatch": {
+        "properties": {
+          "allowed_channel_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Allowed Channel Ids",
+            "description": "허용 채널(chat_channels.id) 전체 목록 — 기존 ACL 을 대체한다."
+          }
+        },
+        "type": "object",
+        "required": [
+          "allowed_channel_ids"
+        ],
+        "title": "DocumentPatch",
+        "description": "PATCH 본문. allowed_channel_ids 는 전체 교체(빈 목록 = 어느 채널에서도 검색 안 됨)."
       },
       "FeedbackValue": {
         "type": "string",

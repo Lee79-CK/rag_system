@@ -1,7 +1,8 @@
 """문서 관리 API — docs/TDD.md §7.5 (§9.5).
 
 업로드(크기/확장자/sha256 중복검사 FR-DOC-002/003, 허용 Channel ACL FR-DOC-004), 목록, 상세, 버전,
-재색인(index_jobs INSERT + Job 트리거 — admin.services.index_trigger, ADR-008), 비활성화/삭제.
+재색인(index_jobs INSERT + Job 트리거 — admin.services.index_trigger, ADR-008), 비활성화/삭제,
+허용 Channel 변경(PATCH — ACL 교체 후 자동 재색인으로 Qdrant payload 반영).
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from pydantic import BaseModel, Field
 from rag_common import sha256_hex
 from rag_observability import get_logger
 from sqlalchemy import select
@@ -17,7 +19,14 @@ from sqlalchemy.orm import Session
 from admin.api.responses import api_error, envelope
 from admin.core.config import get_settings
 from admin.core.rbac import DOC_ADMIN, SYS_ADMIN, Principal, require_roles
-from admin.db.models import ChatChannel, Document, DocumentChannelAcl, DocumentVersion, IndexJob
+from admin.db.models import (
+    AuditLog,
+    ChatChannel,
+    Document,
+    DocumentChannelAcl,
+    DocumentVersion,
+    IndexJob,
+)
 from admin.db.session import get_db
 from admin.services.index_trigger import IndexJobTrigger, provide_index_trigger
 from admin.services.storage import NFSStorage
@@ -40,7 +49,17 @@ def _storage() -> NFSStorage:
     return NFSStorage(get_settings().document_storage_path)
 
 
-def _doc_view(doc: Document) -> dict:
+class DocumentPatch(BaseModel):
+    """PATCH 본문. allowed_channel_ids 는 전체 교체(빈 목록 = 어느 채널에서도 검색 안 됨)."""
+
+    allowed_channel_ids: list[str] = Field(
+        ...,
+        max_length=500,
+        description="허용 채널(chat_channels.id) 전체 목록 — 기존 ACL 을 대체한다.",
+    )
+
+
+def _doc_view(doc: Document, channel_ids: list[str]) -> dict:
     return {
         "id": str(doc.id),
         "title": doc.title,
@@ -49,8 +68,37 @@ def _doc_view(doc: Document) -> dict:
         "security_level": doc.security_level,
         "status": doc.status,
         "active_version_id": str(doc.active_version_id) if doc.active_version_id else None,
+        "allowed_channel_ids": channel_ids,
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
     }
+
+
+def _acl_map(db: Session, document_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
+    """document_id → 허용 channel_id 목록 (한 번의 쿼리, 목록 조회 N+1 방지)."""
+    acl: dict[uuid.UUID, list[str]] = {d: [] for d in document_ids}
+    if document_ids:
+        rows = db.execute(
+            select(DocumentChannelAcl.document_id, DocumentChannelAcl.channel_id)
+            .where(
+                DocumentChannelAcl.document_id.in_(document_ids),
+                DocumentChannelAcl.access_type == "ALLOW",
+            )
+            .order_by(DocumentChannelAcl.channel_id)
+        ).all()
+        for did, cid in rows:
+            acl[did].append(cid)
+    return acl
+
+
+def _channel_ids(db: Session, document_id: uuid.UUID) -> list[str]:
+    return _acl_map(db, [document_id])[document_id]
+
+
+def _get_doc(db: Session, document_id: uuid.UUID) -> Document:
+    doc = db.get(Document, document_id)
+    if doc is None:
+        raise api_error("NOT_FOUND", "문서를 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
+    return doc
 
 
 def _version_view(v: DocumentVersion) -> dict:
@@ -118,11 +166,15 @@ async def upload_document(
         select(DocumentVersion).where(DocumentVersion.hash == file_hash)
     ).scalar_one_or_none()
     if existing is not None:
+        # 기존 문서 제목·상태를 함께 돌려준다 — admin-web 이 "기존 문서에 채널 연결"을 제안할지 판단 (DELETED 제외).
+        existing_doc = db.get(Document, existing.document_id)
         raise api_error(
             "DUPLICATE_DOCUMENT",
             "이미 등록된 문서와 내용이 동일합니다 (중복 업로드).",
             status.HTTP_409_CONFLICT,
             existing_document_id=str(existing.document_id),
+            existing_document_title=existing_doc.title if existing_doc else None,
+            existing_document_status=existing_doc.status if existing_doc else None,
         )
 
     doc = Document(
@@ -155,7 +207,7 @@ async def upload_document(
     db.commit()
 
     result: dict = {
-        "document": _doc_view(doc),
+        "document": _doc_view(doc, channel_ids),
         "version": _version_view(version),
         "allowed_channel_ids": channel_ids,
     }
@@ -223,7 +275,8 @@ def list_documents(
     principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
 ) -> dict:
     docs = db.execute(select(Document).order_by(Document.created_at.desc())).scalars().all()
-    return envelope([_doc_view(d) for d in docs], count=len(docs))
+    acl = _acl_map(db, [d.id for d in docs])
+    return envelope([_doc_view(d, acl[d.id]) for d in docs], count=len(docs))
 
 
 @router.get("/{document_id}")
@@ -232,10 +285,122 @@ def get_document(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
 ) -> dict:
-    doc = db.get(Document, document_id)
-    if doc is None:
-        raise api_error("NOT_FOUND", "문서를 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
-    return envelope(_doc_view(doc))
+    doc = _get_doc(db, document_id)
+    return envelope(_doc_view(doc, _channel_ids(db, doc.id)))
+
+
+@router.patch("/{document_id}")
+def update_document_channels(
+    document_id: uuid.UUID,
+    body: DocumentPatch,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
+    trigger: IndexJobTrigger = Depends(provide_index_trigger),
+) -> dict:
+    """허용 Channel(document_channel_acl) 전체 교체 + 변경 시 자동 재색인 (FR-DOC-004, PRD §17.8).
+
+    격리는 Qdrant payload `allowed_channel_ids` 로만 이뤄지고 그 값은 색인 시점에 ACL 에서 복사되므로
+    (parser-indexer), ACL 변경은 재색인이 끝나야 검색에 반영된다 — 제거한 채널도 그때까지는 검색된다.
+    point id 가 결정론적이라 같은 활성 버전 재색인은 payload 덮어쓰기다(중복 없음).
+    """
+    doc = _get_doc(db, document_id)
+    if doc.status == "DELETED":
+        raise api_error(
+            "DOCUMENT_DELETED", "삭제된 문서는 채널을 변경할 수 없습니다.", status.HTTP_409_CONFLICT
+        )
+    new_ids = _validated_channel_ids(db, body.allowed_channel_ids)
+
+    # 진행 중 Job 판단은 documents.status 가 아니라 index_jobs 로 한다 —
+    # 색인 실패 시 documents.status 는 INDEXING 에 남으므로(mark_failed 는 index_jobs 만 갱신).
+    inflight: dict[str, IndexJob] = {}
+    if doc.active_version_id is not None:
+        for j in db.execute(
+            select(IndexJob)
+            .where(
+                IndexJob.document_version_id == doc.active_version_id,
+                IndexJob.status.in_(("PENDING", "RUNNING")),
+            )
+            .order_by(IndexJob.created_at.desc())
+        ).scalars():
+            inflight.setdefault(j.status, j)
+    if "RUNNING" in inflight:
+        # 실행 중 Job 은 이미 이전 ACL 을 읽었을 수 있어, 새 Job 을 겹쳐 띄우면 늦게 끝나는 쪽 payload 가 남는다.
+        raise api_error(
+            "INDEX_JOB_RUNNING",
+            "색인이 진행 중입니다. 완료 후 다시 시도하세요.",
+            status.HTTP_409_CONFLICT,
+            index_job_id=str(inflight["RUNNING"].id),
+        )
+
+    before = _channel_ids(db, doc.id)
+    added = [c for c in new_ids if c not in before]
+    removed = [c for c in before if c not in new_ids]
+    changed = bool(added or removed)
+
+    if changed:
+        for cid in removed:
+            row = db.get(DocumentChannelAcl, (doc.id, cid))
+            if row is not None:
+                db.delete(row)
+        for cid in added:
+            db.add(DocumentChannelAcl(document_id=doc.id, channel_id=cid, access_type="ALLOW"))
+
+    job: IndexJob | None = None
+    trigger_name: str | None = None
+    skipped: str | None = None
+    if changed:
+        if doc.active_version_id is None:
+            skipped = "NO_ACTIVE_VERSION"
+        elif doc.status not in ("ACTIVE", "INDEXING"):
+            # INACTIVE 를 재색인하면 activate_version 이 ACTIVE 로 되돌린다. UPLOADED 는 아직 미색인.
+            skipped = f"STATUS_{doc.status}"
+        elif "PENDING" in inflight:
+            job = inflight["PENDING"]  # 대기 Job 은 실행 시점에 ACL 을 읽으므로 새 ACL 이 반영된다.
+            skipped = "PENDING_JOB_REUSED"
+
+    after = sorted(new_ids)
+    if changed:
+        db.add(
+            AuditLog(
+                actor=principal.login_id,
+                action="DOCUMENT_ACL_UPDATE",
+                target=str(doc.id),
+                result="OK",
+                detail={"before": before, "after": after, "added": added, "removed": removed},
+            )
+        )
+    db.commit()
+
+    if changed and skipped is None:
+        job = _create_index_job(db, doc, trigger)
+        trigger_name = trigger.name
+    log.info(
+        "documents.acl_updated",
+        document_id=str(doc.id),
+        added=len(added),
+        removed=len(removed),
+        index_job_id=str(job.id) if job else None,
+        reindex_skipped=skipped,
+    )
+    return envelope(
+        {
+            "document": _doc_view(doc, after),
+            "changed": changed,
+            "added": added,
+            "removed": removed,
+            "index_job": (
+                {
+                    "index_job_id": str(job.id),
+                    "status": job.status,
+                    "trigger": trigger_name,
+                    "error": job.error,
+                }
+                if job
+                else None
+            ),
+            "reindex_skipped_reason": skipped,
+        }
+    )
 
 
 @router.get("/{document_id}/versions")
@@ -298,7 +463,7 @@ def deactivate_document(
         raise api_error("NOT_FOUND", "문서를 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND)
     doc.status = "INACTIVE"
     db.commit()
-    return envelope(_doc_view(doc))
+    return envelope(_doc_view(doc, _channel_ids(db, doc.id)))
 
 
 @router.delete("/{document_id}")

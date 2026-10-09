@@ -931,7 +931,7 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 | FR-DOC-001 | 관리자는 Admin Web에서 지원 형식의 문서를 업로드할 수 있어야 한다.           | P0   | 업로드 후 상태 생성                                |
 | FR-DOC-002 | 문서 크기 및 확장자 제한을 설정할 수 있어야 한다.                        | P0   | 정책 위반 파일 거부                                |
 | FR-DOC-003 | 파일 해시 기반 중복 업로드를 탐지해야 한다.                            | P0   | 동일 해시 경고/차단                                |
-| FR-DOC-004 | 문서별 제목, 카테고리, 부서, 보안등급, 허용 Channel(`allowed_channel_ids`)/그룹을 설정할 수 있어야 한다. | P0   | Metadata 및 `document_channel_acl` 저장(미존재 Channel 404, 형식 오류 422). `test_upload_registers_channel_acl` |
+| FR-DOC-004 | 문서별 제목, 카테고리, 부서, 보안등급, 허용 Channel(`allowed_channel_ids`)/그룹을 설정할 수 있어야 한다. | P0   | Metadata 및 `document_channel_acl` 저장(미존재 Channel 404, 형식 오류 422). 업로드 후에도 `PATCH /api/v1/documents/{id}` 로 허용 Channel 교체 → 자동 재색인 후 검색 반영. `test_upload_registers_channel_acl`, `test_fr_doc_004_patch_*` |
 | FR-DOC-005 | 문서 처리 상태를 Admin Web에서 확인할 수 있어야 한다.                  | P0   | Uploaded/Parsing/Indexing/Active/Failed 표시 |
 | FR-DOC-006 | 실패 원인 및 재시도를 지원해야 한다.                                | P0   | 실패 단계와 Error 조회, Retry 가능                  |
 | FR-DOC-007 | 새 버전을 등록하고 활성 버전을 관리할 수 있어야 한다.                      | P1   | Version 전환                                 |
@@ -1312,7 +1312,7 @@ Worker 처리(`process_chat_job`): `RUNNING` → Binding(channel_id) 조회(없�
 | POST   | `/api/v1/documents`              | 문서 업로드            |
 | GET    | `/api/v1/documents`              | 문서 목록             |
 | GET    | `/api/v1/documents/{id}`         | 문서 상세             |
-| PATCH  | `/api/v1/documents/{id}`         | 문서 Metadata/권한 수정 |
+| PATCH  | `/api/v1/documents/{id}`         | 문서 권한 수정 — 허용 Channel(`allowed_channel_ids`) 전체 교체 + 자동 재색인. Metadata 수정은 후속 |
 | POST   | `/api/v1/documents/{id}/reindex` | 재색인               |
 | DELETE | `/api/v1/documents/{id}`         | 문서 삭제             |
 | GET    | `/api/v1/index-jobs/{id}`        | 색인 Job 상태         |

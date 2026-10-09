@@ -5,6 +5,7 @@ import type {
   DocumentVersionView,
   DocumentView,
   ReindexResult,
+  UpdateDocumentChannelsResult,
   UploadDocumentResult,
 } from '../types';
 
@@ -66,6 +67,22 @@ export function useReindexDocument() {
     mutationFn: (id: string) => api.post<ReindexResult>(`/documents/${id}/reindex`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.documents });
+      qc.invalidateQueries({ queryKey: ['indexJobs'] });
+    },
+  });
+}
+
+/** 허용 채널 전체 교체. 변경 시 서버가 재색인 Job 을 만든다(Qdrant payload 반영). */
+export function useUpdateDocumentChannels() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, channelIds }: { id: string; channelIds: string[] }) =>
+      api.patch<UpdateDocumentChannelsResult>(`/documents/${id}`, {
+        allowed_channel_ids: channelIds,
+      }),
+    onSuccess: (_res, { id }) => {
+      qc.invalidateQueries({ queryKey: qk.documents });
+      qc.invalidateQueries({ queryKey: qk.document(id) });
       qc.invalidateQueries({ queryKey: ['indexJobs'] });
     },
   });
