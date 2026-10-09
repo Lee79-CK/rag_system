@@ -963,6 +963,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | 피드백이 전부 401 `INVALID_SIGNATURE` | `feedback-signing-key` 미마운트 — gateway 는 키가 없으면 `/api/v1/actions` 를 전면 거부(로그 `startup.feedback_signing_key_missing`), rag-worker 는 feedback_token 을 붙이지 않음(로그 `worker.feedback_signing_key_missing`). §4.3 ② |
 | 브라우저 로그인 버튼이 동작하지 않음 / crypto 오류 | HTTP 로 접속함 — WebCrypto 는 HTTPS/localhost 전용. `https://` 접속, 자체 서명이면 접속 PC 에 인증서 신뢰 등록 |
 | admin host(`rag.lab.local`) 에서만 인증서 오류 | TLS 인증서 SAN 에 `rag.lab.local` 누락 — §4.1 ④ 처럼 두 호스트를 SAN 에 넣어 재발급 후 `rag-chat-tls` 교체 |
+| `make seed-users` → `ModuleNotFoundError: No module named 'rag_common'` | 새 `.venv` 에서 `uv run` 은 루트 프로젝트(의존성 없음)만 sync 한다. 현행 Makefile 은 `uv run --package admin-api` 로 실행 — 구버전이면 `make install`(`uv sync --all-packages`) 후 재실행 |
 | 올바른 비밀번호인데 로그인 401 | `make seed-users` 가 클러스터 Secret 과 다른 pepper 파일로 해시함 — §4.1 에서 Secret 으로 등록한 `secrets/rag/password-pepper` 로 재실행 |
 | 질문은 게시되는데 답변이 실시간으로 안 뜸(새로고침하면 보임) / WS 핸드셰이크 403, gateway 로그 `... is not an accepted origin` | WS Origin 거부 또는 경로 문제 — ① chat-web 을 `NEXT_PUBLIC_WS_URL` 을 채운 채 빌드(교차 출처로 연결 → Origin 거부. 비운 채 재빌드) ② Ingress 에 `/ws` 경로 누락 ③ `networkPolicy.ingressController.namespace/podSelector` 와 실제 ingress-nginx 불일치(§4.5) |
 | WS 가 약 60초마다 끊겼다 재연결 | `proxy-read-timeout`/`proxy-send-timeout` annotation 미적용 — `kubectl -n rag-app get ingress rag-chat -o yaml` 확인 |

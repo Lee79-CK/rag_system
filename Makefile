@@ -74,15 +74,16 @@ helm-template: # poc / poc+lab 두 프로파일 렌더 (stdout)
 	  -f deploy/helm/rag-platform/values-lab.yaml > /dev/null && echo "poc+lab OK"
 
 qdrant-init: # rag_chunks_v1 collection + payload index 생성 (§6.2)
-	$(UV) run python -m ingestion.tools.qdrant_init
+	$(UV) run --package parser-indexer python -m ingestion.tools.qdrant_init
 
 seed: # DB 샘플 데이터 (scripts/seed_dev.sql) — 채널/Binding/문서 ACL
 	psql "$${DATABASE_URL:-postgresql://rag:rag-dev-only@localhost:5432/rag}" -f scripts/seed_dev.sql
 
 seed-users: # Web Chat 데모 사용자 + 채널 멤버십 (PASSWORD_PEPPER_FILE 필요)
-	$(UV) run python scripts/create_chat_user.py --email hong@example.com --name 홍길동 \
+	@# --package admin-api: rag_common·sqlalchemy·psycopg 를 가진 멤버로 실행 — make install 없이 새 .venv 에서도 동작
+	$(UV) run --package admin-api python scripts/create_chat_user.py --email hong@example.com --name 홍길동 \
 		--password '$(or $(CHAT_DEMO_PASSWORD),Rag!Assistant2026)' --channels rag-cloud-ops,rag-hr --role admin
-	$(UV) run python scripts/create_chat_user.py --email kim@example.com --name 김민수 \
+	$(UV) run --package admin-api python scripts/create_chat_user.py --email kim@example.com --name 김민수 \
 		--password '$(or $(CHAT_DEMO_PASSWORD),Rag!Assistant2026)' --channels rag-hr
 
 chat-gateway: # Web Chat 백엔드 (REST + socket.io /ws, :8001)
