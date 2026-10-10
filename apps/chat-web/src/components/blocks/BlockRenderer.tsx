@@ -72,16 +72,25 @@ function KV({ k, v }: { k: string; v: string }) {
 }
 
 // ---------------------------------------------------------------- table
+// 열 폭 규칙(열 key 무관): right 정렬 열은 내용 폭만, 중간 텍스트 열은 14rem 상한 + 줄바꿈,
+// 마지막 열(근거 표의 발췌)은 남는 폭을 모두 차지하되 12rem 미만으로 줄지 않는다(그보다 좁으면 가로 스크롤).
+// auto 레이아웃 표는 td 의 max/min-width 를 무시하므로 폭 제한은 셀 안쪽 div 에 건다.
+function cellWidth(index: number, count: number, align?: 'left' | 'right') {
+  if (align === 'right') return undefined;
+  return index === count - 1 ? 'min-w-[12rem]' : 'max-w-[14rem]';
+}
+
 function TableView({ block }: { block: TableBlockT }) {
+  const n = block.columns.length;
   return (
-    <div className="card overflow-hidden" style={{ maxWidth: 640 }}>
+    <div className="card overflow-hidden w-full">
       <div className="overflow-auto">
-        <table className="w-full border-collapse mono text-[12px]">
+        <table className="w-full border-collapse mono text-[12px] leading-[1.5]">
           <thead>
             <tr className="bg-surface2">
-              {block.columns.map((c) => (
-                <th key={c.key} className={clsx('px-3 py-2 font-semibold', c.align === 'right' ? 'text-right' : 'text-left')}>
-                  {c.label}
+              {block.columns.map((c, ci) => (
+                <th key={c.key} className={clsx('px-3 py-2 font-semibold align-top', c.align === 'right' ? 'text-right w-px whitespace-nowrap' : 'text-left')}>
+                  <div className={cellWidth(ci, n, c.align)}>{c.label}</div>
                 </th>
               ))}
             </tr>
@@ -89,12 +98,12 @@ function TableView({ block }: { block: TableBlockT }) {
           <tbody>
             {block.rows.map((r, i) => (
               <tr key={i} className="border-t border-line">
-                {block.columns.map((c) => {
+                {block.columns.map((c, ci) => {
                   const v = r[c.key];
                   const hot = c.emphasis && typeof v === 'number' && v >= 5;
                   return (
-                    <td key={c.key} className={clsx('px-3 py-2', c.align === 'right' && 'text-right', c.emphasis && 'font-semibold')} style={hot ? { color: 'var(--coral)' } : undefined}>
-                      {v == null ? '' : String(v)}
+                    <td key={c.key} className={clsx('px-3 py-2 align-top [overflow-wrap:anywhere]', c.align === 'right' && 'text-right w-px whitespace-nowrap', c.emphasis && 'font-semibold')} style={hot ? { color: 'var(--coral)' } : undefined}>
+                      <div className={cellWidth(ci, n, c.align)}>{v == null ? '' : String(v)}</div>
                     </td>
                   );
                 })}

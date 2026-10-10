@@ -33,7 +33,7 @@
 | `components/chat/ChannelHeader.tsx` | 고객사/환경/Skill/MCP → RAG Binding 상태 |
 | `components/shell/{Rail,ChannelSidebar}.tsx` | Threads/Events/관리/알림/DM/채널 브라우저 제거, 채널 필터(⌘K) |
 | `components/thread/ThreadPanel.tsx` | 인시던트 상태/담당/심각도/요약/메일 제거 |
-| `components/blocks/BlockRenderer.tsx` | event_card / approval_card / tool_trace 제거 |
+| `components/blocks/BlockRenderer.tsx` | event_card / approval_card / tool_trace 제거. TableView: `maxWidth 640` 제거(메시지 폭 전체), 열 폭 규칙 — right 열 내용 폭·중간 열 14rem 상한+줄바꿈·마지막 열(발췌) 확장(최소 12rem, 그 이하 가로 스크롤) |
 | `app/(app)/profile/page.tsx` | 비밀번호 변경만 (세션/외부계정/프로필 편집 제거) |
 | `app/login/page.tsx` | RAG 브랜딩, 외부 IdP 버튼 제거, 임시 비밀번호면 `/profile` 로 이동 |
 
