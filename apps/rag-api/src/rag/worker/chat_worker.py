@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -17,6 +18,18 @@ from rag.domain.pipeline import RagPipeline
 CHANNEL_DISABLED_TEXT = "⚠️ 이 채널의 RAG 응답이 비활성화되어 답변할 수 없습니다."
 
 log = get_logger("rag.worker")
+
+
+def _error_text(exc: BaseException) -> str:
+    """chat_jobs.error 용 — 예외 종류·대상 URL 포함. httpx.ReadTimeout 처럼 메시지가 빈 예외도 원인이 남게."""
+    text = str(exc) or "(no message)"
+    url = None
+    with contextlib.suppress(Exception):  # httpx 오류는 요청 URL 을 갖는다(없으면 RuntimeError)
+        url = str(exc.request.url)  # type: ignore[attr-defined]
+    out = f"{type(exc).__name__}: {text}"
+    if url and url not in text:
+        out += f" [{url}]"
+    return out[:500]
 
 
 class BindingReader(Protocol):
@@ -124,10 +137,18 @@ async def process_chat_job(
         )
         await stream.flush()
     except Exception as exc:  # noqa: BLE001 — 파이프라인 실패 시 오류 안내 (FR-CHAT-009)
-        deps.store.update_job_status(job_id, "FAILED", error=str(exc)[:500])
+        log.error("worker.pipeline_failed", job_id=job_id, error=_error_text(exc))
+        deps.store.update_job_status(job_id, "FAILED", error=_error_text(exc))
         await deps.delivery.deliver_error(request=request)
         raise
 
+    if output.usage.get("rerank_fallback"):
+        log.warning(
+            "worker.rerank_fallback",
+            job_id=job_id,
+            rerank_ms=output.usage.get("rerank_ms"),
+            hint="reranker timeout/오류 → 벡터 순서로 답변. RERANKER_TIMEOUT·VECTOR_TOP_K·reranker 상태 확인",
+        )
     latency_ms = int(output.usage.get("llm_ms", 0)) or None
     citation_dicts = [c.model_dump() for c in output.citations]
     message_id = deps.store.add_assistant_message(

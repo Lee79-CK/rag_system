@@ -85,6 +85,7 @@ admin-web 업로드 → admin-api(index_jobs 생성) → K8s Job(rag-ingestion) 
 | 품질 › 품질 평가 | `/evaluation` | SYS_ADMIN, QUALITY_EVALUATOR (API 스텁 — CLI 사용, §6.2) |
 | 시스템 › 설정 | `/settings` | SYS_ADMIN (※ 변경해도 답변에 반영 안 됨, §6.3) |
 | 시스템 › 감사 로그 | `/audit` | SYS_ADMIN, AUDITOR (조회 API 미구현 — SQL 사용, §8.4) |
+| 시스템 › 오류 로그 | `/errors` | SYS_ADMIN — 대화·색인·관리 API 오류와 관련 파드 로그 (§10.2) |
 
 - 메뉴 권한은 admin-api 권한과 일치합니다. 권한이 없는 메뉴는 사이드바에서 비활성화되고, 주소를 직접 입력해도 **"이 화면에 접근할 권한이 없습니다"** 가 표시됩니다.
 - 접속 사용자를 확인할 수 없으면(`X-Auth-User` 미설정·미등록) 모든 화면 대신 **"관리자 신원을 확인할 수 없습니다"** 가 표시됩니다 — 랩에서는 우상단 접속 사용자를 확인하세요.
@@ -317,7 +318,7 @@ RAG_API_URL=http://localhost:8002 uv run python -m evaluation.runner \
 # deploy/helm/rag-platform/values-lab.yaml — appServices.rag-api.extraEnv (rag-worker 가 공유)
 - { name: SIMILARITY_THRESHOLD, value: "0.3" }
 ```
-→ 커밋 후 재배포(§7.1), 평가로 효과 확인. 현재 기본값: 검색 30건 → 재순위 상위 8건, 임계값 0.0, 출력 최대 1,024 토큰.
+→ 커밋 후 재배포(§7.1), 평가로 효과 확인. 현재 값: 검색 후보 `VECTOR_TOP_K`(기본 30, **랩 12**) → 재순위 상위 8건, 임계값 0.0, 출력 최대 1,024 토큰. 재순위 제한 시간 `RERANKER_TIMEOUT`(45초), reranker 입력 길이 `RERANKER_MAX_LENGTH`(랩 512). CPU reranker 는 후보 수·청크 길이에 비례해 느려지므로(30개×긴 한글 청크 ≈ 40~90초) 후보 수를 늘릴 때는 응답 시간을 함께 확인하세요.
 
 ### 6.4 대화 작업
 
@@ -424,6 +425,8 @@ vLLM **이미지** 교체는 새 태그로 미러링 후 `vllm.imageTag` 변경(
 | `documents.index_trigger_failed` | admin-api | 색인 Job 생성 실패 |
 | `documents.acl_updated` | admin-api | 문서 허용 채널 변경 |
 | `index_completed` / `index_failed` | parser-indexer | 색인 결과 (Job 로그는 1시간 후 삭제) |
+| `worker.pipeline_failed` | rag-worker | 답변 실패 — `error` 에 예외 종류·대상 URL (예: `ReadTimeout: … [http://reranker-api…]`) |
+| `worker.rerank_fallback` | rag-worker | 재순위 실패/시간 초과 → **벡터 순서로 답변**(오류 아님, 품질 다소 저하). 잦으면 §6.3 튜닝 |
 
 ```bash
 kubectl -n rag-app logs deploy/rag-worker --since=1h | grep -i error
@@ -476,19 +479,67 @@ sudo tar -C /data/bulk -czf /data/bulk/backup/documents-$(date +%F).tgz document
 
 ### 10.1 1차 점검 순서
 
-1. `kubectl get pods -A -l app.kubernetes.io/part-of=rag-platform -o wide` — Running 아닌 파드
+1. `kubectl get pods -A -l app.kubernetes.io/part-of=rag-platform -o wide` — Running 아닌 파드. **vLLM 파드는 이 라벨이 없어 목록에 안 나오므로** `kubectl -n rag-ai get pods -o wide` 로 따로 확인
 2. `kubectl -n <ns> describe pod <pod>` 의 Events / `kubectl -n <ns> logs <pod> --previous`
 3. 노드 상태와 디스크: `kubectl get nodes`, `df -h`
-4. 증상별 표(10.2) → 상세는 가이드 §8 트러블슈팅
+4. 오류 원인은 포털 **오류 로그**(§10.2)에서 먼저 확인, 그 밖의 증상은 §10.3 표 → 상세는 가이드 §8 트러블슈팅
 
-### 10.2 증상별 조치
+### 10.2 오류 추적 — 포털 "오류 로그" 화면 (우선)
+
+**시스템 › 오류 로그** (SYS_ADMIN)
+
+1. 출처(전체·대화·색인·관리 API)와 기간(1시간·24시간·7일)을 고르고, 채널명·문서명·오류 문구로 검색합니다.
+2. 목록은 **대화 답변 실패**(채널·질문 앞부분), **색인 실패**(문서·단계), **관리 API 오류/권한 거부**를 최신순으로 보여 줍니다. 정상 취소(재색인 교체 등)는 제외됩니다.
+3. 행을 누르면 오류 전문과 함께 **관련 로그**를 볼 수 있습니다. 관련 서비스는 오류 메시지의 대상 주소로 자동 선택되며(예: `reranker-api`), 다른 서비스로 바꿀 수 있습니다. 기본 시간 범위는 오류 시각 **5분 전 ~ 2분 후**입니다.
+4. 로그는 파드별로 표시되고 Traceback·ERROR 줄은 빨간색입니다. 재시작된 파드는 이전 컨테이너 로그도 함께 보입니다. 비밀번호·토큰 등은 **마스킹**되어 표시됩니다.
+
+알아둘 점:
+- 로그 열람은 감사 로그에 `ERROR_LOG_VIEW` 로 기록됩니다(로그에 질문 원문이 포함될 수 있음).
+- **색인 Job 로그는 완료·실패 1시간 후 Pod 와 함께 삭제**됩니다. 직전 재시작보다 앞선 컨테이너 로그, 노드의 로그 회전으로 지워진 로그는 볼 수 없습니다(중앙 로그 수집 없음, §8.3).
+- [로그 조회] 가 `POD_LOGS_DISABLED`(503)면 파드 로그 조회가 꺼진 배포입니다(`POD_LOG_ACCESS=k8s`, chart `podLogs.enabled`). 아래 kubectl 절차를 쓰세요.
+
+### 10.2.1 kubectl 로 추적 (대안)
+
+```bash
+# ① 실패한 대화 작업과 오류 — 어느 채널·시각·원인(예외 종류와 대상 URL)
+kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c "
+SELECT j.status, left(j.error,200) error, j.queued_at, c.name channel
+  FROM chat_jobs j
+  LEFT JOIN channel_conversations cc ON cc.id = j.conversation_id
+  LEFT JOIN chat_channels c ON c.id::text = cc.channel_id::text
+ ORDER BY j.queued_at DESC LIMIT 10;"
+
+# ② rag-worker 로그 (replica 2개 모두) — Traceback 의 마지막 호출이 실패 지점
+for p in $(kubectl -n rag-app get pods -o name | grep rag-worker); do
+  echo "== $p"; kubectl -n rag-app logs $p --since=1h | grep -E "pipeline_failed|rerank_fallback|Traceback" -A3 | tail -40
+done
+
+# ③ 실패 지점 서비스 로그
+kubectl -n rag-ai logs deploy/reranker-api  --since=1h | grep -v health    # .../internal/v1/rerank
+kubectl -n rag-ai logs deploy/embedding-api --since=1h | grep -v health    # .../embeddings
+kubectl -n rag-ai logs deploy/vllm-llm-0    --since=1h | tail -50           # .../v1/chat/completions
+```
+
+포털 **시스템 › 오류 로그** 또는 **서비스 운영 › 대화 작업**의 "실패만 보기"에서도 ①을 볼 수 있습니다. 오류 유형별 판단:
+
+| `error` 패턴 | 원인 | 조치 |
+|---|---|---|
+| `ReadTimeout … [http://embedding-api…]` | 임베딩 지연 — 대개 대량 색인과 겹침 | 색인 완료 후 재질문, `INDEX_MAX_PARALLEL` 1 유지 |
+| `HTTPStatusError: Server error '500' … reranker` | reranker 내부 오류 | reranker 로그 Traceback (가이드 §8 transformers 항목 등) |
+| `ConnectError … vllm-service` / `ReadTimeout … /v1/chat/completions` | vLLM 미기동·재시작·과부하 | vLLM 파드 상태·로그, 로딩 완료 대기 |
+| `CHANNEL_NOT_BOUND_OR_DISABLED` | 질문 직후 Binding 비활성화 | 채널 RAG 응답 확인 |
+
+> reranker 시간 초과는 이제 답변 실패가 아니라 **벡터 순서로 대체 답변**하고 `worker.rerank_fallback` 경고만 남깁니다. 경고가 잦으면 §6.3 의 `VECTOR_TOP_K`·`RERANKER_MAX_LENGTH` 를 조정하세요.
+
+### 10.3 증상별 조치
 
 | 증상 | 원인 | 조치 |
 |---|---|---|
 | 모든 사용자 로그인 503 "인증 설정이 완료되지 않았습니다" | JWT 키/pepper Secret 누락(fail-closed) | `rag-chat-secrets` 키 확인, `startup.*_missing` 로그 |
 | 맞는 비밀번호인데 로그인 401 | 계정 생성 시 다른 pepper 파일 사용 | 같은 pepper 로 재설정(포털 [비밀번호 재설정]) |
 | 로그인 버튼 무반응 | HTTP 접속 | HTTPS 로 접속 |
-| 모든 답변 "⚠️ 답변 생성 중 오류" | vLLM·reranker·embedding 중 하나 장애 | rag-worker 로그의 실패 URL 로 대상 특정 → 해당 파드 로그 |
+| 모든 답변 "⚠️ 답변 생성 중 오류" | vLLM·embedding 장애 등 | §10.2 절차로 실패 URL 특정 → 해당 파드 로그 |
+| 긴 PDF 채널 답변이 유독 느림 / `worker.rerank_fallback` 경고 반복 | CPU reranker 가 후보 수 × 긴 청크를 시간 내 처리 못함 | `VECTOR_TOP_K` 축소, `RERANKER_MAX_LENGTH=512`, 평가로 품질 확인(§6.2) |
 | 답변이 엉뚱함 | embedding/reranker 가 mock 엔진 | `engine_ready` 의 `-mock` 확인, 모델 경로·권한 |
 | 업로드는 됐는데 "근거 없음" | 허용 채널 없음 / 색인 미완료 / Scope 조건 | §5.2·§5.3·§4.1 확인 |
 | 피드백 모두 401 | `feedback-signing-key` 누락/불일치 | Secret 확인 후 gateway·worker 재시작 |
@@ -505,10 +556,11 @@ sudo tar -C /data/bulk -czf /data/bulk/backup/documents-$(date +%F).tgz document
 | 노드 DiskPressure, 파드 대량 Evicted | NVMe 고갈 | 미사용 이미지 정리 `sudo crictl rmi --prune`, PVC 위치 확인 |
 | helm `ownership` 오류 | `-n rag-platform` 누락 | `scripts/redeploy_lab.sh` 사용 |
 | 문서 채널 변경·비활성화·삭제 409 `INDEX_JOB_RUNNING` | 색인 진행 중 | 완료 후 재시도 |
+| 오류 로그 [로그 조회] 503 `POD_LOGS_DISABLED` / 502 | 파드 로그 조회 미설정·권한·apiserver 접근 | 가이드 §8 오류 로그 항목, 임시로 §10.2.1 kubectl |
 | 문서 비활성화·삭제 503 `SEARCH_INDEX_UNAVAILABLE` | admin-api → Qdrant 연결 실패 (상태 불변) | qdrant 파드, admin-api `QDRANT_URL` 확인 후 재시도 |
 | [재색인] 409 `DOCUMENT_INACTIVE` | 비활성 문서 | [활성화] 사용 |
 
-### 10.3 장애 공지
+### 10.4 장애 공지
 
 vLLM 재시작·모델 교체·노드 작업은 최대 10~15분 답변 불가가 생깁니다. 사용자에게는 "답변 생성 중 오류"가 보이므로 사전 공지하고, 작업 후 시험 질문으로 복구를 확인하세요.
 

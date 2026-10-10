@@ -50,6 +50,9 @@ serviceAccounts:
   adminApi:
     create: true                  # rag-ingestion 에 Job 생성 권한 (templates/rbac.yaml)
 
+podLogs:
+  enabled: true                   # 오류 로그 화면 — rag-app·rag-ai·rag-ingestion pods/log 읽기 Role (admin-api POD_LOG_ACCESS=k8s)
+
 migration:
   enabled: true                   # helm install/upgrade 시 alembic upgrade head (hook Job)
 
@@ -126,6 +129,11 @@ appServices:
       - { name: LLM_ENABLE_THINKING,   value: "false" }
       # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2) ※ 코드가 아직 semaphore 로 강제하지 않음 — 실효 동시성은 rag-worker replica 수
       - { name: CHAT_MAX_CONCURRENCY,  value: "8" }
+      # CPU reranker 지연 억제 (P3 실측, 8 CPU): 30개×730자 ≈ 40s → 30s timeout 초과로 답변 실패.
+      # 12개 ≈ 14s(긴 청크 섞이면 ≈ 23s, RERANKER_MAX_LENGTH=512 기준). 넘으면 벡터 순서로 대체(rerank_fallback).
+      # 바꾸면 dataset-ko-pdf 평가로 Recall@10 확인 (가이드 §7.1)
+      - { name: VECTOR_TOP_K,          value: "12" }
+      - { name: RERANKER_TIMEOUT,      value: "45" }
       # tokenizer 는 LLM 노드(PGX)에만 있으므로 P3 의 rag-api 에서는 근사 카운팅 경로를 쓴다
       - { name: TOKENIZER_PATH,        value: "/models/llm/main" }
 
@@ -145,6 +153,7 @@ appServices:
       - { name: INDEX_JOB_TRIGGER,     value: "k8s" }        # 업로드/재색인 → parser-indexer Job 자동 생성
       - { name: INDEX_JOB_NAMESPACE,   value: "rag-ingestion" }
       - { name: QDRANT_URL,            value: "http://qdrant.rag-data:6333" }   # 비활성화/삭제 → is_active=false
+      - { name: POD_LOG_ACCESS,        value: "k8s" }    # 오류 로그 화면의 파드 로그 (podLogs.enabled Role)
       - { name: APP_ENV,   value: "lab" }
       - { name: LOG_LEVEL, value: "INFO" }
 
@@ -172,6 +181,8 @@ appServices:
     extraEnv:
       - { name: RERANKER_MODEL_PATH, value: "/models/reranker/bge-reranker-v2-m3" }
       - { name: RERANKER_MOCK,       value: "0" }
+      # 긴 한글 청크(≈2,000자 ≈ 1,050 tok)의 cross-encoder 비용 절반 (12개: 38s → 23s). 평균 청크(≈400 tok)는 영향 없음
+      - { name: RERANKER_MAX_LENGTH, value: "512" }
 
   # 관리자 Portal (nginx 정적 서빙, apps/admin-web/Containerfile). API 는 Ingress 가 /api 로 프록시
   admin-web:

@@ -13,6 +13,7 @@ import { Settings } from './pages/Settings';
 import { Evaluation } from './pages/Evaluation';
 import { AuditLogs } from './pages/AuditLogs';
 import { FeedbackDashboard } from './pages/FeedbackDashboard';
+import { ErrorLogs } from './pages/ErrorLogs';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -68,6 +69,7 @@ export default function App() {
                 <Route path="evaluation" element={<Evaluation />} />
                 <Route path="feedback" element={<FeedbackDashboard />} />
                 <Route path="audit" element={<AuditLogs />} />
+                <Route path="errors" element={<ErrorLogs />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
             </Routes>

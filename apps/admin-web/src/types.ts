@@ -323,3 +323,41 @@ export interface DashboardStatus {
   deadLetterJobs: number;
   feedback: FeedbackSummary | null;
 }
+
+// ----- 오류 로그 (admin.api.errors, FR-OPS-011) -----
+export type ErrorSource = 'chat' | 'index' | 'admin';
+
+/** DB 에 기록된 오류 1건 — 대화 작업(chat_jobs) · 색인 작업(index_jobs) · 관리 API(audit_logs). */
+export interface ErrorEventView {
+  id: string;
+  source: ErrorSource;
+  ref_id: string;
+  occurred_at: string | null;
+  status: string;
+  error: string | null;
+  summary: string;
+  context: Record<string, string | number | null>;
+  /** 관련 로그를 볼 서비스(추정) — 서버 allowlist 중 하나 */
+  service: string;
+}
+
+export interface PodLogLine {
+  ts: string | null;
+  text: string;
+}
+
+export interface PodLogView {
+  pod: string;
+  previous: boolean;
+  truncated: boolean;
+  lines: PodLogLine[];
+}
+
+export interface ErrorLogsResult {
+  service: string;
+  namespace: string;
+  since: string;
+  until: string;
+  reason: string | null;
+  pods: PodLogView[];
+}

@@ -14,17 +14,16 @@ admin-api 는 `index_jobs` 행을 만든 뒤 parser-indexer 를 **K8s Job 으로
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 from typing import Protocol
 
 import httpx
 from rag_observability import get_logger
 
 from admin.core.config import Settings, get_settings
+from admin.services.k8s import KubeApi, safe_error
 
 log = get_logger("admin.index_trigger")
 
-_SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 _PLACEHOLDER = "__INDEX_JOB_ID__"
 
 
@@ -68,20 +67,13 @@ class K8sJobTrigger:
     ) -> None:
         self._ns = namespace
         self._cm = template_configmap
-        self._api_base = api_base or _in_cluster_api_base()
-        self._token = token if token is not None else _read(_SA_DIR / "token")
-        verify: str | bool = ca_path or (
-            str(_SA_DIR / "ca.crt") if (_SA_DIR / "ca.crt").is_file() else True
+        self._api = KubeApi(
+            api_base=api_base, token=token, ca_path=ca_path, client=client, timeout=timeout
         )
-        self._client = client or httpx.Client(
-            base_url=self._api_base, timeout=timeout, verify=verify
-        )
+        self._client = self._api.client
 
     def _headers(self, content_type: str | None = None) -> dict[str, str]:
-        h = {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
-        if content_type:
-            h["Content-Type"] = content_type
-        return h
+        return self._api.headers(content_type)
 
     def _load_template(self) -> str:
         url = f"/api/v1/namespaces/{self._ns}/configmaps/{self._cm}"
@@ -89,7 +81,7 @@ class K8sJobTrigger:
             resp = self._client.get(url, headers=self._headers())
             resp.raise_for_status()
         except httpx.HTTPError as exc:
-            raise IndexTriggerError(f"configmap {self._cm} 조회 실패: {_safe(exc)}") from exc
+            raise IndexTriggerError(f"configmap {self._cm} 조회 실패: {safe_error(exc)}") from exc
         data = resp.json().get("data") or {}
         template = data.get("job.yaml")
         if not template or _PLACEHOLDER not in template:
@@ -105,28 +97,10 @@ class K8sJobTrigger:
             )
             resp.raise_for_status()
         except httpx.HTTPError as exc:
-            raise IndexTriggerError(f"Job 생성 실패: {_safe(exc)}") from exc
+            raise IndexTriggerError(f"Job 생성 실패: {safe_error(exc)}") from exc
         name = (resp.json().get("metadata") or {}).get("name")
         log.info("index_trigger.k8s_job_created", index_job_id=index_job_id, job_name=name)
         return name
-
-
-def _safe(exc: httpx.HTTPError) -> str:
-    """예외 메시지에서 상태코드/종류만 남긴다 (Bearer 토큰 등 헤더 노출 방지)."""
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    return f"{type(exc).__name__}" + (f" status={status}" if status else "")
-
-
-def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-
-
-def _in_cluster_api_base() -> str:
-    import os
-
-    host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
-    port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
-    return f"https://{host}:{port}"
 
 
 def build_trigger(settings: Settings) -> IndexJobTrigger:

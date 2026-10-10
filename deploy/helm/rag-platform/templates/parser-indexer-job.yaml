@@ -13,10 +13,20 @@ data:
     metadata:
       generateName: index-job-
       namespace: {{ .Values.ingestion.namespace }}
+      labels:
+        app.kubernetes.io/name: parser-indexer
+        app.kubernetes.io/part-of: rag-platform
+        ragplatform.io/index-job-id: "__INDEX_JOB_ID__"
     spec:
       backoffLimit: 2
       ttlSecondsAfterFinished: 3600
       template:
+        metadata:
+          # admin-web 오류 로그 화면이 index_jobs.id 로 이 Pod 의 로그를 찾는다 (admin.services.pod_logs)
+          labels:
+            app.kubernetes.io/name: parser-indexer
+            app.kubernetes.io/part-of: rag-platform
+            ragplatform.io/index-job-id: "__INDEX_JOB_ID__"
         spec:
           restartPolicy: Never
           securityContext:

@@ -17,4 +17,6 @@ export const qk = {
   feedbackSummary: ['feedback', 'summary'] as const,
   feedbackByChannel: ['feedback', 'by-channel'] as const,
   feedbackMessages: (value: string) => ['feedback', 'messages', value] as const,
+  errors: (filters: object) => ['errors', filters] as const,
+  errorLogs: (params: object) => ['errors', 'logs', params] as const,
 };

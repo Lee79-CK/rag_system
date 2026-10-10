@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # Timeouts
     http_connect_timeout: float = 3.0
     http_read_timeout: float = 30.0
+    # reranker 는 CPU cross-encoder 라 후보 수·청크 길이에 비례해 느리다(랩 실측: 12개×730자 ≈ 14s,
+    # 30개×730자 ≈ 40s). embedding 과 분리된 상한 — 넘으면 파이프라인이 벡터 순서로 대체한다.
+    reranker_timeout: float = 45.0
 
     @property
     def sqlalchemy_url(self) -> str:

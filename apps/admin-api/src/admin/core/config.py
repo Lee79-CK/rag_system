@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # 그대로 두면 문서의 채널 변경·비활성화·재색인이 영구히 409 로 막힌다. 최대 문서(1,000쪽 ≈ 30분)보다 넉넉히.
     index_job_stale_minutes: int = Field(default=120, alias="INDEX_JOB_STALE_MINUTES")
 
+    # --- 오류 로그 화면의 파드 로그 조회 (admin.services.pod_logs) ---
+    # none: 비활성(DB 오류 목록만) · k8s: in-cluster SA 로 pods/log 조회 — chart podLogs.enabled 의 Role 필요
+    pod_log_access: str = Field(default="none", alias="POD_LOG_ACCESS")
+    log_app_namespace: str = Field(default="rag-app", alias="LOG_APP_NAMESPACE")
+    log_ai_namespace: str = Field(default="rag-ai", alias="LOG_AI_NAMESPACE")
+
     # --- 색인 Job 트리거 (ADR-008, §7.5) ---
     # none: index_jobs 행만 생성(로컬/CLI 실행) · k8s: kube-apiserver 로 parser-indexer Job 생성
     index_job_trigger: str = Field(default="none", alias="INDEX_JOB_TRIGGER")

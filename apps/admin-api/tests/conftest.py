@@ -89,6 +89,17 @@ def client(engine, TestSession, monkeypatch):
             pass
 
     app.dependency_overrides[provide_search_index] = lambda: _NullSearchIndex()
+    # 파드 로그(kube-apiserver)도 기본 fake — Pod 없음. 테스트별로 override 한다.
+    from admin.services.pod_logs import provide_pod_log_reader
+
+    class _NoPods:
+        def list_pods(self, namespace, label_selector):
+            return []
+
+        def read_log(self, namespace, pod, *, since_time, previous=False):
+            return ""
+
+    app.dependency_overrides[provide_pod_log_reader] = lambda: _NoPods()
     # 감사 미들웨어도 테스트 엔진을 사용하도록 교체.
     monkeypatch.setattr(audit_mod, "get_sessionmaker", lambda: TestSession)
 

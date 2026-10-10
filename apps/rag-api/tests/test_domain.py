@@ -165,3 +165,67 @@ async def test_pipeline_streaming_delivers_deltas_in_order():
     assert out.answer == "가나다"
     assert out.usage["completion_tokens"] == 3
     assert "llm_first_token_ms" in out.usage
+
+
+# ---------------------------------------------------------------- reranker 장애 대체 (FR-RAG-006 Graceful degradation)
+async def test_fr_rag_006_rerank_failure_falls_back_to_vector_order():
+    """reranker timeout/5xx 는 답변 실패가 아니라 벡터 점수 순서 상위 top_n 으로 대체 — 근거 답변 유지."""
+    from rag.domain.pipeline import PipelineConfig, RagPipeline
+    from rag.domain.ports import LLMStreamEvent
+    from rag.domain.tokens import HeuristicTokenCounter
+
+    class Emb:
+        async def embed(self, texts):
+            return [[0.0] * 4 for _ in texts]
+
+    class Ret:
+        async def search(self, v, f, k):
+            return [
+                RetrievedChunk(payload=_payload(1, "약한 근거"), score=0.3),
+                RetrievedChunk(payload=_payload(2, "강한 근거"), score=0.9),
+                RetrievedChunk(payload=_payload(3, "중간 근거"), score=0.6),
+            ]
+
+    class TimeoutRr:
+        async def rerank(self, q, docs, n):
+            raise TimeoutError("reranker ReadTimeout")
+
+    seen: list[list[dict]] = []
+
+    class LLM:
+        async def complete(self, *a, **k):
+            raise AssertionError
+
+        async def stream(self, messages, *, max_tokens, temperature):
+            seen.append(messages)
+            yield LLMStreamEvent(delta="답변 [1]")
+
+    async def on_delta(d: str) -> None:
+        pass
+
+    pipe = RagPipeline(
+        embedding=Emb(),
+        retrieval=Ret(),
+        reranker=TimeoutRr(),
+        llm=LLM(),
+        token_counter=HeuristicTokenCounter(),
+        # 임계값이 있어도 대체 시에는 rerank 임계값(점수 척도가 다름)으로 '근거 없음' 처리하지 않는다
+        config=PipelineConfig(rerank_top_n=2, rerank_score_threshold=0.95),
+    )
+    out = await pipe.run(question="q", binding=_binding(), on_delta=on_delta)
+    assert out.insufficient_evidence is False
+    assert out.usage["rerank_fallback"] == 1
+    assert [c.payload.chunk_id for c in out.selected_chunks] == ["v1-00002", "v1-00003"]
+    assert out.answer == "답변 [1]" and seen  # LLM 까지 호출됨
+
+
+def test_fr_chat_009_worker_error_text_names_exception_and_url():
+    """httpx.ReadTimeout 은 str(exc) 가 비어 chat_jobs.error 가 빈칸이 됐다 — 종류·대상 URL 을 남긴다."""
+    import httpx
+    from rag.worker.chat_worker import _error_text
+
+    req = httpx.Request("POST", "http://reranker-api.rag-ai:8005/internal/v1/rerank")
+    text = _error_text(httpx.ReadTimeout("", request=req))
+    assert text.startswith("ReadTimeout: ")
+    assert "reranker-api.rag-ai:8005/internal/v1/rerank" in text
+    assert _error_text(ValueError("bad")) == "ValueError: bad"

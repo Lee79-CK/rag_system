@@ -50,7 +50,7 @@ def build_pipeline(settings: Settings) -> RagPipeline:
         reranker=RerankerClient(
             settings.reranker_api_url,
             connect_timeout=settings.http_connect_timeout,
-            read_timeout=settings.http_read_timeout,
+            read_timeout=settings.reranker_timeout,
         ),
         llm=LLMClient(
             settings.vllm_api_url,

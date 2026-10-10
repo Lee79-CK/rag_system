@@ -32,7 +32,8 @@ type IconName =
   | 'feedback'
   | 'evaluation'
   | 'settings'
-  | 'audit';
+  | 'audit'
+  | 'errors';
 
 function NavIcon({ name }: { name: IconName }) {
   const p = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2 };
@@ -65,6 +66,8 @@ function NavIcon({ name }: { name: IconName }) {
       );
     case 'audit':
       return (<svg {...p}><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z" /><path d="M9 12l2 2 4-4" /></svg>);
+    case 'errors':
+      return (<svg {...p}><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>);
   }
 }
 
@@ -116,6 +119,7 @@ const NAV: NavGroup[] = [
     items: [
       { path: '/settings', label: '설정', icon: 'settings', title: '설정', roles: ['SYS_ADMIN'] },
       { path: '/audit', label: '감사 로그', icon: 'audit', title: '감사 로그', roles: ['SYS_ADMIN', 'AUDITOR'] },
+      { path: '/errors', label: '오류 로그', icon: 'errors', title: '오류 로그', roles: ['SYS_ADMIN'] },
     ],
   },
 ];

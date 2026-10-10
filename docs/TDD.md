@@ -1246,7 +1246,9 @@ async def process_chat_job(deps, job_id, request):
          a. Embedding: POST /internal/v1/embeddings [question]
          b. Qdrant query_points: build_filter(binding) + top_k=VECTOR_TOP_K(30)
          c. Threshold 판정: 근거 부족 → LLM 미호출·delta 없음 (§7.2.3)
-         d. Re-rank: POST /internal/v1/rerank (후보 30 → top_n 8) → 근거 부족 재판정
+         d. Re-rank: POST /internal/v1/rerank (후보 VECTOR_TOP_K(기본 30, 랩 12) → top_n 8) → 근거 부족 재판정.
+            reranker 오류·timeout(RERANKER_TIMEOUT, 기본 45s)은 답변 실패가 아니라 벡터 점수 순서 top_n 으로 대체
+            (usage.rerank_fallback=1, worker 로그 worker.rerank_fallback). 대체 시 rerank 임계값 판정은 생략(점수 척도 상이)
          e. Context 조립: rerank 상위부터 Token Budget(8K)까지 채움 (FR-RAG-008)
          f. Prompt 조립 (§7.2.4)
          g. LLMPort.stream(): vLLM chat.completions(stream=True, stream_options.include_usage,
@@ -1385,7 +1387,8 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
 
 ### 7.4 reranker-api
 
-- FlagEmbedding `FlagReranker(RERANKER_MODEL_PATH)` — CPU, max_length=1024.
+- FlagEmbedding `FlagReranker(RERANKER_MODEL_PATH)` — CPU, max_length=1024(`RERANKER_MAX_LENGTH`, 랩 512).
+- CPU cross-encoder 비용 ∝ 후보 수 × 배치 내 최장 청크 길이. 랩 실측(8 CPU, 한글): 30개×730자 ≈ 40s · 12개 ≈ 14s · 12개×2,000자 38s(1024)→23s(512). rag-api 의 `VECTOR_TOP_K`·`RERANKER_TIMEOUT` 과 함께 조정하고, 바꾸면 평가셋으로 Recall@10 확인.
 - `POST /internal/v1/rerank` — PRD §17.7 계약 그대로. 입력 후보 상한 50.
 - score는 sigmoid 정규화 값으로 반환하여 threshold 비교 일관성 확보.
 
@@ -1407,6 +1410,8 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
   - 같은 문서 중복 Job 방지: 재색인·활성화는 RUNNING 이면 409, PENDING 은 `CANCELLED(SUPERSEDED)` 후 새 Job(트리거 실패로 영영 안 도는 PENDING 대비). PATCH 는 정상 PENDING 만 재사용(error 있는 PENDING 은 교체). RUNNING 이 `INDEX_JOB_STALE_MINUTES`(120) 넘게 남으면 비정상 종료로 보고 `FAILED(STALE_RUNNING)` — 문서가 409 로 영구 잠기지 않게. Job Pod 리소스는 `ingestion.resources`(limits 8Gi — pdfplumber 대체 경로 111쪽 실측 2.6GB).
   - **재색인 제한·재활성화**: `POST /{id}/reindex` 는 DELETED 409 `DOCUMENT_DELETED`, INACTIVE 409 `DOCUMENT_INACTIVE`(재색인이 activate_version 으로 ACTIVE 를 되살리므로). INACTIVE 는 `POST /{id}/activate`(202) = 재색인 — 비활성 중 바뀐 ACL 까지 현재 값으로 payload 를 다시 쓴다.
   - RBAC: 채널 조회(`GET /chat/channels`, `/{id}`)는 SYS_ADMIN·DOC_ADMIN(문서 허용 채널 선택), 채널·Binding·멤버 쓰기는 SYS_ADMIN. 채널 목록은 상세와 같이 `bindings`·`member_count` 포함. `/chat-jobs` 조회는 SYS_ADMIN·QUALITY_EVALUATOR. admin-web 메뉴 roles 는 이 표와 일치시키고 경로 가드(403 화면)를 둔다.
+  - **오류 로그** (`admin/api/errors.py`, SYS_ADMIN, FR-OPS-011): `GET /api/v1/errors?source=chat|index|admin&hours=` — `chat_jobs` FAILED/DELIVERY_FAILED(+`chat_posts`→채널명·질문 80자), `index_jobs` FAILED·PENDING+`TRIGGER_FAILED`(정상 CANCELLED 제외, +문서 제목·stage), `audit_logs` ERROR/DENIED 통합(시각 내림차순). 항목별 관련 서비스 추정(오류 문자열의 URL: reranker-api/embedding-api/vllm-service, 그 외 rag-worker/parser-indexer/admin-api). `meta.services` = 로그 allowlist.
+    `GET /api/v1/errors/logs?service=&at=&before_min=5&after_min=2[&index_job_id=]` — `admin/services/pod_logs.py`: **서버 allowlist**(서비스 → namespace·labelSelector, parser-indexer 는 Job Pod 라벨 `ragplatform.io/index-job-id`)만 조회, `pods` list → `pods/log?timestamps=true&sinceTime=&limitBytes=512KB`(재시작 Pod 는 previous 포함), [at-before, at+after] 절단·Pod 당 2,000줄, **줄마다 `mask_text`**(RQ Traceback 은 structlog 마스킹 밖). GET 이지만 `audit_logs(action=ERROR_LOG_VIEW)` 명시 기록. `POD_LOG_ACCESS=none`(기본) → 503 `POD_LOGS_DISABLED`, K8s 오류 → 502(토큰 비노출 `safe_error`). kube-apiserver 공통 접근은 `admin/services/k8s.py`(SA 토큰 요청마다 재읽기 — projected token 회전). chart `podLogs.enabled` → rag-app·rag-ai·rag-ingestion Role `rag-pod-log-reader`(pods get/list, pods/log get).
 - 색인 트리거 (`admin/services/index_trigger.py`, ADR-008): 업로드(`start_indexing=true`)·재색인(`POST /api/v1/documents/{id}/reindex`, 응답에 `index_job_id`/`trigger`/`error`) 모두 `index_jobs` INSERT 후 트리거를 호출한다. `INDEX_JOB_TRIGGER`로 선택:
   - `none`(기본, `NoopTrigger`): `index_jobs` 행만 남긴다 — 로컬/테스트는 CLI(`python -m ingestion.main --index-job-id <uuid>`)로 수동 실행.
   - `k8s`(`K8sJobTrigger`): 추가 의존성(`kubernetes` client) 없이 in-cluster ServiceAccount 토큰 + httpx 로 kube-apiserver 호출 — ① `GET /api/v1/namespaces/{INDEX_JOB_NAMESPACE}/configmaps/{INDEX_JOB_TEMPLATE_CONFIGMAP}`(chart 가 렌더한 `parser-indexer-job-template` 의 `job.yaml`) ② `__INDEX_JOB_ID__` 치환 ③ `POST /apis/batch/v1/namespaces/{ns}/jobs`(application/yaml). 필요 권한은 `templates/rbac.yaml` Role(configmaps get, jobs create/get/list) + `networkPolicy.apiServer` egress.

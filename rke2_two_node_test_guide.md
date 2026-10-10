@@ -1064,6 +1064,10 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | `index_jobs.error` = `SLOT_WAIT_TIMEOUT` | 6시간 넘게 슬롯을 못 잡음 — 앞선 Job 이 비정상적으로 오래 실행 중인지 `kubectl -n rag-ingestion get pods` 확인 후 [재색인] |
 | `index_jobs.error` = `STALE_RUNNING` / `SUPERSEDED` | 각각 120분 넘게 RUNNING 에 남은 Job 정리(Pod 강제 종료 등) / 새 재색인 요청으로 교체된 대기 Job — 정상 처리 |
 | 색인 Job Pod `OOMKilled` | `ingestion.resources.limits.memory`(8Gi) 초과 — 초대형·pdfplumber 대체 경로 문서. 분할 업로드 또는 상한 상향 |
+| 긴 PDF 채널에서만 답변 `⚠️ 답변 생성 중 오류`, worker 로그 `httpx.ReadTimeout` (reranker_client) | CPU reranker 가 후보 30개 × 긴 한글 청크를 30초 안에 못 끝냄(실측 40~90s). values-lab `VECTOR_TOP_K=12`·`RERANKER_TIMEOUT=45`·reranker `RERANKER_MAX_LENGTH=512` 확인. 현행 코드는 timeout 시 벡터 순서로 대체해 답변하며 로그 `worker.rerank_fallback` 를 남긴다 — 이 경고가 잦으면 후보 수를 더 줄이거나 reranker CPU 상향 |
+| admin-web 오류 로그 [로그 조회] 가 503 `POD_LOGS_DISABLED` | admin-api env `POD_LOG_ACCESS=k8s` 누락 — values-lab `podLogs.enabled: true` 와 함께 확인 |
+| 오류 로그 [로그 조회] 가 502 `... status=403` | `rag-pod-log-reader` Role/RoleBinding 미생성(`podLogs.enabled`, `serviceAccounts.adminApi.create`) — `kubectl -n rag-app get role,rolebinding rag-pod-log-reader` |
+| 오류 로그 [로그 조회] 가 502 `ConnectError` | admin-api → kube-apiserver egress 차단 — `networkPolicy.apiServer.cidrs` 확인(가이드 §4.2) |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
 | `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |

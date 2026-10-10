@@ -40,4 +40,41 @@ roleRef:
   kind: Role
   name: rag-index-job-creator
   apiGroup: rbac.authorization.k8s.io
+{{- /* 오류 로그 화면(admin.services.pod_logs) — 대상 NS 의 pods get/list · pods/log get 만 (읽기 전용).
+       POD_LOG_ACCESS=k8s 와 짝. apiserver egress 는 networkPolicy.apiServer. */}}
+{{- if .Values.podLogs.enabled }}
+{{- range $ns := (list $adminNs (index $.Values.appServices "embedding-api").namespace $ingNs | uniq) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rag-pod-log-reader
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/part-of: rag-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rag-pod-log-reader
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/part-of: rag-platform
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa.name }}
+    namespace: {{ $adminNs }}
+roleRef:
+  kind: Role
+  name: rag-pod-log-reader
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}
 {{- end }}

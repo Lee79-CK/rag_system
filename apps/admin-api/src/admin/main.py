@@ -24,6 +24,7 @@ from admin.api import (
     chat_jobs,
     chat_users,
     documents,
+    errors,
     evaluation,
     feedback,
     health,
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
         settings,
         evaluation,
         feedback,
+        errors,
     ):
         app.include_router(module.router)
 

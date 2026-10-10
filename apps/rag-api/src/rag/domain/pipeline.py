@@ -103,21 +103,37 @@ class RagPipeline:
         if guardrail.is_insufficient_after_search(retrieved, self._cfg.similarity_threshold):
             return _insufficient(usage)
 
-        # 8. Re-rank (후보 → top_n)
+        # 8. Re-rank (후보 → top_n). reranker 장애(timeout·5xx·연결 실패)는 답변 실패로 만들지 않고
+        #    벡터 점수 순서 상위 top_n 으로 대체한다 — 품질은 다소 낮아도 사용자는 오류 대신 근거 답변을 받는다.
+        #    대체 여부는 usage["rerank_fallback"] 로 호출자(worker/API)가 로그·지표로 남긴다.
         t = time.perf_counter()
         docs = [c.payload.text for c in retrieved]
-        ranked = await self._rerank.rerank(question, docs, self._cfg.rerank_top_n)
-        reranked = [
-            ScoredChunk(
-                payload=retrieved[idx].payload,
-                vector_score=retrieved[idx].score,
-                rerank_score=score,
-            )
-            for idx, score in ranked
-        ]
+        try:
+            ranked = await self._rerank.rerank(question, docs, self._cfg.rerank_top_n)
+        except Exception:  # noqa: BLE001 — 어떤 reranker 오류든 동일하게 대체
+            ranked = None
+        if ranked is None:
+            usage["rerank_fallback"] = 1
+            by_vector = sorted(retrieved, key=lambda c: c.score, reverse=True)
+            reranked = [
+                ScoredChunk(payload=c.payload, vector_score=c.score, rerank_score=c.score)
+                for c in by_vector[: self._cfg.rerank_top_n]
+            ]
+        else:
+            reranked = [
+                ScoredChunk(
+                    payload=retrieved[idx].payload,
+                    vector_score=retrieved[idx].score,
+                    rerank_score=score,
+                )
+                for idx, score in ranked
+            ]
         usage["rerank_ms"] = _ms(t)
 
-        if guardrail.is_insufficient_after_rerank(reranked, self._cfg.rerank_score_threshold):
+        # rerank 점수 임계값은 reranker 점수 척도 기준 — 대체 시(벡터 점수)는 검색 임계값(7단계)으로 이미 판정됨
+        if not usage.get("rerank_fallback") and guardrail.is_insufficient_after_rerank(
+            reranked, self._cfg.rerank_score_threshold
+        ):
             return _insufficient(usage)
 
         # 9. Context 조립 (Token Budget)

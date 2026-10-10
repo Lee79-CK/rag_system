@@ -77,6 +77,11 @@ serviceAccounts:
     create: false
     name: admin-api
 
+# admin-web '오류 로그' 화면의 파드 로그 조회 — admin-api SA 에 rag-app·rag-ai·rag-ingestion pods/log 읽기 Role.
+# serviceAccounts.adminApi.create · networkPolicy.apiServer 와 admin-api env POD_LOG_ACCESS=k8s 가 함께 필요.
+podLogs:
+  enabled: false
+
 # Alembic 마이그레이션 hook Job (post-install/upgrade). admin-api 는 기동 시 마이그레이션을 하지 않는다.
 migration:
   enabled: false
