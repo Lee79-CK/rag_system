@@ -208,8 +208,19 @@ sudo rm -rf /data/bulk/pvc/pvc-*               # Retain 정책이라 수동 정�
 
 ```bash
 findmnt /data/bulk || { echo "HDD 미마운트 — §1.4.2 먼저"; exit 1; }   # 미마운트 상태로 띄우면 NVMe에 이미지가 쌓인다
+# ★ snap Docker(`readlink -f $(command -v docker)` 가 /usr/bin/snap)는 샌드박스 때문에 /home 밖 경로를 못 본다.
+#   -v /data/bulk/registry 를 주면 HDD 가 아니라 snap 내부 **tmpfs(RAM)** 에 마운트되어 오류 없이 동작하다가
+#   재부팅·docker 재시작 시 레지스트리가 통째로 비워진다(실제 발생). → HDD 디렉터리를 /home 아래로 bind mount 해서 넘긴다.
+#   (apt 의 docker-ce/docker.io 라면 이 단계 없이 -v /data/bulk/registry 그대로 사용)
+sudo mkdir -p /data/bulk/registry $HOME/registry-data
+echo "/data/bulk/registry $HOME/registry-data none bind 0 0" | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload && sudo mount $HOME/registry-data
+findmnt $HOME/registry-data                                       # SOURCE 가 /dev/sda[/registry] 여야 함
 docker run -d --restart=always --name registry -p 5000:5000 \
-  -v /data/bulk/registry:/var/lib/registry registry:2
+  -v $HOME/registry-data:/var/lib/registry registry:2
+# 검증: 컨테이너 안 마운트가 tmpfs 가 아니어야 하고, 컨테이너에서 쓴 파일이 호스트 HDD 에 보여야 한다
+docker exec registry sh -c 'grep " /var/lib/registry " /proc/self/mountinfo'   # "tmpfs" 가 보이면 실패
+docker exec registry touch /var/lib/registry/.probe && ls -la /data/bulk/registry/.probe && docker exec registry rm /var/lib/registry/.probe
 
 # 양쪽 노드 모두: /etc/rancher/rke2/registries.yaml  (P3_IP 는 §1.1)
 sudo tee /etc/rancher/rke2/registries.yaml <<EOF
@@ -1068,6 +1079,8 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | admin-web 오류 로그 [로그 조회] 가 503 `POD_LOGS_DISABLED` | admin-api env `POD_LOG_ACCESS=k8s` 누락 — values-lab `podLogs.enabled: true` 와 함께 확인 |
 | 오류 로그 [로그 조회] 가 502 `... status=403` | `rag-pod-log-reader` Role/RoleBinding 미생성(`podLogs.enabled`, `serviceAccounts.adminApi.create`) — `kubectl -n rag-app get role,rolebinding rag-pod-log-reader` |
 | 오류 로그 [로그 조회] 가 502 `ConnectError` | admin-api → kube-apiserver egress 차단 — `networkPolicy.apiServer.cidrs` 확인(가이드 §4.2) |
+| 재부팅 후 레지스트리가 비어 있음(`/v2/_catalog` → `[]`), `redeploy_lab.sh` 가 `vLLM ... 레지스트리에 없고` 로 중단 | snap Docker 가 `-v /data/bulk/registry` 를 tmpfs(RAM)에 마운트 — `docker exec registry grep ' /var/lib/registry ' /proc/self/mountinfo` 에 tmpfs. §1.5 의 /home bind mount 로 재생성 후 이미지 재push (노드 containerd 캐시로 기존 Pod 는 계속 동작) |
+| 대용량 이미지(vLLM·embedding/reranker) push 중 `failed commit on ref "layer-sha256:...": ... timeout awaiting response headers` | 동시 업로드(기본 5개)가 HDD 레지스트리를 포화 → 레이어 완료(commit) 시 레지스트리의 digest 검증 읽기가 늦어 클라이언트 타임아웃. 같은 `docker push` 재실행(완료 레이어는 건너뜀). 반복되면 daemon.json 에 `"max-concurrent-uploads": 1` 추가 후 Docker 재시작 (snap: `/var/snap/docker/current/config/daemon.json`, `sudo snap restart docker`) |
 | PGX 가 이미지 pull 실패 | PGX 의 `/etc/rancher/rke2/registries.yaml` 누락 또는 rke2-agent 미재시작, PGX `/etc/hosts` 의 `registry.local` 누락(§1.5) |
 | `make push-images` 가 `server gave HTTP response to HTTPS client` | P3 Docker 에 insecure registry 미등록 — §1.5 대로 daemon.json 에 `"insecure-registries":["registry.local:5000"]` 병합 후 재시작. **snap Docker 는 `/etc/docker` 가 없고** `/var/snap/docker/current/config/daemon.json` + `sudo snap restart docker` |
 | 노드 간 호출 간헐 지연 | 2.5GbE 협상 확인 `ethtool enpXs0 \| grep Speed`, MTU 불일치 확인 |
