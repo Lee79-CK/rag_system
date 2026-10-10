@@ -1316,8 +1316,9 @@ Worker 처리(`process_chat_job`): `RUNNING` → Binding(channel_id) 조회(없�
 | PATCH  | `/api/v1/documents/{id}`         | 문서 권한 수정 — 허용 Channel(`allowed_channel_ids`) 전체 교체 + 자동 재색인. Metadata 수정은 후속 |
 | POST   | `/api/v1/documents/{id}/reindex` | 재색인               |
 | DELETE | `/api/v1/documents/{id}`         | 문서 삭제             |
+| GET    | `/api/v1/index-jobs`             | 색인 Job 목록 — 문서 제목·버전 포함, `status`·`document_id` 필터, 최신순 |
 | GET    | `/api/v1/index-jobs/{id}`        | 색인 Job 상태         |
-| POST   | `/api/v1/index-jobs/{id}/retry`  | 실패 Job 재시도        |
+| POST   | `/api/v1/index-jobs/{id}/retry`  | 실패 Job 재시도 — FAILED·CANCELLED·트리거 실패 PENDING 만, 새 Job 생성(원 Job 은 이력) |
 
 ### 17.9 Admin Web Chat Channel / 사용자 API
 
@@ -1342,6 +1343,7 @@ v1.1 의 `/api/v1/mattermost/*`(Secret 등록·연결 테스트·Webhook Event �
 | POST   | `/api/v1/chat/users/{id}/reset-password`              | 임시 비밀번호 재발급(응답 1회)                                                |
 | GET    | `/api/v1/chat-jobs`                                   | Chat Job 조회(`post_id`, `bot_post_id`, status)                        |
 | GET    | `/api/v1/feedback/summary`, `/api/v1/feedback/by-channel`, `/api/v1/feedback/messages`, `/api/v1/messages/{id}/feedback` | 피드백 대시보드 조회(`user_id` = `chat_users.id`) |
+| GET    | `/api/v1/audit-logs`                                  | 감사 로그 조회(FR-AUTH-005) — `actor`·`action`(Action/Path 부분 일치)·`method`·`result`·`from`/`to`, 최신순, `limit`(기본 500, `meta.truncated`). SYS_ADMIN·AUDITOR |
 
 > Admin API 의 인증/RBAC(`X-Auth-User`)와 응답 envelope 는 v1.1 과 동일하다. 문서 업로드(`POST /api/v1/documents`) Form 의 `allowed_channel_ids` 는 `chat_channels.id` 목록이며 존재 검증(404)/형식 검증(422) 후 `document_channel_acl` 에 기록한다.
 

@@ -105,22 +105,35 @@ export interface UpdateDocumentChannelsResult {
 
 // ----- Index Jobs (index_jobs; parser-indexer §7.7) -----
 export type IndexStage =
+  | 'WAITING'
   | 'PARSING'
   | 'CHUNKING'
   | 'EMBEDDING'
   | 'UPSERTING'
   | 'VALIDATING'
+  | 'DONE'
   | null;
 
+export type IndexJobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+
+/** GET /api/v1/index-jobs 행 — 문서 제목·버전이 조인된 index_jobs. */
 export interface IndexJobView {
   id: string;
-  document_version_id: string | null;
-  status: string;
+  document_id: string;
+  document_title: string;
+  version: number;
+  document_version_id: string;
+  status: IndexJobStatus | string;
   stage: IndexStage | string | null;
-  progress?: number | null;
-  error?: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
+  progress: number | null;
+  chunk_count: number | null;
+  vector_count: number | null;
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  /** RUNNING 인데 INDEX_JOB_STALE_MINUTES 이상 진행이 없는 Job (비정상 종료 의심) */
+  stale: boolean;
 }
 
 // ----- Channels + Bindings (§7.5 / §9.6; rag_schemas.binding) -----
@@ -253,16 +266,19 @@ export interface PromoteCandidateResult {
 }
 
 // ----- Audit Logs (§7.5, FR-AUTH-005) -----
+/** GET /api/v1/audit-logs 행. method/path 는 미들웨어 기록("METHOD /path")일 때만, 핸들러 기록은 action 이름. */
 export interface AuditLogView {
   id: string;
-  actor?: string | null;
-  actor_login_id?: string | null;
-  method?: string | null;
-  path?: string | null;
-  action?: string | null;
-  target?: string | null;
-  status_code?: number | null;
-  created_at?: string | null;
+  actor: string;
+  method: string | null;
+  path: string | null;
+  action: string;
+  target: string | null;
+  /** OK | DENIED | ERROR */
+  result: string;
+  status_code: number | null;
+  detail: Record<string, unknown> | null;
+  created_at: string | null;
 }
 
 // ----- Feedback (v1.1, §7.5 / §8.4) -----

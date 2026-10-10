@@ -77,14 +77,14 @@ admin-web 업로드 → admin-api(index_jobs 생성) → K8s Job(rag-ingestion) 
 |---|---|---|
 | 모니터링 › 대시보드 | `/` | 전체 (역할에 따라 일부 지표만 표시) |
 | 지식 관리 › 문서 관리 | `/documents` | SYS_ADMIN, DOC_ADMIN |
-| 지식 관리 › 색인 작업 | `/index-jobs` | SYS_ADMIN, DOC_ADMIN (조회 API 미구현 — 항상 비어 있음, §5.2) |
+| 지식 관리 › 색인 작업 | `/index-jobs` | SYS_ADMIN, DOC_ADMIN (§5.2) |
 | 서비스 운영 › 채널 관리 | `/channels` | SYS_ADMIN (DOC_ADMIN 은 **읽기 전용**) |
 | 서비스 운영 › 채팅 사용자 | `/chat-users` | SYS_ADMIN |
 | 서비스 운영 › 대화 작업 | `/chat-jobs` | SYS_ADMIN, QUALITY_EVALUATOR |
 | 품질 › 피드백 | `/feedback` | SYS_ADMIN, QUALITY_EVALUATOR |
 | 품질 › 품질 평가 | `/evaluation` | SYS_ADMIN, QUALITY_EVALUATOR (API 스텁 — CLI 사용, §6.2) |
 | 시스템 › 설정 | `/settings` | SYS_ADMIN (※ 변경해도 답변에 반영 안 됨, §6.3) |
-| 시스템 › 감사 로그 | `/audit` | SYS_ADMIN, AUDITOR (조회 API 미구현 — SQL 사용, §8.4) |
+| 시스템 › 감사 로그 | `/audit` | SYS_ADMIN, AUDITOR (§8.4) |
 | 시스템 › 오류 로그 | `/errors` | SYS_ADMIN — 대화·색인·관리 API 오류와 관련 파드 로그 (§10.2) |
 
 - 메뉴 권한은 admin-api 권한과 일치합니다. 권한이 없는 메뉴는 사이드바에서 비활성화되고, 주소를 직접 입력해도 **"이 화면에 접근할 권한이 없습니다"** 가 표시됩니다.
@@ -224,7 +224,12 @@ curl -s -X POST $ADMIN/api/v1/chat/bindings/<binding_id>/disable -H "$H" | jq .d
 | `INACTIVE` | 비활성화 — 검색에서 제외, [활성화] 로 복구 (§5.5) |
 | `DELETED` | 삭제(논리) — 검색에서 제외, 복구 불가 (§5.5) |
 
-색인 작업 화면은 비어 있으므로(§12) 아래로 확인합니다.
+**포털 › 지식 관리 › 색인 작업**에서 문서별 색인 Job 의 상태·단계·진행률·청크 수·소요 시간·오류를 봅니다. 진행 중인 Job 이 있으면 5초마다 자동 갱신됩니다.
+
+- `대기(순서)` = 다른 문서 색인이 끝나기를 기다리는 중(동시 색인 1건 제한). `중단 의심` = RUNNING 인데 오래 진행이 없음 → 문서 화면에서 [재색인] 하면 FAILED 로 정리되고 새 Job 이 뜹니다.
+- **[재시도]** 는 실패·취소·트리거 실패 작업에만 활성화됩니다. 새 Job 이 생기고 원래 행은 이력으로 남습니다. 이전 버전의 작업은 재시도할 수 없습니다(문서 화면에서 현재 버전을 재색인).
+
+화면에서 원인이 부족하면(파드 로그 등) 아래로 확인합니다.
 
 ```bash
 kubectl -n rag-ingestion get jobs                                   # index-job-xxxxx 1/1 이면 성공 (완료 1시간 뒤 자동 삭제)
@@ -434,9 +439,15 @@ kubectl -n rag-ai  logs deploy/vllm-llm-0 --since=1h | tail -50
 ```
 중앙 로그 수집(Loki 등)은 차트에 포함되어 있지 않습니다. 장기 보관이 필요하면 별도 구성하세요(목표 30일).
 
-### 8.4 감사 로그 (SQL)
+### 8.4 감사 로그
 
-admin-api 의 모든 변경 요청(POST/PUT/PATCH/DELETE)은 `audit_logs` 에 기록됩니다(조회 화면 미구현).
+admin-api 의 모든 변경 요청(POST/PUT/PATCH/DELETE)은 `audit_logs` 에 기록됩니다. **포털 › 시스템 › 감사 로그**에서 행위자, Action/Path(부분 일치), Method, 결과(성공·권한 거부·오류), 기간으로 검색합니다.
+
+- 문서 채널 변경은 작업 칸에 `DOCUMENT_ACL_UPDATE` 로 표시되고, [상세 › 보기]에 변경 전·후 채널 목록이 나옵니다. 오류 로그 열람은 `ERROR_LOG_VIEW` 입니다.
+- 한 번에 최근 500건까지 표시합니다. 더 오래된 기록은 기간을 좁혀 검색하세요(잘린 경우 화면에 안내).
+- 조회 권한: SYS_ADMIN, AUDITOR.
+
+화면 대신 SQL 로 볼 때:
 
 ```bash
 kubectl -n rag-data exec sts/postgresql -- psql -U rag -d rag -c \
@@ -576,7 +587,7 @@ vLLM 재시작·모델 교체·노드 작업은 최대 10~15분 답변 불가가
 - **네트워크**: NetworkPolicy default-deny, 외부 egress 없음. 앱 NS 는 `rag-platform=true` 라벨 필수.
 - **컨테이너**: 비루트(uid 10001), 읽기 전용 루트 FS, 권한 상승 금지(vLLM 은 캐시 쓰기 예외).
 - **폐쇄망**: 모델·패키지는 사내 반입 절차(해시·악성코드·라이선스 점검) 후 로컬 경로로만 로딩.
-- **감사**: 관리자 변경은 `audit_logs` 에 자동 기록 — 주기적으로 SQL 로 점검(§8.4).
+- **감사**: 관리자 변경은 `audit_logs` 에 자동 기록 — 포털 감사 로그 화면에서 주기적으로 점검(§8.4).
 
 ---
 
@@ -585,7 +596,7 @@ vLLM 재시작·모델 교체·노드 작업은 최대 10~15분 답변 불가가
 | 제약 | 영향 | 우회 |
 |---|---|---|
 | 색인 실패 시 문서가 INDEXING 에 남음 | 상태로 실패 구분 불가 | `index_jobs` SQL(§5.2) |
-| 색인 작업·감사 로그·품질 평가 화면 비어 있음 | 화면으로 조회 불가 | kubectl / SQL / `make evaluate` |
+| 품질 평가 화면 비어 있음 | 화면으로 조회 불가 | `make evaluate` |
 | 설정 화면 값 미반영 | 튜닝 효과 없음 | Helm env(§6.3) |
 | 대시보드 수치 일부 예시값/라벨 부정확 ("오늘", "24h", p95, 서비스 상태) | 오판 위험 | 피드백·대화 작업 화면, SQL 로 확인 |
 | 관리자 계정 관리 화면 없음 | — | SQL(§2.3) |

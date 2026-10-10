@@ -1409,6 +1409,7 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
   - **동시 색인 슬롯** (`ingestion/slots.py`): 색인 Job 은 문서마다 즉시 생성되지만, 시작 직후 PostgreSQL session advisory lock 슬롯(`INDEX_MAX_PARALLEL`, 기본 1, 키 `7420110000+i`)을 잡을 때까지 PENDING(`stage=WAITING`)으로 대기한다 — embedding-api(랩 replica 1·CPU 6)를 동시 Job 이 나눠 쓰면 처리량은 늘지 않고 배치가 timeout 을 넘겨 FAILED·재시도가 쌓이며 채팅 질의 임베딩까지 느려지기 때문. Job 상태·ACL 은 **슬롯 획득 후** 읽는다(대기 중 채널 변경·취소가 그대로 반영). Pod 가 죽으면 DB 연결 종료로 슬롯 자동 해제. 대기 상한 `INDEX_SLOT_WAIT_TIMEOUT_SECONDS`(6h) 초과 시 FAILED `SLOT_WAIT_TIMEOUT`. 엄격한 FIFO 는 아니다(폴링 경쟁).
   - 같은 문서 중복 Job 방지: 재색인·활성화는 RUNNING 이면 409, PENDING 은 `CANCELLED(SUPERSEDED)` 후 새 Job(트리거 실패로 영영 안 도는 PENDING 대비). PATCH 는 정상 PENDING 만 재사용(error 있는 PENDING 은 교체). RUNNING 이 `INDEX_JOB_STALE_MINUTES`(120) 넘게 남으면 비정상 종료로 보고 `FAILED(STALE_RUNNING)` — 문서가 409 로 영구 잠기지 않게. Job Pod 리소스는 `ingestion.resources`(limits 8Gi — pdfplumber 대체 경로 111쪽 실측 2.6GB).
   - **재색인 제한·재활성화**: `POST /{id}/reindex` 는 DELETED 409 `DOCUMENT_DELETED`, INACTIVE 409 `DOCUMENT_INACTIVE`(재색인이 activate_version 으로 ACTIVE 를 되살리므로). INACTIVE 는 `POST /{id}/activate`(202) = 재색인 — 비활성 중 바뀐 ACL 까지 현재 값으로 payload 를 다시 쓴다.
+  - **색인 작업 조회·재시도** (`admin/api/index_jobs.py`, FR-IDX-005/008): `GET /api/v1/index-jobs`(`status`·`document_id`·`limit≤500`, 문서 제목·버전 조인, `created_at` 내림차순, `chunk_count`·`vector_count`·`started_at`·`completed_at` 포함), `GET /{id}`, `POST /{id}/retry`(202). 조회는 DB 를 바꾸지 않고 오래된 RUNNING 은 `stale=true` 로만 표시한다. 재시도 대상은 FAILED·CANCELLED·`TRIGGER_FAILED` PENDING(그 외 409 `INDEX_JOB_NOT_RETRYABLE`), 이전 버전 Job 은 409 `INDEX_JOB_SUPERSEDED`, 문서 DELETED/INACTIVE 는 재색인과 같은 409 — 통과하면 재색인 경로(`_start_index`)로 새 Job 을 만들어 중복 색인 방지 규칙을 공유한다. admin-web 색인 작업 화면은 PENDING/RUNNING 이 있으면 5초마다 갱신. RBAC SYS_ADMIN·DOC_ADMIN.
   - RBAC: 채널 조회(`GET /chat/channels`, `/{id}`)는 SYS_ADMIN·DOC_ADMIN(문서 허용 채널 선택), 채널·Binding·멤버 쓰기는 SYS_ADMIN. 채널 목록은 상세와 같이 `bindings`·`member_count` 포함. `/chat-jobs` 조회는 SYS_ADMIN·QUALITY_EVALUATOR. admin-web 메뉴 roles 는 이 표와 일치시키고 경로 가드(403 화면)를 둔다.
   - **오류 로그** (`admin/api/errors.py`, SYS_ADMIN, FR-OPS-011): `GET /api/v1/errors?source=chat|index|admin&hours=` — `chat_jobs` FAILED/DELIVERY_FAILED(+`chat_posts`→채널명·질문 80자), `index_jobs` FAILED·PENDING+`TRIGGER_FAILED`(정상 CANCELLED 제외, +문서 제목·stage), `audit_logs` ERROR/DENIED 통합(시각 내림차순). 항목별 관련 서비스 추정(오류 문자열의 URL: reranker-api/embedding-api/vllm-service, 그 외 rag-worker/parser-indexer/admin-api). `meta.services` = 로그 allowlist.
     `GET /api/v1/errors/logs?service=&at=&before_min=5&after_min=2[&index_job_id=]` — `admin/services/pod_logs.py`: **서버 allowlist**(서비스 → namespace·labelSelector, parser-indexer 는 Job Pod 라벨 `ragplatform.io/index-job-id`)만 조회, `pods` list → `pods/log?timestamps=true&sinceTime=&limitBytes=512KB`(재시작 Pod 는 previous 포함), [at-before, at+after] 절단·Pod 당 2,000줄, **줄마다 `mask_text`**(RQ Traceback 은 structlog 마스킹 밖). GET 이지만 `audit_logs(action=ERROR_LOG_VIEW)` 명시 기록. `POD_LOG_ACCESS=none`(기본) → 503 `POD_LOGS_DISABLED`, K8s 오류 → 502(토큰 비노출 `safe_error`). kube-apiserver 공통 접근은 `admin/services/k8s.py`(SA 토큰 요청마다 재읽기 — projected token 회전). chart `podLogs.enabled` → rag-app·rag-ai·rag-ingestion Role `rag-pod-log-reader`(pods get/list, pods/log get).
@@ -1453,7 +1454,7 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
 | GET | `/api/v1/messages/{id}/feedback` | 특정 답변의 피드백 상세 |
 
   - 👎 답변 목록은 Evaluation 화면과 연계: 품질 평가자가 👎 사례를 평가 데이터셋 후보(§13.3)로 승격하는 버튼 제공 (admin-web).
-- 모든 mutating 요청은 `audit.py` 미들웨어가 audit_logs 기록 (FR-AUTH-005).
+- 모든 mutating 요청은 `audit.py` 미들웨어가 audit_logs 기록 (FR-AUTH-005). 조회는 `GET /api/v1/audit-logs`(`admin/api/audit_logs.py`, SYS_ADMIN·AUDITOR): 행위자·Action/Path 부분 일치(대소문자 무시), Method(POST/PUT/PATCH/DELETE), 결과(OK/DENIED/ERROR), 기간, 최신순 `limit`(기본 500, 최대 2000, `meta.truncated`). 미들웨어 행(`METHOD /path`)은 `method`·`path`·`status_code` 로 풀고, 핸들러 명시 행(`DOCUMENT_ACL_UPDATE`, `ERROR_LOG_VIEW`)은 action·target·detail 그대로 반환. 조회 자체는 감사하지 않는다(행에 Secret 없음).
 
 ### 7.6 admin-web
 
@@ -2051,7 +2052,7 @@ Web Chat 전환 과정에서 발견·수정한 기존(v1.x) 결함. 회귀 방�
 | 18 | (병합 복구) Secret 전체 키를 모든 서비스에 마운트 | 최소 권한 위반 | `secretMount.keys` — 서비스별 필요한 키만 `items` 투영 + `*_FILE` env 자동 (§14.1) |
 | 19 | (병합 복구) Containerfile 부재 문서 서술 | 가이드대로 빌드 불가 | `apps/*/Containerfile` 8종(+ `apps/chat-web/Containerfile` 신규) + `make build-images/push-images` (§2, §14.2) |
 
-잔여(리뷰 기준, v2.0 에도 유효): rate limit INCR→EXPIRE 비원자(M-3), async 핸들러 내 동기 I/O(H-8), 업로드 전체 메모리 적재(H-9), settings 테이블 → rag-api 캐시 미연동(§3-4), 문서 삭제 시 원본 파일·Vector 물리 삭제 미구현(M-6 — Qdrant 비활성화는 2026-10 구현), mock 엔진 silent fallback(M-2), `CHAT_MAX_CONCURRENCY` semaphore 부재(M-13), Circuit Breaker(M-17), 평가셋 100문항·LLM-judge(§3-8), admin-api `/index-jobs` 조회 API 부재.
+잔여(리뷰 기준, v2.0 에도 유효): rate limit INCR→EXPIRE 비원자(M-3), async 핸들러 내 동기 I/O(H-8), 업로드 전체 메모리 적재(H-9), settings 테이블 → rag-api 캐시 미연동(§3-4), 문서 삭제 시 원본 파일·Vector 물리 삭제 미구현(M-6 — Qdrant 비활성화는 2026-10 구현), mock 엔진 silent fallback(M-2), `CHAT_MAX_CONCURRENCY` semaphore 부재(M-13), Circuit Breaker(M-17), 평가셋 100문항·LLM-judge(§3-8). (admin-api `/index-jobs` 조회·재시도 API 는 2026-10 구현)
 
 ---
 

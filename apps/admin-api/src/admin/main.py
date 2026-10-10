@@ -19,6 +19,7 @@ from rag_observability import configure_logging, get_logger
 from rag_schemas import ErrorDetail, ErrorResponse
 
 from admin.api import (
+    audit_logs,
     auth,
     channels,
     chat_jobs,
@@ -28,6 +29,7 @@ from admin.api import (
     evaluation,
     feedback,
     health,
+    index_jobs,
     settings,
 )
 from admin.core.audit import AuditMiddleware
@@ -79,6 +81,7 @@ def create_app() -> FastAPI:
         health,
         auth,
         documents,
+        index_jobs,
         channels,
         chat_users,
         chat_jobs,
@@ -86,6 +89,7 @@ def create_app() -> FastAPI:
         evaluation,
         feedback,
         errors,
+        audit_logs,
     ):
         app.include_router(module.router)
 

@@ -6,10 +6,10 @@
 Monorepo (uv workspace). **구현 현황: M1–M12 구현 완료** (M12 = Web Chat 전환, 로컬 mock LLM/mock 엔진 기준).
 2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md` — v1.x Mattermost 기준, 역사 기록)의 수정은 v2.0 에 이월됨
 (Containerfile·Alembic hook Job·K8s 색인 트리거/RBAC·claim_job 멱등·RQ timeout·SecretStr·마스킹·fail-closed).
-검증: `238 passed` (Docker 없으면 실 Qdrant CH-001 1 skipped) · ruff clean · `helm lint`(values / +poc / +poc+lab) clean · admin-web / chat-web build OK.
+검증: `251 passed` (Docker 없으면 실 Qdrant CH-001 1 skipped) · ruff clean · `helm lint`(values / +poc / +poc+lab) clean · admin-web / chat-web build OK.
 알려진 미구현(리뷰 §7 중 v2.0 에 유효한 것): Settings 테이블→rag-api 연동(60s 캐시), 문서 삭제 시 원본 파일·Vector 물리 삭제(검색 제외 is_active=false 는 구현됨),
 mock 엔진 silent fallback 차단, async 핸들러 내 동기 I/O(chat-gateway SqlChatStore·admin 업로드), rate limit 비원자(INCR→EXPIRE),
-CHAT_MAX_CONCURRENCY 미강제, 평가셋 100문항·LLM-judge, Circuit Breaker(reranker 장애는 벡터 순서 대체로 완화됨), admin-api `/index-jobs` 조회 API.
+CHAT_MAX_CONCURRENCY 미강제, 평가셋 100문항·LLM-judge, Circuit Breaker(reranker 장애는 벡터 순서 대체로 완화됨).
 
 ## Hard rules
 - 외부 네트워크 호출 금지 (HF Hub, PyPI, CDN 폰트 등). 모델은 로컬 경로 로딩만. chat-web 에 외부 CDN 리소스 추가 금지.

@@ -1,30 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
 import { qk } from './queryKeys';
-import type { IndexJobView } from '../types';
+import type { IndexJobView, ReindexResult } from '../types';
 
-/**
- * NOTE (deviation): admin-api does not yet expose a GET list / retry for index_jobs
- * (only documents/{id}/reindex INSERTs a row). This hook targets the expected
- * `/api/v1/index-jobs` contract and degrades gracefully to an empty list on 404/500.
- */
+const ACTIVE = new Set(['PENDING', 'RUNNING']);
+
+/** GET /api/v1/index-jobs — 진행 중(PENDING/RUNNING) Job 이 있으면 5초마다 갱신. */
 export function useIndexJobs(status?: string) {
   return useQuery({
     queryKey: qk.indexJobs(status),
-    queryFn: async () => {
-      try {
-        return await api.get<IndexJobView[]>('/index-jobs', { status });
-      } catch {
-        return [] as IndexJobView[];
-      }
-    },
+    queryFn: () => api.get<IndexJobView[]>('/index-jobs', { status }),
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((j) => ACTIVE.has(j.status)) ? 5000 : false,
   });
 }
 
+/** POST /api/v1/index-jobs/{id}/retry — 실패·취소·트리거 실패 Job 을 새 Job 으로 재실행. */
 export function useRetryIndexJob() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.post<IndexJobView>(`/index-jobs/${id}/retry`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['indexJobs'] }),
+    mutationFn: (id: string) => api.post<ReindexResult>(`/index-jobs/${id}/retry`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['indexJobs'] });
+      qc.invalidateQueries({ queryKey: qk.documents });
+    },
   });
 }
