@@ -67,9 +67,10 @@ def test_scope_key_stateless_mode_uses_post():
     assert scope_key(_binding(ConversationMode.STATELESS), None, "post-9") == "channel-001:post-9"
 
 
-def test_knowledge_scope_defaults():
+def test_fr_rag_004_knowledge_scope_defaults_apply_no_filter():
+    """범위 미지정 채널은 채널 ACL 만으로 검색 — 보안등급 기본 제한 없음."""
     ks = KnowledgeScope()
-    assert ks.security_levels == ["INTERNAL"]
+    assert ks.security_levels == []
     assert ks.categories == [] and ks.departments == [] and ks.document_ids == []
 
 

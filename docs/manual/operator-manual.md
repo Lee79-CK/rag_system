@@ -205,7 +205,7 @@ curl -s -X POST $ADMIN/api/v1/chat/bindings/<binding_id>/disable -H "$H" | jq .d
 |---|---|
 | 파일 | `pdf, docx, pptx, xlsx, txt, md, html`, **최대 100MB**. 같은 내용(해시)의 파일은 다시 올릴 수 없음 |
 | 제목 | 미입력 시 파일명 (평가셋은 제목 기준이므로 일관된 이름 권장) |
-| 카테고리 / 부서 / 보안등급 | 지식 범위(Scope) 필터에 쓰입니다. 보안등급 PUBLIC·INTERNAL·CONFIDENTIAL·SECRET |
+| 카테고리 / 부서 / 보안등급 | 지식 범위(Scope)를 지정한 채널에서만 필터로 쓰입니다. 보안등급 PUBLIC·INTERNAL·CONFIDENTIAL·SECRET. Scope 를 지정하지 않은 채널은 보안등급과 관계없이 그 채널에 연결된 문서를 모두 검색합니다 |
 | 허용 Channel (ACL) | **이 문서가 검색될 채널.** 비우면 어느 채널에서도 검색되지 않습니다 |
 
 - **업로드 후 바로 색인**(기본 체크): 업로드와 동시에 색인 Job 이 생성되고, 완료되면 상태가 `ACTIVE` 가 됩니다. 체크를 해제하면 `UPLOADED` 로 남으며 나중에 **[재색인]** 으로 색인합니다(허용 채널을 먼저 정리할 때 등). API 는 `start_indexing=true`(가이드 §5.1).

@@ -17,7 +17,10 @@ class ChannelMode(StrEnum):
 class KnowledgeScope(BaseModel):
     categories: list[str] = Field(default_factory=list)
     departments: list[str] = Field(default_factory=list)
-    security_levels: list[str] = Field(default_factory=lambda: ["INTERNAL"])
+    # 빈 목록 = 보안등급으로 거르지 않음. 격리 경계는 allowed_channel_ids(문서 ↔ 채널 ACL)이며,
+    # 이 값은 채널이 지식 범위를 명시했을 때만 덧붙는 추가 제한이다. 기본을 ["INTERNAL"] 로 두면
+    # 범위 미지정 채널에서 PUBLIC/CONFIDENTIAL 문서가 채널에 연결돼 있어도 조용히 검색되지 않는다.
+    security_levels: list[str] = Field(default_factory=list)
     document_ids: list[str] = Field(default_factory=list)  # 명시 지정 시
 
 

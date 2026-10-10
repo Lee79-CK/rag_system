@@ -355,7 +355,7 @@ function BindingWizard({
   const [scope, setScope] = useState<KnowledgeScope>({
     categories: [],
     departments: [],
-    security_levels: ['INTERNAL'],
+    security_levels: [],
     document_ids: [],
   });
 

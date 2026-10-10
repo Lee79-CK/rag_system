@@ -48,11 +48,22 @@ def test_build_filter_always_includes_active_and_channel():
 
 
 def test_build_filter_adds_scope_conditions():
-    f = build_filter(_binding(categories=["운영매뉴얼"], departments=["Cloud운영팀"]))
+    f = build_filter(
+        _binding(
+            categories=["운영매뉴얼"], departments=["Cloud운영팀"], security_levels=["INTERNAL"]
+        )
+    )
     keys = [c.key for c in f.must]  # type: ignore[union-attr]
     assert "category" in keys
     assert "department" in keys
-    assert "security_level" in keys  # default ["INTERNAL"]
+    assert "security_level" in keys
+
+
+def test_fr_rag_004_unscoped_binding_does_not_filter_security_level():
+    """지식 범위 미지정 = 채널 ACL(is_active + allowed_channel_ids)만. PUBLIC 문서도 검색돼야 한다."""
+    f = build_filter(_binding())
+    keys = [c.key for c in f.must]  # type: ignore[union-attr]
+    assert keys == ["is_active", "allowed_channel_ids"]
 
 
 def test_guardrail_search_zero_and_threshold():

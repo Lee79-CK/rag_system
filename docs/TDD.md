@@ -547,7 +547,7 @@ class ChannelMode(StrEnum):
 class KnowledgeScope(BaseModel):
     categories: list[str] = []
     departments: list[str] = []
-    security_levels: list[str] = ["INTERNAL"]
+    security_levels: list[str] = []       # 빈 목록 = 보안등급 제한 없음(채널 ACL 만) — 명시 시에만 필터
     document_ids: list[str] = []          # 명시 지정 시
 
 class ChannelBinding(BaseModel):
@@ -1024,6 +1024,7 @@ def build_filter(binding: ChannelBinding) -> qdrant.Filter:
     return Filter(must=must)
 ```
 
+- 지식 범위 조건(category/department/security_level/document_id)은 binding 이 **명시한 경우에만** 붙는다. 범위 미지정 채널은 `is_active` + `allowed_channel_ids` 만으로 검색한다(관리 화면 표기 "전체 ACL"). 과거 기본값 `security_levels=["INTERNAL"]` 은 PUBLIC 등 다른 등급 문서를 채널에 연결해도 조용히 0건이 되던 결함이라 제거했다(2026-10).
 - 문서 삭제/비활성화: admin-api 가 `document_id` 의 전 point 에 `is_active=false` payload set → 즉시 검색 제외 (FR-DOC-008, §7.5). Vector 물리 삭제·원본 파일 삭제는 미구현(야간 배치 예정).
 - 버전 전환: 신규 version upsert + 검증 후, 구버전 point에 `is_active=false` 처리 (§7.5 재색인 시나리오).
 

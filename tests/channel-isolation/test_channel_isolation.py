@@ -232,6 +232,21 @@ async def test_ch_007_security_level_excludes_confidential(embedding, reranker):
     assert {c.document_name for c in out.citations} == {"INT"}
 
 
+async def test_ch_007_unscoped_channel_sees_all_levels_of_own_acl_only(embedding, reranker):
+    """지식 범위 미지정 채널: 보안등급과 무관하게 자기 채널에 연결된 문서만 — 다른 채널 문서는 여전히 차단."""
+    qdrant = InMemoryQdrant(
+        [
+            make_payload("p", [CHANNEL_A], "공개", security_level="PUBLIC", title="PUB"),
+            make_payload("i", [CHANNEL_A], "내부", security_level="INTERNAL", title="INT"),
+            make_payload("b", [CHANNEL_B], "타채널", security_level="PUBLIC", title="OTHER"),
+        ]
+    )
+    llm = CapturingLLM()
+    out = await _run(make_binding(CHANNEL_A), "질문", qdrant, embedding, reranker, llm)
+    assert {c.document_name for c in out.citations} == {"PUB", "INT"}
+    assert "타채널" not in "".join(m["content"] for m in llm.messages)
+
+
 # ---------------------------------------------------------------------------
 # CH-008: 비활성(is_active=false) 문서 제외 (삭제/재색인)
 # ---------------------------------------------------------------------------

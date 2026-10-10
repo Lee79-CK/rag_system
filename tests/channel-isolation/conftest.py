@@ -29,7 +29,7 @@ def make_binding(
         knowledge_scope=KnowledgeScope(
             categories=categories or [],
             departments=departments or [],
-            security_levels=security_levels or ["INTERNAL"],
+            security_levels=security_levels or [],
         ),
         feedback_enabled=True,
     )
