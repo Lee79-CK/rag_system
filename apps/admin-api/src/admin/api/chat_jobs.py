@@ -6,7 +6,9 @@ DELIVERY_FAILED(= Bot Post 갱신/emit 실패) 는 사용자가 채널을 다시
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import datetime as dt
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -35,6 +37,8 @@ def _job_view(j: ChatJob) -> dict:
 @router.get("")
 def list_chat_jobs(
     job_status: str | None = None,
+    # 사이드바 실패 배지처럼 "최근 N시간"만 필요한 호출이 전체 이력을 받지 않도록
+    since_hours: int | None = Query(default=None, ge=1, le=24 * 90),
     db: Session = Depends(get_db),
     # 실패 Job 점검은 품질 업무이기도 하다 — admin-web 사이드바(대화 작업)와 같은 역할
     principal: Principal = Depends(require_roles(SYS_ADMIN, QUALITY_EVALUATOR)),
@@ -42,5 +46,8 @@ def list_chat_jobs(
     stmt = select(ChatJob).order_by(ChatJob.queued_at.desc())
     if job_status:
         stmt = stmt.where(ChatJob.status == job_status)
+    if since_hours is not None:
+        since = dt.datetime.now(dt.UTC) - dt.timedelta(hours=since_hours)
+        stmt = stmt.where(ChatJob.queued_at >= since)
     jobs = db.execute(stmt).scalars().all()
     return envelope([_job_view(j) for j in jobs], count=len(jobs))

@@ -88,6 +88,9 @@ def client(engine, TestSession, monkeypatch):
         def deactivate_document(self, document_id):
             pass
 
+        def list_chunks(self, document_version_id):
+            return []
+
     app.dependency_overrides[provide_search_index] = lambda: _NullSearchIndex()
     # 파드 로그(kube-apiserver)도 기본 fake — Pod 없음. 테스트별로 override 한다.
     from admin.services.pod_logs import provide_pod_log_reader

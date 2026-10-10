@@ -4,12 +4,15 @@ rag-api 는 Qdrant payload(`is_active`, `allowed_channel_ids`)만으로 검색 �
 따라서 documents.status 만 바꾸면 비활성/삭제 문서가 계속 인용된다 → 해당 문서의 모든 point 를
 `is_active=false` 로 바꾼 뒤에 DB 상태를 커밋한다(실패 시 503, DB 불변 — 화면과 실제가 어긋나지 않게).
 재활성화는 재색인으로 한다(현재 ACL·버전으로 payload 를 다시 쓰므로 상태가 섞이지 않는다).
+
+list_chunks: 관리 화면 "색인 텍스트" 조회(FR-DOC-010). 추출 텍스트는 Qdrant payload 에만 있으므로
+document_version_id 로 scroll 한다 — 사용자 질의(서빙) 경로가 아니라 build_filter 규칙의 예외(CLAUDE.md).
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Protocol
+from typing import Any, Protocol
 
 from rag_observability import get_logger
 
@@ -22,9 +25,19 @@ class SearchIndexError(RuntimeError):
     """Qdrant 갱신 실패. 호출자는 503 으로 응답하고 DB 상태를 바꾸지 않는다."""
 
 
+# 관리 화면이 한 문서에서 읽는 청크 상한 — 1,000쪽 문서도 ≈1,100 청크라 충분하고, 잘못된 필터로 전체를 읽지 않게
+MAX_CHUNKS = 5000
+_SCROLL_PAGE = 256
+_CHUNK_FIELDS = ["chunk_index", "page_start", "page_end", "section", "text", "is_active"]
+
+
 class SearchIndex(Protocol):
     def deactivate_document(self, document_id: str) -> None:
         """document_id 의 모든 point(전 버전)를 is_active=false 로."""
+        ...
+
+    def list_chunks(self, document_version_id: str) -> list[dict[str, Any]]:
+        """버전의 청크 payload(텍스트·쪽·섹션) — 순서는 보장하지 않는다(호출자가 chunk_index 로 정렬)."""
         ...
 
 
@@ -63,6 +76,44 @@ class QdrantSearchIndex:
             )
             raise SearchIndexError(f"{type(exc).__name__}: {exc}"[:300]) from exc
         log.info("search_index.document_deactivated", document_id=document_id)
+
+    def list_chunks(self, document_version_id: str) -> list[dict[str, Any]]:
+        from qdrant_client import QdrantClient, models  # noqa: PLC0415
+
+        flt = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="document_version_id", match=models.MatchValue(value=document_version_id)
+                )
+            ]
+        )
+        out: list[dict[str, Any]] = []
+        try:
+            client = QdrantClient(url=self._url, timeout=int(self._timeout))
+            try:
+                offset = None
+                while len(out) < MAX_CHUNKS:
+                    points, offset = client.scroll(
+                        collection_name=self._collection,
+                        scroll_filter=flt,
+                        limit=_SCROLL_PAGE,
+                        offset=offset,
+                        with_payload=_CHUNK_FIELDS,
+                        with_vectors=False,
+                    )
+                    out.extend(dict(p.payload or {}) for p in points)
+                    if offset is None:
+                        break
+            finally:
+                client.close()
+        except Exception as exc:  # noqa: BLE001 — 원인은 로그, 호출자는 503
+            log.error(
+                "search_index.list_chunks_failed",
+                document_version_id=document_version_id,
+                error=type(exc).__name__,
+            )
+            raise SearchIndexError(f"{type(exc).__name__}: {exc}"[:300]) from exc
+        return out[:MAX_CHUNKS]
 
 
 @lru_cache

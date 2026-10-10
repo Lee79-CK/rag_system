@@ -4,7 +4,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Result, Spin, Tooltip } from 'antd';
 import { AuthUserSwitcher } from './AuthUserSwitcher';
 import { useWhoami } from '../api/auth';
-import { useChatJobs } from '../api/chatJobs';
+import { RECENT_FAILED_HOURS, useRecentFailedChatJobs } from '../api/chatJobs';
 import { errorMessage } from './QueryState';
 import type { Role } from '../types';
 
@@ -21,7 +21,6 @@ const ROLE_LABEL: Record<Role, string> = {
   AUDITOR: '감사자',
 };
 
-const DEAD_LETTER_STATUSES = new Set(['DEAD_LETTER', 'DEADLETTER', 'FAILED']);
 
 type IconName =
   | 'dashboard'
@@ -150,7 +149,9 @@ export function AppLayout() {
   const roles = (me?.roles ?? []) as Role[];
   // 메뉴 roles 는 admin-api require_roles 와 같아야 한다. 신원 확인 전/실패 시에는 아무 메뉴도 열지 않는다.
   const canAccess = (item: NavDef) => item.roles.some((r) => roles.includes(r));
-  const chatJobs = useChatJobs(undefined, roles.includes('SYS_ADMIN') || roles.includes('QUALITY_EVALUATOR'));
+  const recentFailed = useRecentFailedChatJobs(
+    roles.includes('SYS_ADMIN') || roles.includes('QUALITY_EVALUATOR'),
+  );
 
   const active =
     ALL_ITEMS.map((n) => n.path)
@@ -160,8 +161,8 @@ export function AppLayout() {
   const activeItem = ALL_ITEMS.find((n) => n.path === active);
   const screenTitle = activeItem?.title ?? '대시보드';
 
-  const deadCount =
-    chatJobs.data?.filter((j) => DEAD_LETTER_STATUSES.has((j.status ?? '').toUpperCase())).length ?? 0;
+  // 최근 RECENT_FAILED_HOURS 시간 실패 건수 — 전체 이력을 세면 한 번 실패한 뒤 영영 줄지 않는다
+  const deadCount = recentFailed.data?.length ?? 0;
 
   const userName = me?.display_name || me?.login_id || '관리자';
   const userInitial = userName.slice(0, 1).toUpperCase();
@@ -276,6 +277,7 @@ export function AppLayout() {
                       <span style={{ flex: 1 }}>{item.label}</span>
                       {showDead && (
                         <span
+                          title={`최근 ${RECENT_FAILED_HOURS}시간 동안 실패한 대화 작업 ${deadCount}건`}
                           style={{
                             padding: '1px 7px',
                             borderRadius: 999,

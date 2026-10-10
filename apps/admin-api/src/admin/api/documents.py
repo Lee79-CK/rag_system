@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from rag_common import sha256_hex
 from rag_observability import get_logger
@@ -471,6 +475,140 @@ def list_versions(
         .all()
     )
     return envelope([_version_view(v) for v in versions], count=len(versions))
+
+
+# ----- 원본 파일 · 색인 텍스트 조회 (FR-DOC-010: 원본과 파싱 결과 확인) -----
+
+_MEDIA_TYPES = {
+    "pdf": "application/pdf",
+    "txt": "text/plain; charset=utf-8",
+    "md": "text/plain; charset=utf-8",  # 브라우저가 원문 그대로 보이도록 text/plain
+    "html": "text/html; charset=utf-8",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+# 브라우저에서 바로 보여줘도 안전한 형식만 inline. html 은 관리 화면 origin 에서 실행되면 안 되므로 항상 attachment.
+_INLINE_SAFE = frozenset({"pdf", "txt", "md"})
+
+
+def _resolve_version(db: Session, doc: Document, version: int | None) -> DocumentVersion:
+    if version is None:
+        v = db.get(DocumentVersion, doc.active_version_id) if doc.active_version_id else None
+    else:
+        v = db.execute(
+            select(DocumentVersion).where(
+                DocumentVersion.document_id == doc.id, DocumentVersion.version == version
+            )
+        ).scalar_one_or_none()
+    if v is None:
+        raise api_error(
+            "VERSION_NOT_FOUND", "문서 버전을 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND
+        )
+    return v
+
+
+def _stored_file(v: DocumentVersion) -> Path:
+    """DB 의 file_path 를 그대로 믿지 않는다 — 저장소 루트 밖이면 없는 것으로 취급."""
+    root = Path(get_settings().document_storage_path).resolve()
+    path = Path(v.file_path).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise api_error(
+            "FILE_NOT_FOUND", "원본 파일을 찾을 수 없습니다.", status.HTTP_404_NOT_FOUND
+        )
+    return path
+
+
+def _content_disposition(kind: str, filename: str) -> str:
+    # 한글 파일명: RFC 5987 filename* + ASCII 대체 이름(구형 클라이언트)
+    ascii_name = filename.encode("ascii", "ignore").decode() or "document"
+    ascii_name = ascii_name.replace('"', "")
+    return f"{kind}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
+
+def _audit(db: Session, principal: Principal, action: str, doc: Document, detail: dict) -> None:
+    # GET 이라 감사 미들웨어가 기록하지 않는다 — 문서 열람·반출은 명시 기록
+    db.add(
+        AuditLog(
+            actor=principal.login_id,
+            action=action,
+            target=str(doc.id),
+            result="OK",
+            detail=detail,
+        )
+    )
+    db.commit()
+
+
+@router.get("/{document_id}/file")
+def download_document_file(
+    document_id: uuid.UUID,
+    version: int | None = Query(default=None, ge=1),
+    disposition: Literal["inline", "attachment"] = "attachment",
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
+) -> FileResponse:
+    """원본 파일. 비활성·삭제(논리) 문서도 원본은 보존되므로 관리자 확인용으로 허용한다."""
+    doc = _get_doc(db, document_id)
+    v = _resolve_version(db, doc, version)
+    path = _stored_file(v)
+    ext = _ext(path.name)
+    kind = "inline" if disposition == "inline" and ext in _INLINE_SAFE else "attachment"
+    _audit(
+        db,
+        principal,
+        "DOCUMENT_VIEW" if kind == "inline" else "DOCUMENT_DOWNLOAD",
+        doc,
+        {"version": v.version, "file_name": path.name},
+    )
+    return FileResponse(
+        path,
+        media_type=_MEDIA_TYPES.get(ext, "application/octet-stream"),
+        headers={
+            "Content-Disposition": _content_disposition(kind, path.name),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/{document_id}/chunks")
+def list_document_chunks(
+    document_id: uuid.UUID,
+    version: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
+    search_index: SearchIndex = Depends(provide_search_index),
+) -> dict:
+    """색인된 텍스트(청크) — AI 가 검색·답변에 실제로 쓰는 내용. 미색인 버전은 빈 목록."""
+    doc = _get_doc(db, document_id)
+    v = _resolve_version(db, doc, version)
+    try:
+        rows = search_index.list_chunks(str(v.id))
+    except SearchIndexError as exc:
+        raise api_error(
+            "SEARCH_INDEX_UNAVAILABLE",
+            "검색 색인에서 텍스트를 읽지 못했습니다. 잠시 후 다시 시도하세요.",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+    chunks = sorted(
+        (
+            {
+                "chunk_index": int(r.get("chunk_index") or 0),
+                "page_start": r.get("page_start"),
+                "page_end": r.get("page_end"),
+                "section": r.get("section"),
+                "text": r.get("text") or "",
+                "is_active": bool(r.get("is_active", True)),
+            }
+            for r in rows
+        ),
+        key=lambda c: c["chunk_index"],
+    )
+    _audit(
+        db, principal, "DOCUMENT_CONTENT_VIEW", doc, {"version": v.version, "chunks": len(chunks)}
+    )
+    return envelope(chunks, version=v.version, count=len(chunks), document_status=doc.status)
 
 
 @router.post("/{document_id}/reindex", status_code=status.HTTP_202_ACCEPTED)

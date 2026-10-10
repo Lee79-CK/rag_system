@@ -6,7 +6,7 @@
 Monorepo (uv workspace). **구현 현황: M1–M12 구현 완료** (M12 = Web Chat 전환, 로컬 mock LLM/mock 엔진 기준).
 2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md` — v1.x Mattermost 기준, 역사 기록)의 수정은 v2.0 에 이월됨
 (Containerfile·Alembic hook Job·K8s 색인 트리거/RBAC·claim_job 멱등·RQ timeout·SecretStr·마스킹·fail-closed).
-검증: `253 passed` (Docker 없으면 실 Qdrant CH-001 1 skipped) · ruff clean · `helm lint`(values / +poc / +poc+lab) clean · admin-web / chat-web build OK.
+검증: `263 passed` (Docker 없으면 실 Qdrant CH-001 1 skipped) · ruff clean · `helm lint`(values / +poc / +poc+lab) clean · admin-web / chat-web build OK.
 알려진 미구현(리뷰 §7 중 v2.0 에 유효한 것): Settings 테이블→rag-api 연동(60s 캐시), 문서 삭제 시 원본 파일·Vector 물리 삭제(검색 제외 is_active=false 는 구현됨),
 mock 엔진 silent fallback 차단, async 핸들러 내 동기 I/O(chat-gateway SqlChatStore·admin 업로드), rate limit 비원자(INCR→EXPIRE),
 CHAT_MAX_CONCURRENCY 미강제, 평가셋 100문항·LLM-judge, Circuit Breaker(reranker 장애는 벡터 순서 대체로 완화됨).
@@ -16,7 +16,7 @@ CHAT_MAX_CONCURRENCY 미강제, 평가셋 100문항·LLM-judge, Circuit Breaker(
 - Python 3.12 고정 (`requires-python ">=3.12,<3.13"`). 의존성은 cp312 바이너리 휠(또는 pure-python wheel)만, sdist 빌드 금지.
 - Secret(JWT 키/pepper/피드백 서명키/토큰/쿠키)을 로그·응답·repr에 절대 노출 금지. Pydantic `SecretStr`, 파일 mount(`*_FILE`).
 - Secret 파일(JWT 키 / password pepper / 피드백 서명키)이 없거나 비면 **fail-closed**(빈 키로 서명·해시 금지 → 로그인 503, 피드백 401). "테스트 편의로 빈 값 허용" 금지.
-- Qdrant 검색은 `build_filter()` 없이 호출 금지 (Channel 격리 100%). 격리 키 = `chat_channels.id`. 예외: parser-indexer 내부 검증(`count`/`query_points`, `document_version_id` 필터)은 서빙 경로가 아님.
+- Qdrant 검색은 `build_filter()` 없이 호출 금지 (Channel 격리 100%). 격리 키 = `chat_channels.id`. 예외: parser-indexer 내부 검증(`count`/`query_points`, `document_version_id` 필터)·admin-api 문서 청크 조회(`list_chunks`, `document_version_id` scroll)는 서빙 경로가 아님.
 - Channel 격리는 멤버십으로도 강제: chat-gateway 의 채널 리소스는 멤버만(비멤버 = 404), socket.io 는 **멤버 채널 room 만 join**.
 - `apps/*` 간 직접 import 금지. 공유는 `libs/*` 로만 (gateway ↔ worker 공유 코드는 `libs/chat-adapter`).
 - `rag/domain/*` 은 FastAPI/LangChain/socket.io 타입 import 금지 (순수 Python + rag_schemas).

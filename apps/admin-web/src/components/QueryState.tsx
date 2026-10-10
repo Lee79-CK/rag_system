@@ -13,7 +13,7 @@ export function QueryState({
   isLoading: boolean;
   error: unknown;
   isEmpty?: boolean;
-  emptyText?: string;
+  emptyText?: ReactNode;
   children: ReactNode;
 }) {
   if (isLoading) {

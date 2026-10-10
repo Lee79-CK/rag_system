@@ -937,7 +937,7 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 | FR-DOC-007 | 새 버전을 등록하고 활성 버전을 관리할 수 있어야 한다.                      | P1   | Version 전환                                 |
 | FR-DOC-008 | 문서를 삭제하면 검색 대상에서 즉시 제외해야 한다.                         | P0   | Qdrant Filter 또는 Vector 삭제 — 비활성화/삭제 시 admin-api 가 해당 문서 point `is_active=false` 를 먼저 반영(실패 시 503·상태 불변), 재활성화는 `POST /documents/{id}/activate`(재색인). `test_fr_doc_008_*` |
 | FR-DOC-009 | 문서 재색인을 요청할 수 있어야 한다.                                | P0   | Job 생성 및 완료 — 재색인 또는 업로드 `start_indexing=true` 시 `index_jobs` 생성, `INDEX_JOB_TRIGGER=k8s` 면 parser-indexer K8s Job 자동 생성(`none` 은 CLI 수동 실행). `test_reindex_calls_trigger` |
-| FR-DOC-010 | 문서 원본과 파싱 결과의 무결성을 확인할 수 있어야 한다.                     | P1   | Hash 및 처리 통계 제공                            |
+| FR-DOC-010 | 문서 원본과 파싱 결과의 무결성을 확인할 수 있어야 한다.                     | P1   | Hash 및 처리 통계 제공. Admin Web 에서 원본 미리보기(PDF·TXT·MD)·다운로드와 색인 텍스트(청크·쪽) 조회, 열람·다운로드는 감사 로그 기록. `test_fr_doc_010_*` |
 
 ### 15.7 Parser
 
@@ -1314,6 +1314,8 @@ Worker 처리(`process_chat_job`): `RUNNING` → Binding(channel_id) 조회(없�
 | GET    | `/api/v1/documents`              | 문서 목록             |
 | GET    | `/api/v1/documents/{id}`         | 문서 상세             |
 | PATCH  | `/api/v1/documents/{id}`         | 문서 권한 수정 — 허용 Channel(`allowed_channel_ids`) 전체 교체 + 자동 재색인. Metadata 수정은 후속 |
+| GET    | `/api/v1/documents/{id}/file`    | 원본 파일 — `version`(기본 활성 버전), `disposition=inline\|attachment`(inline 은 pdf·txt·md 만, 그 외 attachment 강제). 감사 `DOCUMENT_VIEW`/`DOCUMENT_DOWNLOAD` |
+| GET    | `/api/v1/documents/{id}/chunks`  | 색인 텍스트(Qdrant 청크, `chunk_index` 순, 쪽·섹션). 감사 `DOCUMENT_CONTENT_VIEW` |
 | POST   | `/api/v1/documents/{id}/reindex` | 재색인               |
 | DELETE | `/api/v1/documents/{id}`         | 문서 삭제             |
 | GET    | `/api/v1/index-jobs`             | 색인 Job 목록 — 문서 제목·버전 포함, `status`·`document_id` 필터, 최신순 |

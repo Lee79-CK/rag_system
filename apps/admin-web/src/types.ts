@@ -70,6 +70,16 @@ export interface DocumentVersionView {
   created_at: string | null;
 }
 
+/** GET /documents/{id}/chunks 행 — Qdrant 에 색인된 텍스트(AI 가 검색·답변에 쓰는 내용). */
+export interface DocumentChunkView {
+  chunk_index: number;
+  page_start: number | null;
+  page_end: number | null;
+  section: string | null;
+  text: string;
+  is_active: boolean;
+}
+
 export interface UploadDocumentResult {
   document: DocumentView;
   version: DocumentVersionView;

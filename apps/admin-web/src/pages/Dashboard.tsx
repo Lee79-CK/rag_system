@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Surface } from '../components/ui';
 import { useDocuments } from '../api/documents';
 import { useChannels } from '../api/channels';
-import { useChatJobs } from '../api/chatJobs';
+import { RECENT_FAILED_HOURS, useChatJobs } from '../api/chatJobs';
 import { useWhoami } from '../api/auth';
 import { useIndexJobs } from '../api/indexJobs';
 import { useFeedbackSummary } from '../api/feedback';
@@ -15,7 +15,6 @@ import { useFeedbackSummary } from '../api/feedback';
  * service latencies are illustrative (no timeseries/health metrics API yet).
  */
 
-const DEAD_LETTER_STATUSES = new Set(['DEAD_LETTER', 'DEADLETTER', 'FAILED']);
 const COMPLETED = new Set(['COMPLETED', 'SENT', 'SUCCEEDED', 'SUCCESS']);
 const RUNNING = new Set(['RUNNING', 'QUEUED', 'INDEXING', 'PENDING', 'PROCESSING']);
 const FAILED = new Set(['FAILED', 'PARSE_FAILED', 'INDEX_FAILED', 'ERROR']);
@@ -26,7 +25,12 @@ export function Dashboard() {
   // 역할별로 허용된 API 만 호출 (채널 조회 SYS·DOC / 대화 작업 SYS·QE) — 403 카드 대신 해당 지표를 비워 둔다
   const roles = useWhoami().data?.roles ?? [];
   const channels = useChannels(roles.includes('SYS_ADMIN') || roles.includes('DOC_ADMIN'));
-  const chatJobs = useChatJobs(undefined, roles.includes('SYS_ADMIN') || roles.includes('QUALITY_EVALUATOR'));
+  // 최근 RECENT_FAILED_HOURS 시간 — 전체 누적을 세면 한 번 실패한 뒤 배너·실패 수가 영영 줄지 않는다
+  const chatJobs = useChatJobs(
+    undefined,
+    roles.includes('SYS_ADMIN') || roles.includes('QUALITY_EVALUATOR'),
+    RECENT_FAILED_HOURS,
+  );
   const indexJobs = useIndexJobs();
   const feedback = useFeedbackSummary();
 
@@ -34,7 +38,9 @@ export function Dashboard() {
   const todayQ = jobs.length;
   const completed = jobs.filter((j) => COMPLETED.has((j.status ?? '').toUpperCase())).length;
   const successRate = todayQ ? Math.round((completed / todayQ) * 1000) / 10 : null;
-  const deadLetter = jobs.filter((j) => DEAD_LETTER_STATUSES.has((j.status ?? '').toUpperCase())).length;
+  const failedChat = jobs.filter((j) => (j.status ?? '').toUpperCase() === 'FAILED').length;
+  // 오류 로그 화면은 SYS_ADMIN 전용 — QUALITY_EVALUATOR 는 대화 작업 화면으로 보낸다
+  const failurePath = roles.includes('SYS_ADMIN') ? '/errors' : '/chat-jobs';
 
   const channelList = channels.data ?? [];
   const totalChannels = channelList.length;
@@ -50,8 +56,8 @@ export function Dashboard() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Conditional dead-letter banner */}
-      {deadLetter > 0 && (
+      {/* 최근 답변 생성 실패 배너 */}
+      {failedChat > 0 && (
         <div
           style={{
             display: 'flex',
@@ -68,18 +74,25 @@ export function Dashboard() {
             <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
           <div style={{ flex: 1, fontSize: 13.5, color: '#92400e' }}>
-            <strong>미전송 답변 {deadLetter}건</strong> — Incoming Webhook 게시가 실패하여 Dead Letter로
-            전환되었습니다.
+            <strong>
+              최근 {RECENT_FAILED_HOURS}시간 답변 생성 실패 {failedChat}건
+            </strong>{' '}
+            — 사용자에게 "답변 생성 중 오류" 안내가 표시되었습니다. 원인(오류 메시지·관련 서비스 로그)을 확인하세요.
           </div>
-          <button className="btn-outline-warn" onClick={() => navigate('/chat-jobs')}>
-            대화 작업에서 재시도
+          <button className="btn-outline-warn" onClick={() => navigate(failurePath)}>
+            {failurePath === '/errors' ? '오류 로그에서 확인' : '대화 작업에서 확인'}
           </button>
         </div>
       )}
 
       {/* KPI cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 16 }}>
-        <Kpi label="오늘 질문 수" value={todayQ} loading={chatJobs.isLoading} sub="누적 수신 대화" />
+        <Kpi
+          label={`최근 ${RECENT_FAILED_HOURS}시간 질문 수`}
+          value={todayQ}
+          loading={chatJobs.isLoading}
+          sub="수신된 대화 작업"
+        />
         <Kpi
           label="답변 성공률"
           value={successRate === null ? '—' : `${successRate}%`}
@@ -182,12 +195,12 @@ export function Dashboard() {
         <Surface style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>최근 실패 이벤트</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {deadLetter > 0 && (
+            {failedChat > 0 && (
               <FailEvent
                 dot="var(--danger)"
-                title={`DEAD_LETTER · 미전송 ${deadLetter}건`}
-                desc="답변 게시 실패 — 수동 재전송 대기"
-                onClick={() => navigate('/chat-jobs')}
+                title={`답변 생성 실패 · 최근 ${RECENT_FAILED_HOURS}시간 ${failedChat}건`}
+                desc="원인(오류 메시지) 확인"
+                onClick={() => navigate(failurePath)}
               />
             )}
             {failedDocs.slice(0, 3).map((d) => (
@@ -207,7 +220,7 @@ export function Dashboard() {
                 onClick={() => navigate('/feedback')}
               />
             )}
-            {deadLetter === 0 && failedDocs.length === 0 && !(feedback.data && feedback.data.down > 0) && (
+            {failedChat === 0 && failedDocs.length === 0 && !(feedback.data && feedback.data.down > 0) && (
               <div style={{ fontSize: 13, color: 'var(--text-sub)', padding: '16px 4px' }}>
                 최근 실패 이벤트가 없습니다.
               </div>
