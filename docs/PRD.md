@@ -928,8 +928,8 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 
 | ID         | 요구사항                                                 | 우선순위 | 인수 조건                                      |
 | ---------- | ---------------------------------------------------- | ----:| ------------------------------------------ |
-| FR-DOC-001 | 관리자는 Admin Web에서 지원 형식의 문서를 업로드할 수 있어야 한다.           | P0   | 업로드 후 상태 생성                                |
-| FR-DOC-002 | 문서 크기 및 확장자 제한을 설정할 수 있어야 한다.                        | P0   | 정책 위반 파일 거부                                |
+| FR-DOC-001 | 관리자는 Admin Web에서 지원 형식의 문서를 업로드할 수 있어야 한다.           | P0   | 업로드 후 상태 생성. 여러 파일(최대 10개) 일괄 업로드 시 파일별 결과(일부 실패해도 나머지 등록). `test_fr_doc_001_batch_*` |
+| FR-DOC-002 | 문서 크기 및 확장자 제한을 설정할 수 있어야 한다.                        | P0   | 정책 위반 파일 거부. `MAX_UPLOAD_BYTES`(파일·일괄 합계 100MB), `MAX_UPLOAD_FILES`(10) |
 | FR-DOC-003 | 파일 해시 기반 중복 업로드를 탐지해야 한다.                            | P0   | 동일 해시 경고/차단                                |
 | FR-DOC-004 | 문서별 제목, 카테고리, 부서, 보안등급, 허용 Channel(`allowed_channel_ids`)/그룹을 설정할 수 있어야 한다. | P0   | Metadata 및 `document_channel_acl` 저장(미존재 Channel 404, 형식 오류 422). 업로드 후에도 `PATCH /api/v1/documents/{id}` 로 허용 Channel 교체 → 자동 재색인 후 검색 반영. `test_upload_registers_channel_acl`, `test_fr_doc_004_patch_*` |
 | FR-DOC-005 | 문서 처리 상태를 Admin Web에서 확인할 수 있어야 한다.                  | P0   | Uploaded/Parsing/Indexing/Active/Failed 표시 |
@@ -1311,6 +1311,7 @@ Worker 처리(`process_chat_job`): `RUNNING` → Binding(channel_id) 조회(없�
 | Method | Endpoint                         | 설명                |
 | ------ | -------------------------------- | ----------------- |
 | POST   | `/api/v1/documents`              | 문서 업로드            |
+| POST   | `/api/v1/documents/batch`        | 여러 파일 업로드(`files` 반복, 최대 10개·합계 100MB, 공통 메타·채널). 파일별 결과 `{file_name, ok, document?, error?}` — 중복·형식 오류는 해당 파일만 실패, 개수·합계 초과는 요청 거부(422 `TOO_MANY_FILES`, 413 `BATCH_TOO_LARGE`) |
 | GET    | `/api/v1/documents`              | 문서 목록             |
 | GET    | `/api/v1/documents/{id}`         | 문서 상세             |
 | PATCH  | `/api/v1/documents/{id}`         | 문서 권한 수정 — 허용 Channel(`allowed_channel_ids`) 전체 교체 + 자동 재색인. Metadata 수정은 후속 |

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import { qk } from "./queryKeys";
 import type {
+  BatchUploadItem,
   DocumentChunkView,
   DocumentVersionView,
   DocumentView,
@@ -31,6 +32,48 @@ export function useDocumentVersions(id: string | undefined) {
     queryKey: qk.documentVersions(id ?? ""),
     queryFn: () => api.get<DocumentVersionView[]>(`/documents/${id}/versions`),
     enabled: !!id,
+  });
+}
+
+/** 일괄 업로드 상한 — 서버(MAX_UPLOAD_FILES · MAX_UPLOAD_BYTES)가 최종 판정, 화면은 미리 막는다. */
+export const MAX_UPLOAD_FILES = 10;
+export const MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024;
+export const UPLOAD_EXTENSIONS = [
+  "pdf",
+  "docx",
+  "pptx",
+  "xlsx",
+  "txt",
+  "md",
+  "html",
+];
+
+export interface BatchUploadArgs extends Omit<UploadArgs, "file"> {
+  files: File[];
+}
+
+/** POST /documents/batch — 여러 파일을 공통 메타·허용 채널로 등록. 결과는 파일별(일부 실패 가능). */
+export function useUploadDocuments() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: BatchUploadArgs) => {
+      const fd = new FormData();
+      for (const f of args.files) fd.append("files", f);
+      // 제목은 파일 1개일 때만 (서버도 여러 파일 + 제목은 422)
+      if (args.title && args.files.length === 1) fd.append("title", args.title);
+      if (args.category) fd.append("category", args.category);
+      if (args.department) fd.append("department", args.department);
+      if (args.security_level) fd.append("security_level", args.security_level);
+      for (const ch of args.allowed_channel_ids ?? []) {
+        fd.append("allowed_channel_ids", ch);
+      }
+      if (args.start_indexing) fd.append("start_indexing", "true");
+      return api.upload<BatchUploadItem[]>("/documents/batch", fd);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.documents });
+      qc.invalidateQueries({ queryKey: ["indexJobs"] });
+    },
   });
 }
 

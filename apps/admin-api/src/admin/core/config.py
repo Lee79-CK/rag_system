@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # --- 문서 저장 (DEC-004 NFS PVC) ---
     document_storage_path: str = Field(default="/data/documents", alias="DOCUMENT_STORAGE_PATH")
     max_upload_bytes: int = Field(default=100 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
+    # 일괄 업로드 한 번의 파일 수 상한 — 합계 크기는 max_upload_bytes 를 그대로 적용
+    max_upload_files: int = Field(default=10, alias="MAX_UPLOAD_FILES")
 
     # --- Web Chat 사용자 관리 (chat-gateway 와 동일 값이어야 로그인 가능) ---
     chat_workspace_slug: str = Field(default="rag", alias="CHAT_WORKSPACE_SLUG")

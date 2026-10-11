@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from rag_common import sha256_hex
@@ -206,9 +206,126 @@ async def upload_document(
     `allowed_channel_ids` 로 복사하며 build_filter() 격리의 근거가 된다 (§6.3, FR-DOC-004).
     start_indexing=true 면 index_jobs INSERT + Job 트리거 (FR-IDX-010, ADR-008).
     """
-    settings = get_settings()
     channel_ids = _validated_channel_ids(db, allowed_channel_ids)
-    ext = _ext(file.filename)
+    _check_extension(file.filename)
+    data = await file.read()
+    return envelope(
+        _create_document(
+            db,
+            principal,
+            trigger,
+            filename=file.filename,
+            data=data,
+            title=title,
+            category=category,
+            department=department,
+            security_level=security_level,
+            channel_ids=channel_ids,
+            start_indexing=start_indexing,
+        )
+    )
+
+
+@router.post("/batch")
+async def upload_documents_batch(
+    files: list[UploadFile] = File(default_factory=list),
+    title: str | None = Form(
+        default=None, description="파일 1개일 때만. 여러 개면 각 파일명이 제목"
+    ),
+    category: str | None = Form(default=None),
+    department: str | None = Form(default=None),
+    security_level: str = Form(default="INTERNAL"),
+    allowed_channel_ids: list[str] = Form(default_factory=list),
+    start_indexing: bool = Form(default=False),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles(SYS_ADMIN, DOC_ADMIN)),
+    trigger: IndexJobTrigger = Depends(provide_index_trigger),
+) -> dict:
+    """여러 파일 업로드 — 개수(MAX_UPLOAD_FILES)·합계(MAX_UPLOAD_BYTES)는 요청 단위로 거부하고,
+    그 밖의 오류(확장자·빈 파일·중복)는 파일별로 기록해 나머지 파일은 등록한다(응답에 파일별 결과).
+    공통 메타·허용 채널·색인 여부는 모든 파일에 같이 적용한다.
+    """
+    settings = get_settings()
+    if not files:
+        raise api_error(
+            "NO_FILES", "업로드할 파일이 없습니다.", status.HTTP_422_UNPROCESSABLE_ENTITY
+        )
+    if len(files) > settings.max_upload_files:
+        raise api_error(
+            "TOO_MANY_FILES",
+            f"한 번에 최대 {settings.max_upload_files}개까지 업로드할 수 있습니다.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            max_files=settings.max_upload_files,
+            files=len(files),
+        )
+    if title and len(files) > 1:
+        raise api_error(
+            "TITLE_SINGLE_FILE_ONLY",
+            "제목은 파일 1개를 올릴 때만 지정할 수 있습니다(여러 파일은 파일명이 제목).",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    # 합계 상한은 본문을 읽기 전에 판정 — 넘으면 아무것도 저장하지 않는다
+    total = sum(f.size or 0 for f in files)
+    if total > settings.max_upload_bytes:
+        raise _batch_too_large(settings.max_upload_bytes, total)
+    channel_ids = _validated_channel_ids(db, allowed_channel_ids)
+
+    contents: list[tuple[str | None, bytes]] = []
+    total = 0
+    for f in files:
+        data = await f.read()
+        total += len(data)
+        if total > settings.max_upload_bytes:  # size 를 모르는 클라이언트 대비
+            raise _batch_too_large(settings.max_upload_bytes, total)
+        contents.append((f.filename, data))
+
+    results: list[dict] = []
+    for filename, data in contents:
+        item: dict = {"file_name": filename}
+        try:
+            _check_extension(filename)
+            created = _create_document(
+                db,
+                principal,
+                trigger,
+                filename=filename,
+                data=data,
+                title=title,
+                category=category,
+                department=department,
+                security_level=security_level,
+                channel_ids=channel_ids,
+                start_indexing=start_indexing,
+            )
+            item.update(ok=True, **created)
+        except HTTPException as exc:
+            db.rollback()  # 이 파일의 미완료 변경만 버린다 — 앞 파일은 이미 커밋됨
+            err = (exc.detail or {}).get("error", {}) if isinstance(exc.detail, dict) else {}
+            item.update(
+                ok=False,
+                error={
+                    "code": err.get("code", f"HTTP_{exc.status_code}"),
+                    "message": err.get("message", str(exc.detail)),
+                    "detail": err.get("detail"),
+                },
+            )
+        results.append(item)
+    created_n = sum(1 for r in results if r["ok"])
+    return envelope(results, created=created_n, failed=len(results) - created_n)
+
+
+def _batch_too_large(max_bytes: int, total: int) -> HTTPException:
+    return api_error(
+        "BATCH_TOO_LARGE",
+        f"파일 합계가 상한({max_bytes // (1024 * 1024)}MB)을 초과했습니다.",
+        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        max_bytes=max_bytes,
+        total_bytes=total,
+    )
+
+
+def _check_extension(filename: str | None) -> None:
+    ext = _ext(filename)
     if ext not in ALLOWED_EXTENSIONS:
         raise api_error(
             "UNSUPPORTED_FILE_TYPE",
@@ -217,7 +334,23 @@ async def upload_document(
             allowed=sorted(ALLOWED_EXTENSIONS),
         )
 
-    data = await file.read()
+
+def _create_document(
+    db: Session,
+    principal: Principal,
+    trigger: IndexJobTrigger,
+    *,
+    filename: str | None,
+    data: bytes,
+    title: str | None,
+    category: str | None,
+    department: str | None,
+    security_level: str,
+    channel_ids: list[str],
+    start_indexing: bool,
+) -> dict:
+    """파일 1개 등록(단일·일괄 공통). 파일 단위 오류는 api_error 로 올린다 — 일괄 업로드는 항목 실패로 기록."""
+    settings = get_settings()
     if len(data) == 0:
         raise api_error(
             "EMPTY_FILE", "빈 파일은 업로드할 수 없습니다.", status.HTTP_400_BAD_REQUEST
@@ -248,7 +381,7 @@ async def upload_document(
         )
 
     doc = Document(
-        title=title or (file.filename or "untitled"),
+        title=title or (filename or "untitled"),
         category=category,
         department=department,
         security_level=security_level,
@@ -258,7 +391,7 @@ async def upload_document(
     db.add(doc)
     db.flush()  # doc.id 확보.
 
-    file_path = _storage().save(str(doc.id), 1, file.filename or "document", data)
+    file_path = _storage().save(str(doc.id), 1, filename or "document", data)
     version = DocumentVersion(
         document_id=doc.id,
         version=1,
@@ -285,7 +418,7 @@ async def upload_document(
         job = _create_index_job(db, doc, trigger)
         result["index_job_id"] = str(job.id)
         result["index_job_status"] = job.status
-    return envelope(result)
+    return result
 
 
 def _create_index_job(db: Session, doc: Document, trigger: IndexJobTrigger) -> IndexJob:

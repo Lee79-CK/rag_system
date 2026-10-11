@@ -29,7 +29,6 @@ import {
   PlusOutlined,
   ReloadOutlined,
 } from "@ant-design/icons";
-import { ApiError } from "../api/client";
 import { QueryState, errorMessage } from "../components/QueryState";
 import { StatusBadge, Surface, Mono } from "../components/ui";
 import {
@@ -43,11 +42,15 @@ import {
   useDocumentVersions,
   useDocuments,
   useReindexDocument,
+  MAX_UPLOAD_FILES,
+  MAX_UPLOAD_TOTAL_BYTES,
+  UPLOAD_EXTENSIONS,
   useUpdateDocumentChannels,
-  useUploadDocument,
+  useUploadDocuments,
 } from "../api/documents";
 import { useChannels } from "../api/channels";
 import type {
+  BatchUploadItem,
   ChannelView,
   DocumentView,
   DuplicateDocumentDetail,
@@ -138,7 +141,7 @@ export function Documents() {
   const { message, modal } = App.useApp();
   const docs = useDocuments();
   const channels = useChannels();
-  const upload = useUploadDocument();
+  const upload = useUploadDocuments();
   const reindex = useReindexDocument();
   const deactivate = useDeactivateDocument();
   const activate = useActivateDocument();
@@ -154,7 +157,26 @@ export function Documents() {
   };
   const [channelsDoc, setChannelsDoc] = useState<DocumentView | undefined>();
   const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [batchResult, setBatchResult] = useState<BatchUploadItem[] | null>(
+    null,
+  );
   const [form] = Form.useForm();
+
+  // 선택 단계 검증 — 서버도 같은 기준으로 거부하지만, 업로드 전에 알려 준다
+  const files = fileList.map((f) => f.originFileObj).filter(Boolean) as File[];
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  const badExt = files.filter(
+    (f) =>
+      !UPLOAD_EXTENSIONS.includes(f.name.split(".").pop()?.toLowerCase() ?? ""),
+  );
+  const uploadProblem =
+    files.length > MAX_UPLOAD_FILES
+      ? `한 번에 최대 ${MAX_UPLOAD_FILES}개까지 올릴 수 있습니다 (${files.length}개 선택)`
+      : totalBytes > MAX_UPLOAD_TOTAL_BYTES
+        ? `파일 합계가 100MB 를 넘습니다 (${formatMB(totalBytes)})`
+        : badExt.length
+          ? `허용되지 않은 형식: ${badExt.map((f) => f.name).join(", ")}`
+          : null;
 
   // Filter bar state (client-side filtering over the loaded list).
   const [q, setQ] = useState("");
@@ -196,14 +218,18 @@ export function Documents() {
 
   const submitUpload = async () => {
     const values = await form.validateFields();
-    const file = fileList[0]?.originFileObj;
-    if (!file) {
+    if (files.length === 0) {
       message.error("업로드할 파일을 선택하세요.");
       return;
     }
+    if (uploadProblem) {
+      message.error(uploadProblem);
+      return;
+    }
+    let results: BatchUploadItem[];
     try {
-      const r = await upload.mutateAsync({
-        file: file as File,
+      results = await upload.mutateAsync({
+        files,
         title: values.title,
         category: values.category,
         department: values.department,
@@ -211,27 +237,76 @@ export function Documents() {
         allowed_channel_ids: values.allowed_channel_ids,
         start_indexing: values.start_indexing,
       });
+    } catch (e) {
+      message.error(errorMessage(e)); // 요청 단위 거부(개수·합계·채널) — 아무것도 저장되지 않음
+      return;
+    }
+    const failed = results.filter((r) => !r.ok);
+    const indexed = results.some((r) => r.index_job_id);
+    if (failed.length === 0) {
       message.success(
-        r.index_job_id
-          ? "업로드 완료 · 색인 시작 (완료되면 상태가 ACTIVE 로 바뀝니다)"
-          : "업로드 완료 · 색인하려면 [재색인] 을 누르세요",
+        `${results.length}개 업로드 완료 · ` +
+          (indexed
+            ? "색인 시작 (완료되면 상태가 ACTIVE 로 바뀝니다)"
+            : "색인하려면 [재색인] 을 누르세요"),
       );
       closeUpload();
-    } catch (e) {
-      if (e instanceof ApiError && e.code === "DUPLICATE_DOCUMENT") {
-        offerLinkExisting(
-          e.detail as unknown as DuplicateDocumentDetail,
-          values.allowed_channel_ids ?? [],
-        );
-        return;
+      return;
+    }
+    // 파일 1개가 중복이면 기존처럼 "기존 문서에 채널 연결" 제안
+    if (
+      results.length === 1 &&
+      failed[0].error?.code === "DUPLICATE_DOCUMENT"
+    ) {
+      offerLinkExisting(
+        failed[0].error.detail as unknown as DuplicateDocumentDetail,
+        values.allowed_channel_ids ?? [],
+      );
+      return;
+    }
+    // 성공한 파일은 목록에서 빼고(실패분만 다시 올릴 수 있게) 파일별 결과를 보여 준다
+    const failedNames = new Set(failed.map((r) => r.file_name));
+    setFileList((fl) => fl.filter((f) => failedNames.has(f.name)));
+    setBatchResult(results);
+  };
+
+  /** 일괄 업로드 결과의 중복 항목 → 선택 채널을 기존 문서에 추가 연결할 수 있는 것만 (DELETED 제외, 새 채널 있음). */
+  const selectedChannels: string[] =
+    Form.useWatch("allowed_channel_ids", form) ?? [];
+  const linkableDuplicates = (batchResult ?? []).flatMap((r) => {
+    if (r.ok || r.error?.code !== "DUPLICATE_DOCUMENT") return [];
+    const dup = r.error.detail as unknown as DuplicateDocumentDetail;
+    if (dup.existing_document_status === "DELETED") return [];
+    const current =
+      data.find((d) => d.id === dup.existing_document_id)
+        ?.allowed_channel_ids ?? [];
+    const merged = [...new Set([...current, ...selectedChannels])];
+    return merged.length > current.length
+      ? [{ id: dup.existing_document_id, merged }]
+      : [];
+  });
+  const linkDuplicates = async () => {
+    const targets = [
+      ...new Map(linkableDuplicates.map((t) => [t.id, t])).values(),
+    ];
+    try {
+      for (const t of targets) {
+        await updateChannels.mutateAsync({ id: t.id, channelIds: t.merged });
       }
-      message.error(errorMessage(e));
+      message.success(
+        `기존 문서 ${targets.length}건에 선택 채널을 연결했습니다 (재색인 후 검색 반영)`,
+      );
+      setBatchResult(null);
+      closeUpload();
+    } catch (err) {
+      message.error(errorMessage(err));
     }
   };
 
   const closeUpload = () => {
     setUploadOpen(false);
     setFileList([]);
+    setBatchResult(null);
     form.resetFields();
   };
 
@@ -576,8 +651,9 @@ export function Documents() {
         open={uploadOpen}
         onOk={submitUpload}
         confirmLoading={upload.isPending}
+        okButtonProps={{ disabled: files.length === 0 || !!uploadProblem }}
         onCancel={() => setUploadOpen(false)}
-        okText="업로드"
+        okText={files.length > 1 ? `${files.length}개 업로드` : "업로드"}
         cancelText="취소"
       >
         <Form
@@ -587,11 +663,10 @@ export function Documents() {
         >
           <Form.Item label="파일" required>
             <Upload.Dragger
-              multiple={false}
-              maxCount={1}
+              multiple
               beforeUpload={() => false}
               fileList={fileList}
-              onChange={({ fileList: fl }) => setFileList(fl.slice(-1))}
+              onChange={({ fileList: fl }) => setFileList(fl)}
               accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.html"
             >
               <p className="ant-upload-drag-icon">
@@ -599,12 +674,36 @@ export function Documents() {
               </p>
               <p className="ant-upload-text">클릭 또는 드래그하여 업로드</p>
               <p className="ant-upload-hint">
-                pdf, docx, pptx, xlsx, txt, md, html (최대 100MB)
+                pdf, docx, pptx, xlsx, txt, md, html · 최대 {MAX_UPLOAD_FILES}
+                개, 합계 100MB
               </p>
             </Upload.Dragger>
+            {files.length > 0 && (
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: 12.5,
+                  color: uploadProblem ? "var(--danger)" : "var(--text-sub)",
+                }}
+              >
+                {uploadProblem ??
+                  `${files.length}개 · 합계 ${formatMB(totalBytes)} / 100MB`}
+              </div>
+            )}
           </Form.Item>
-          <Form.Item label="제목" name="title">
-            <Input placeholder="미입력 시 파일명 사용" />
+          <Form.Item
+            label="제목"
+            name="title"
+            extra={
+              files.length > 1
+                ? "여러 파일은 각 파일명이 제목이 됩니다"
+                : undefined
+            }
+          >
+            <Input
+              placeholder="미입력 시 파일명 사용"
+              disabled={files.length > 1}
+            />
           </Form.Item>
           <Form.Item label="카테고리(category)" name="category">
             <Input />
@@ -617,6 +716,18 @@ export function Documents() {
               options={SECURITY_LEVELS.map((s) => ({ label: s, value: s }))}
             />
           </Form.Item>
+          {files.length > 1 && (
+            <div
+              style={{
+                fontSize: 12.5,
+                color: "var(--text-sub)",
+                marginBottom: 12,
+              }}
+            >
+              아래 카테고리·부서·보안등급·허용 채널·색인 여부는 선택한 파일
+              모두에 똑같이 적용됩니다.
+            </div>
+          )}
           <Form.Item
             label="허용 Channel (ACL)"
             name="allowed_channel_ids"
@@ -640,6 +751,83 @@ export function Documents() {
             </Checkbox>
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="업로드 결과"
+        open={!!batchResult}
+        width={720}
+        onCancel={() => setBatchResult(null)}
+        footer={[
+          linkableDuplicates.length > 0 && (
+            <Button
+              key="link"
+              loading={updateChannels.isPending}
+              onClick={linkDuplicates}
+            >
+              중복 문서에 선택 채널 연결 ({linkableDuplicates.length}건)
+            </Button>
+          ),
+          <Button
+            key="close"
+            type="primary"
+            onClick={() => setBatchResult(null)}
+          >
+            확인
+          </Button>,
+        ]}
+      >
+        {batchResult && (
+          <>
+            <p style={{ marginBottom: 12 }}>
+              {batchResult.filter((r) => r.ok).length}개 등록 ·{" "}
+              {batchResult.filter((r) => !r.ok).length}개 실패. 실패한 파일은
+              업로드 창에 남겨 두었습니다.
+            </p>
+            <Table
+              rowKey={(r, i) => `${r.file_name}-${i}`}
+              size="small"
+              pagination={false}
+              dataSource={batchResult}
+              columns={[
+                { title: "파일", dataIndex: "file_name" },
+                {
+                  title: "결과",
+                  key: "ok",
+                  width: 90,
+                  render: (_, r) =>
+                    r.ok ? (
+                      <Tag color="success">등록</Tag>
+                    ) : r.error?.code === "DUPLICATE_DOCUMENT" ? (
+                      <Tag color="warning">중복</Tag>
+                    ) : (
+                      <Tag color="error">실패</Tag>
+                    ),
+                },
+                {
+                  title: "내용",
+                  key: "msg",
+                  render: (_, r) => {
+                    if (r.ok)
+                      return r.index_job_id
+                        ? "색인 시작"
+                        : "색인 대기 ([재색인] 필요)";
+                    if (r.error?.code === "DUPLICATE_DOCUMENT") {
+                      const dup = r.error
+                        .detail as unknown as DuplicateDocumentDetail;
+                      return `이미 등록된 문서 '${dup.existing_document_title ?? dup.existing_document_id}'${
+                        dup.existing_document_status === "DELETED"
+                          ? " (삭제됨)"
+                          : ""
+                      } 와 내용이 같습니다`;
+                    }
+                    return r.error?.message;
+                  },
+                },
+              ]}
+            />
+          </>
+        )}
       </Modal>
 
       <DocumentChannelsModal
@@ -1146,4 +1334,8 @@ function ChunkList({
       </QueryState>
     </div>
   );
+}
+
+function formatMB(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }

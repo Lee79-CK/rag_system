@@ -27,7 +27,7 @@ export interface ErrorResponse {
 }
 
 // ----- Auth / RBAC (docs/TDD.md §7.5) -----
-export type Role = 'SYS_ADMIN' | 'DOC_ADMIN' | 'QUALITY_EVALUATOR' | 'AUDITOR';
+export type Role = "SYS_ADMIN" | "DOC_ADMIN" | "QUALITY_EVALUATOR" | "AUDITOR";
 
 export interface Principal {
   id: string | null;
@@ -37,14 +37,9 @@ export interface Principal {
 }
 
 // ----- Documents (§7.5 / §9.5) -----
-export type SecurityLevel = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'SECRET';
+export type SecurityLevel = "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "SECRET";
 export type DocumentStatus =
-  | 'UPLOADED'
-  | 'INDEXING'
-  | 'ACTIVE'
-  | 'INACTIVE'
-  | 'DELETED'
-  | 'FAILED';
+  "UPLOADED" | "INDEXING" | "ACTIVE" | "INACTIVE" | "DELETED" | "FAILED";
 
 export interface DocumentView {
   id: string;
@@ -102,6 +97,23 @@ export interface DuplicateDocumentDetail {
   existing_document_status: string | null;
 }
 
+/** POST /documents/batch 의 파일별 결과 — 실패해도 나머지 파일은 등록된다. */
+export interface BatchUploadItem {
+  file_name: string | null;
+  ok: boolean;
+  document?: DocumentView;
+  version?: DocumentVersionView;
+  allowed_channel_ids?: string[];
+  index_job_id?: string;
+  index_job_status?: string;
+  error?: {
+    code: string;
+    message: string;
+    /** DUPLICATE_DOCUMENT 이면 DuplicateDocumentDetail */
+    detail: Record<string, unknown> | null;
+  };
+}
+
 /** PATCH /documents/{id} 결과 — ACL 교체 + 자동 재색인 (FR-DOC-004). */
 export interface UpdateDocumentChannelsResult {
   document: DocumentView;
@@ -115,16 +127,17 @@ export interface UpdateDocumentChannelsResult {
 
 // ----- Index Jobs (index_jobs; parser-indexer §7.7) -----
 export type IndexStage =
-  | 'WAITING'
-  | 'PARSING'
-  | 'CHUNKING'
-  | 'EMBEDDING'
-  | 'UPSERTING'
-  | 'VALIDATING'
-  | 'DONE'
+  | "WAITING"
+  | "PARSING"
+  | "CHUNKING"
+  | "EMBEDDING"
+  | "UPSERTING"
+  | "VALIDATING"
+  | "DONE"
   | null;
 
-export type IndexJobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export type IndexJobStatus =
+  "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 
 /** GET /api/v1/index-jobs 행 — 문서 제목·버전이 조인된 index_jobs. */
 export interface IndexJobView {
@@ -147,8 +160,8 @@ export interface IndexJobView {
 }
 
 // ----- Channels + Bindings (§7.5 / §9.6; rag_schemas.binding) -----
-export type ChannelMode = 'DEDICATED_CHANNEL' | 'TRIGGER_WORD';
-export type ConversationMode = 'CHANNEL' | 'THREAD' | 'STATELESS';
+export type ChannelMode = "DEDICATED_CHANNEL" | "TRIGGER_WORD";
+export type ConversationMode = "CHANNEL" | "THREAD" | "STATELESS";
 
 /** rag_schemas.KnowledgeScope (libs/schemas/binding.py). */
 export interface KnowledgeScope {
@@ -163,7 +176,7 @@ export interface ChannelView {
   id: string;
   name: string;
   display_name: string;
-  type: 'public' | 'private';
+  type: "public" | "private";
   purpose: string | null;
   archived: boolean;
   created_at: string | null;
@@ -188,7 +201,7 @@ export interface BindingView {
 export interface ChannelCreate {
   name: string;
   display_name: string;
-  type?: 'public' | 'private';
+  type?: "public" | "private";
   purpose?: string | null;
 }
 
@@ -209,7 +222,7 @@ export interface ChannelMemberView {
   user_id: string;
   email: string;
   display_name: string;
-  role: 'member' | 'channel_admin';
+  role: "member" | "channel_admin";
   joined_at: string | null;
 }
 
@@ -218,7 +231,7 @@ export interface ChatUserView {
   id: string;
   email: string;
   display_name: string;
-  role: 'user' | 'admin';
+  role: "user" | "admin";
   is_bot: boolean;
   is_active: boolean;
   must_change_password: boolean;
@@ -292,7 +305,7 @@ export interface AuditLogView {
 }
 
 // ----- Feedback (v1.1, §7.5 / §8.4) -----
-export type FeedbackValue = 'UP' | 'DOWN';
+export type FeedbackValue = "UP" | "DOWN";
 
 export interface FeedbackSummary {
   up: number;
@@ -351,7 +364,7 @@ export interface DashboardStatus {
 }
 
 // ----- 오류 로그 (admin.api.errors, FR-OPS-011) -----
-export type ErrorSource = 'chat' | 'index' | 'admin';
+export type ErrorSource = "chat" | "index" | "admin";
 
 /** DB 에 기록된 오류 1건 — 대화 작업(chat_jobs) · 색인 작업(index_jobs) · 관리 API(audit_logs). */
 export interface ErrorEventView {
