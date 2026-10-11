@@ -22,9 +22,11 @@ def test_fr_idx_004_embedder_sends_texts_key():
 
     client = httpx.Client(base_url="http://embedding", transport=httpx.MockTransport(handler))
     embedder = Embedder("http://embedding", batch_size=2, client=client)
-    vectors = embedder.embed(["a", "b", "c"])
+    progress: list[tuple[int, int]] = []
+    vectors = embedder.embed(["a", "b", "c"], on_progress=lambda d, t: progress.append((d, t)))
 
     assert len(vectors) == 3
+    assert progress == [(2, 3), (3, 3)]  # batch 마다 누적 완료 수
     assert [b["texts"] for b in seen] == [["a", "b"], ["c"]]
     assert all("input" not in b for b in seen)
     assert all(b["normalize"] is True for b in seen)

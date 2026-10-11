@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from itertools import batched
 
 import httpx
@@ -68,11 +68,21 @@ class Embedder:
         data = resp.json()
         return _extract_vectors(data)
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        """전체 텍스트를 batch로 임베딩. 실패 batch만 재시도한다."""
+    def embed(
+        self,
+        texts: Sequence[str],
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[list[float]]:
+        """전체 텍스트를 batch로 임베딩. 실패 batch만 재시도한다.
+
+        on_progress(done, total) 는 batch 가 끝날 때마다 호출된다 — CPU 임베딩은 큰 문서에서
+        한 시간 넘게 걸리므로 호출자가 진행률을 남겨야 "멈춤"과 구분된다.
+        """
         vectors: list[list[float]] = []
         for batch in batched(texts, self._batch_size):
             vectors.extend(self._embed_batch(batch))
+            if on_progress is not None:
+                on_progress(len(vectors), len(texts))
         if len(vectors) != len(texts):
             raise ValueError(f"임베딩 개수 불일치: got {len(vectors)}, expected {len(texts)}")
         return vectors

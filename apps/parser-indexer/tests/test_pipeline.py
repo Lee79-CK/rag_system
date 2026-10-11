@@ -68,7 +68,9 @@ class FakeQdrant:
 
 
 class FakeEmbedder:
-    def embed(self, texts):
+    def embed(self, texts, on_progress=None):
+        if on_progress is not None:
+            on_progress(len(texts), len(texts))
         return [[0.1] * 4 for _ in texts]
 
 
@@ -158,3 +160,28 @@ def test_fr_doc_008_job_for_inactive_or_deleted_document_is_cancelled(tmp_path):
         assert repo.cancelled == f"CANCELLED: document {status}"
         assert qdrant.points == []
         assert repo.activated is None and repo.completed is False and repo.stages == []
+
+
+def test_fr_idx_005_embedding_progress_is_reported_between_batches():
+    """긴 EMBEDDING 단계가 0.45 에 멈춰 보이지 않게 — 간격마다 progress 갱신, 마지막 batch 는 항상 기록."""
+    from ingestion.main import _embedding_progress
+
+    ctx = JobContext(
+        index_job_id="job-p",
+        document_version_id="ver-p",
+        document_id="doc-p",
+        version=1,
+        file_path="x.txt",
+        title="t",
+    )
+    repo = FakeRepo(ctx)
+    now = [0.0]
+    report = _embedding_progress(repo, "job-p", clock=lambda: now[0])
+
+    for done, t in ((8, 5.0), (16, 12.0), (24, 15.0), (32, 30.0), (40, 31.0)):
+        now[0] = t
+        report(done, 40)
+
+    # 5s(간격 미달)·15s(직전 기록 후 3s) 는 건너뛰고, 12s·30s 와 마지막(완료) 은 기록
+    assert [p for _, p in repo.stages] == [0.55, 0.65, 0.7]
+    assert {s for s, _ in repo.stages} == {"EMBEDDING"}

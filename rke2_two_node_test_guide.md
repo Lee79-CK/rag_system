@@ -775,6 +775,8 @@ done
 
 > ⚠ **임베딩 실측치 재확인**: embedding-api 는 v2.1 이전까지 FlagEmbedding 1.4 `encode()` 를 `max_length` 없이 호출해 **입력이 512 토큰에서 잘렸습니다**. 위 임베딩 시간을 서비스 코드 경로로 쟀다면 1,413 tok 청크도 512 tok 만 계산된 값입니다. v2.1 은 `EMBEDDING_MAX_LENGTH=2048` 로 전 길이를 임베딩하되 values-lab 의 `CHARS_PER_TOKEN=1.9` 로 청크 자체를 ≈800 tok 로 줄였으므로, 청크당 시간은 비슷하거나 늘고 청크 수는 늘어납니다. §5.1.2 의 5종 업로드 때 Job 로그의 EMBEDDING 단계 소요 시간으로 **쪽당 색인 시간을 다시 기록**하세요.
 
+> 📏 **실측 (2026-10-11, 랩 P3 CPU 6코어 · KURE-v1 · `EMBEDDING_MAX_LENGTH=2048` · 배치 8)**: `2024년 기준 콘텐츠산업조사_일반배포용`(345쪽 · 19.4MB · 표 1,013개) → **1,398청크(≈4.1개/쪽)**, 임베딩 **≈28.5초/배치(≈3.6초/청크)**, EMBEDDING 단계 **≈83분 ≈ 14초/쪽**. 위 표의 1~1.7초/쪽보다 **약 10배 느립니다**(표가 많아 청크가 많고, 청크가 800 tok 상한까지 차며, 2048 tok 전 길이를 계산). 표가 많은 통계·보고서형 PDF 는 **쪽당 ≈14초**로 잡으세요 — 300쪽 ≈ 70분, 500쪽 ≈ 2시간. 진행 중에는 Job 로그 `embedding_progress`(done/total/eta_s)와 색인 작업 화면 진행률(45→70%)로 확인합니다.
+
 **chart 에 반영된 설정 2가지 — 실제 PDF 용 (기본 적용됨, 배포 후 확인만)**
 
 1. **admin host 업로드 상한 100MB** — ingress-nginx 기본 업로드 제한은 **1MB** 라서, 글꼴이 임베드된 한글 PDF 는 10~50쪽만 돼도 **413 Request Entity Too Large** 로 거부됩니다. chart 는 `rag-admin` Ingress 에 `nginx.ingress.kubernetes.io/proxy-body-size: 110m`(values `ingress.adminProxyBodySize` — 파일 합계 100MB 는 admin-api `MAX_UPLOAD_BYTES` 가 강제하고, 여유 10MB 는 여러 파일 일괄 업로드의 multipart 오버헤드)을 붙이고, `rag-chat` 은 `1m` 을 유지합니다. `ingress.annotations` 에 같은 키를 넣으면 두 Ingress 모두 그 값으로 덮어씁니다.
@@ -790,7 +792,7 @@ done
 
 | 항목 | 권장 | 근거 |
 |---|---|---|
-| **페이지 수 (1차 기준)** | **파일당 300쪽 이하** 권장 (색인 ≈ 5~9분), 최대 500쪽 (≈ 8~15분) | 색인 시간 ≈ 1~1.7초/쪽. 실패 시 전체 재시도, 색인 중 채팅 질의 임베딩도 같은 CPU 를 공유해 응답이 느려짐 |
+| **페이지 수 (1차 기준)** | **파일당 300쪽 이하** 권장 (색인 ≈ 5~9분, **표 많은 보고서형은 ≈ 70분**), 최대 500쪽 (≈ 8~15분 / 표 많으면 ≈ 2시간) | 색인 시간 ≈ 1~1.7초/쪽, 표 많은 문서 실측 ≈ 14초/쪽(위 📏). 실패 시 전체 재시도, 색인 중 채팅 질의 임베딩도 같은 CPU 를 공유해 응답이 느려짐 |
 | 파일 용량 | 텍스트 위주 한글 PDF: 쪽당 ≈ 50~100KB → **300쪽 ≈ 15~30MB 이하** | 용량은 보조 지표 — 이미지 비중이 크면 용량만 크고 색인 시간은 페이지 수(텍스트 양)에 비례 |
 | 절대 상한 | **100MB** (admin-api `MAX_UPLOAD_BYTES`, 초과 시 413 `FILE_TOO_LARGE`). 여러 파일 업로드는 **최대 10개·합계 100MB**(초과 시 413 `BATCH_TOO_LARGE`) | 업로드는 admin-api 메모리에 전체 적재(limit 2Gi) — 상향 비권장 |
 | 1,000쪽 이상 | 장/부 단위로 **분할 업로드** | 색인 ≈ 17~30분, 실패 시 재처리 비용 큼 |
@@ -1072,6 +1074,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | [재색인] 이 409 `DOCUMENT_INACTIVE` | 비활성 문서는 재색인으로 되살리지 않는다 — [활성화](`POST /documents/{id}/activate`)로 재색인 |
 | `index_jobs.status=CANCELLED` | 문서가 비활성화/삭제된 뒤 실행된 색인 Job — 정상(아무것도 쓰지 않고 종료) |
 | 색인 Job Pod 는 Running 인데 `index_jobs` 가 PENDING · `stage=WAITING` | 정상 — 동시 색인 슬롯 대기(`INDEX_MAX_PARALLEL`). 앞 Job 이 끝나면 자동 시작. 로그 `index_slot_waiting` |
+| 색인 작업이 `EMBEDDING` 단계에서 멈춘 것처럼 보임(진행률 45%, 벡터 0) | 대부분 정상 — CPU 임베딩이 느린 것(표 많은 PDF ≈ 3.6초/청크, 345쪽 1,398청크 ≈ 83분, §5.1.1 📏). 확인: Job 로그 `embedding_progress` 의 `done/total`·`eta_s`(10초 간격), `kubectl -n rag-ai top pod`(embedding-api CPU ≈ 6코어 사용), embedding-api 로그의 `POST /internal/v1/embeddings 200` 이 수십 초 간격으로 계속 찍히는지. 벡터 수는 UPSERTING 단계에서 한꺼번에 채워진다. `embedding_progress` 로그가 없는 이미지는 진행률이 45% 에 고정된 채 진행되므로 재배포로 parser-indexer 갱신. 같은 시점에 올린 다른 문서는 `stage=WAITING` 으로 순서를 기다린다 |
 | `index_jobs.error` = `SLOT_WAIT_TIMEOUT` | 6시간 넘게 슬롯을 못 잡음 — 앞선 Job 이 비정상적으로 오래 실행 중인지 `kubectl -n rag-ingestion get pods` 확인 후 [재색인] |
 | `index_jobs.error` = `STALE_RUNNING` / `SUPERSEDED` | 각각 120분 넘게 RUNNING 에 남은 Job 정리(Pod 강제 종료 등) / 새 재색인 요청으로 교체된 대기 Job — 정상 처리 |
 | 색인 Job Pod `OOMKilled` | `ingestion.resources.limits.memory`(8Gi) 초과 — 초대형·pdfplumber 대체 경로 문서. 분할 업로드 또는 상한 상향 |

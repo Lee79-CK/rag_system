@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -41,7 +43,45 @@ class SupportsJobRepo(Protocol):
 
 
 class SupportsEmbedder(Protocol):
-    def embed(self, texts: list[str]) -> list[list[float]]: ...
+    def embed(
+        self, texts: list[str], on_progress: Callable[[int, int], None] | None = None
+    ) -> list[list[float]]: ...
+
+
+# EMBEDDING 단계 진행률 구간(set_stage 0.45 → UPSERTING 0.7)과 DB·로그 기록 최소 간격
+_EMBED_PROGRESS_START = 0.45
+_EMBED_PROGRESS_END = 0.7
+_EMBED_PROGRESS_INTERVAL_S = 10.0
+
+
+def _embedding_progress(
+    repo: SupportsJobRepo, index_job_id: str, *, clock: Callable[[], float] = time.monotonic
+) -> Callable[[int, int], None]:
+    """batch 마다 불리는 진행률 콜백 — 최소 간격으로 progress 갱신 + embedding_progress 로그(남은 시간 추정)."""
+    started = clock()
+    last = started
+
+    def report(done: int, total: int) -> None:
+        nonlocal last
+        now = clock()
+        if done < total and now - last < _EMBED_PROGRESS_INTERVAL_S:
+            return
+        last = now
+        ratio = done / total if total else 1.0
+        span = _EMBED_PROGRESS_END - _EMBED_PROGRESS_START
+        repo.set_stage(index_job_id, "EMBEDDING", round(_EMBED_PROGRESS_START + span * ratio, 4))
+        elapsed = now - started
+        eta = elapsed / done * (total - done) if done else None
+        logger.info(
+            "embedding_progress",
+            index_job_id=index_job_id,
+            done=done,
+            total=total,
+            elapsed_s=round(elapsed),
+            eta_s=round(eta) if eta is not None else None,
+        )
+
+    return report
 
 
 def _resolve_path(settings: Settings, file_path: str) -> Path:
@@ -119,12 +159,14 @@ def run_index_job(
 
         # 6. stage=EMBEDDING
         stage = "EMBEDDING"
-        repo.set_stage(index_job_id, stage, 0.45)
-        vectors = embedder.embed([c.text for c in chunks])
+        repo.set_stage(index_job_id, stage, _EMBED_PROGRESS_START)
+        vectors = embedder.embed(
+            [c.text for c in chunks], on_progress=_embedding_progress(repo, index_job_id)
+        )
 
         # 7. stage=UPSERTING (멱등)
         stage = "UPSERTING"
-        repo.set_stage(index_job_id, stage, 0.7)
+        repo.set_stage(index_job_id, stage, _EMBED_PROGRESS_END)
         upserter = QdrantUpserter(qdrant_client, settings.qdrant_collection)
         point_count = upserter.upsert(chunks, vectors, meta)
         repo.set_counts(index_job_id, chunk_count=len(chunks), vector_count=point_count)
