@@ -2,7 +2,7 @@
 
 > 대상: 시스템 관리자(SYS_ADMIN) · 문서 관리자(DOC_ADMIN) · 품질 평가자 · 인프라 운영자
 > 버전: v2.0 (2026-10) · 기준 환경: RKE2 2노드 랩(P3 `rke2-master-01` + PGX `pgx`). PoC/운영은 주소·values 만 다릅니다.
-> 사용자용 문서: [사용자 매뉴얼](user-manual.md) · 설치/배포 상세: [`rke2_two_node_test_guide.md`](../../rke2_two_node_test_guide.md)(이하 **가이드**) · 설계: [`docs/TDD.md`](../TDD.md)
+> 사용자용 문서: [사용자 매뉴얼](user-manual.md) · 아키텍처 그림: [시스템 아키텍처](system-architecture.html) · 설치/배포 상세: [`rke2_two_node_test_guide.md`](../../rke2_two_node_test_guide.md)(이하 **가이드**) · 설계: [`docs/TDD.md`](../TDD.md)
 
 ---
 
@@ -27,6 +27,8 @@
 ## 1. 시스템 개요
 
 ### 1.1 구성
+
+> 그림으로 보기: [시스템 아키텍처](system-architecture.html)(브라우저로 열기) — 한눈에 보기 · 채널 격리 · 하드웨어 · K8s Pod 배치 · 소프트웨어 계층 · 질문 처리 순서 · 색인 파이프라인 · 빌드·배포 흐름. 이미지만 필요하면 [`architecture/`](architecture/) 의 PNG·SVG 를 쓰세요(랩 구성이 바뀌면 `architecture/build_diagrams.py` 로 다시 생성).
 
 | Namespace | 구성 요소 (포트) | 역할 |
 |---|---|---|

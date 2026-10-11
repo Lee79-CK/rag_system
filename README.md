@@ -11,6 +11,8 @@ Channel별로 격리된 지식 범위 내에서 RAG 파이프라인(Embedding �
 > - 기술 설계: `docs/TDD.md` (TDD-RAG-CHATBOT-POC-001 v2.0) — **구현의 SSOT**
 > - Claude Code 컨텍스트: `CLAUDE.md`
 > - 보안 체크리스트: `docs/security-checklist.md`
+> - 시스템 아키텍처 그림(랩 P3 + PGX): [`docs/manual/system-architecture.html`](docs/manual/system-architecture.html) — 그림 원본·PNG 는 `docs/manual/architecture/`
+> - 매뉴얼: [운영자](docs/manual/operator-manual.md) · [사용자](docs/manual/user-manual.md)
 
 ## 0. 구현 현황
 
@@ -71,6 +73,8 @@ optional `models` extra로 분리했다. 기본 경로는 `EMBEDDING_MOCK=1`/`RE
 ---
 
 ## 1. 아키텍처 개요
+
+> 하드웨어·K8s Pod 배치·질문 처리 순서·색인 파이프라인을 그림으로 보려면 [`docs/manual/system-architecture.html`](docs/manual/system-architecture.html) 을 브라우저로 여세요.
 
 ```text
 사용자(브라우저) ──HTTPS──> Ingress (chat host, 동일 출처)
