@@ -1,6 +1,6 @@
 # 로컬 2-Node RKE2 클러스터 테스트 가이드 — RAG Platform
 
-> 문서 ID: GUIDE-LOCAL-K8S-TEST-001 (v2.0 — Web Chat 전환: Mattermost 제거 / v1.1 — P3 디스크 2개 구성 반영)
+> 문서 ID: GUIDE-LOCAL-K8S-TEST-001 (v2.0 — Web Chat 전환: Mattermost 제거 / v2.3 — P3 디스크 3개 구성: OS NVMe · fast NVMe · HDD)
 > 기준: TDD-RAG-CHATBOT-POC-001 + **현행 구현 기준** — 전 백엔드 Python 3.12 (uv workspace), 사용자 UI `apps/chat-web`(Next.js standalone), Helm chart `deploy/helm/rag-platform`
 > 변경(v2.0): 사용자 접점이 Mattermost 에서 **Web Chat(chat-web + chat-gateway)** 으로 바뀌었습니다. Mattermost 서버/Outgoing Webhook 설정, mock-mattermost, `rag-bridge-secrets` 는 더 이상 필요 없고, 대신 **`rag-chat-secrets` + Ingress(TLS)** 를 준비합니다. (Mattermost 는 v2.0 에서 제거)
 > 이월(v1.2 — 2026-09-10 코드 리뷰, 상세는 `docs/TDD.md` 변경 이력 v2.0.1): **Containerfile(8종) · Alembic hook Job(`rag-db-migrate`) · admin-api RBAC/K8s 색인 트리거(`INDEX_JOB_TRIGGER=k8s`) · Namespace 라벨(`rag-platform=true`) · 배포 후 검증(§4.3)** 반영분이 v2.0 에 이월되었습니다. v1.2 의 Mattermost 전용 절차는 제외했습니다.
@@ -8,7 +8,7 @@
 > 변경(v2.2): LLM 모델을 PGX 의 **`/home/cheolkyulee/models/<모델 디렉터리>`** 에서 로딩하도록 바꾸고(현재 `Qwen3.8-27B-FP8`), **모델 교체를 `vllm.modelDir` 값 하나로** 할 수 있게 했습니다(chart 가 `--model=/models/<modelDir>` 를 생성) — §2.1.1.
 > 정정(v1.1): TDD v1.3 문서는 admin-api를 Java 21 Spring Boot로 기술하지만, **구현된 `apps/admin-api` 는 Python(FastAPI + SQLAlchemy + Alembic)** 입니다. 이 가이드는 구현을 따릅니다.
 > 대상 환경:
-> - **Master(P3)**: Lenovo ThinkStation P3 Tower Gen 2 — Core Ultra 7 265 (x86_64), RAM 128GB, RTX A400 4GB, **NVMe 1TB(OS+RKE2+fast PVC) + HDD 4TB(bulk)**, Ubuntu 24.04
+> - **Master(P3)**: Lenovo ThinkStation P3 Tower Gen 2 — Core Ultra 7 265 (x86_64), RAM 128GB, RTX A400 4GB, **NVMe 1TB(OS+RKE2) + NVMe 512GB(fast PVC 전용, 별도 추가) + HDD 4TB(bulk)**, Ubuntu 26.04
 > - **Worker(PGX)**: Lenovo ThinkStation PGX (NVIDIA DGX Spark OEM) — GB10 Grace Blackwell (**ARM64/aarch64**), 통합 메모리 128GB, SSD 4TB
 > - RKE2 설치 완료 (P3=server, PGX=agent), 노드 간 2.5GbE, Docker(P3, 이미지 빌드용)
 
@@ -86,29 +86,28 @@ kubectl describe node pgx | grep -A3 'Allocatable' | grep nvidia
 
 RKE2는 containerd 사용 — GPU Operator의 toolkit이 containerd config를 자동 패치합니다. 수동 설정이 필요하면 `/var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl`에 nvidia runtime을 추가 후 `systemctl restart rke2-agent`.
 
-### 1.4 스토리지 전략 (P3 디스크 2개 — NVMe 1TB + HDD 4TB)
+### 1.4 스토리지 전략 (P3 디스크 3개 — OS NVMe 1TB + fast NVMe 512GB + HDD 4TB)
 
-P3의 물리 디스크는 **NVMe 1TB, HDD 4TB 2개뿐**입니다. **OS·RKE2·etcd·fast PVC가 같은 NVMe를 공유**하며, 이것이 이 구성의 유일한 진짜 제약입니다. 티어 분리는 유지하되 NVMe는 "여유 공간 관리" 대상으로 다룹니다.
+P3에는 디스크가 3개 있습니다. **OS용 NVMe 1TB**, DB 볼륨 전용으로 **별도 추가한 NVMe 512GB**, 대용량 **HDD 4TB**입니다. DB(PostgreSQL·Qdrant·Redis) PVC는 OS와 다른 물리 디스크에 있으므로 PVC가 늘어나도 루트 파일시스템을 채우지 않습니다. 남은 제약은 두 가지입니다. 하나는 **OS NVMe의 여유 공간**(containerd 이미지·etcd·로그가 쌓임)이고, 다른 하나는 **fast NVMe의 512GB 상한**입니다.
 
 | 용도 | 디스크 | 경로 | 방식 |
 |---|---|---|---|
-| OS / RKE2 / etcd / containerd 이미지 | NVMe 1TB | `/`, `/var/lib/rancher` | 기본 (건드리지 않음) |
-| PostgreSQL / Qdrant / Redis PVC | **NVMe 1TB** | `/data/fast` | StorageClass `local-fast` (성능 필수) |
+| OS / RKE2 / etcd / containerd 이미지 | **NVMe 1TB (OS 전용)** | `/`, `/var/lib/rancher` | 기본 (건드리지 않음) |
+| PostgreSQL / Qdrant / Redis PVC | **NVMe 512GB (fast 전용, 별도 추가)** | `/data/fast` | StorageClass `local-fast` (성능 필수) |
 | 문서 원본 / 이미지 레지스트리 / 백업 | **HDD 4TB** | `/data/bulk` (문서 원본 = `/data/bulk/documents`) | 문서 원본은 hostPath 마운트(§4 랩 차이 표), 그 외 PVC 는 StorageClass `local-bulk` |
 | 모델 아티팩트 (embedding/reranker) | **HDD 4TB** | `/data/bulk/models` | hostPath 마운트 (§2.2) |
 | 모델 아티팩트 (LLM) | PGX SSD 4TB | `/home/cheolkyulee/models/<모델>` | hostPath 마운트 (§2.1) — 모델별 디렉터리, `vllm.modelDir` 로 선택 |
 
 > 레지스트리·문서 원본·모델·백업이 HDD 4TB 한 스핀들을 공유합니다. 용량은 충분하지만 **IO 경합**이 생깁니다 — 대량 색인 Job과 이미지 push/pull을 동시에 돌리지 마세요 (§8).
 
-#### 1.4.1 NVMe 용량 배분 (1TB 단일 디스크)
+#### 1.4.1 NVMe 용량 배분
 
-| 항목 | 배분 | 근거 |
-|---|---|---|
-| OS(Ubuntu 24.04) + `/var/lib/rancher` (containerd 이미지 + etcd) | ~250GB | amd64 앱 이미지 8종 + 베이스 이미지 누적 |
-| `/data/fast` (DB PVC 전용) | **400GB** | 아래 실사용 합계의 4배 여유 |
-| 미할당 여유 | ~280GB | DiskPressure 방어선 |
+| 디스크 | 항목 | 용량 | 근거·주의 |
+|---|---|---|---|
+| OS NVMe 1TB | OS + `/var/lib/rancher` (containerd 이미지 + etcd) + 로그 | 디스크 전체 | amd64 앱 이미지 8종이 재배포마다 태그별로 누적 → `crictl rmi --prune` 로 정리. **루트 FS 85% 초과 시 kubelet `DiskPressure`** — P3 의 Pod 이 evict 되면 사실상 클러스터 정지 |
+| fast NVMe 512GB | `/data/fast` (DB PVC 전용 파티션) | 디스크 전체 (ext4, `lsblk` 표기 ≈ 466G) | 아래 명목 합계의 약 6배 여유. local-path 는 PVC 용량을 강제하지 않으므로 `df -h /data/fast` 로 감시 |
 
-`/data/fast` 명목 합계 (values-lab 기준): PostgreSQL 20Gi + Qdrant 50Gi + Redis 10Gi = **80Gi**. 6문항 평가/샘플 문서 기준 실사용은 10GB 미만입니다.
+`/data/fast` 명목 합계 (values-lab 기준): PostgreSQL 20Gi + Qdrant 50Gi + Redis 10Gi = **80Gi**. 6문항 평가/샘플 문서 기준 실사용은 10GB 미만입니다. Qdrant 는 청크당 ≈13KB(§5.1.1)라 백만 청크도 ≈13GB 수준입니다.
 
 #### 1.4.2 디스크 준비 (P3 로컬)
 
@@ -128,24 +127,19 @@ sudo mkdir -p /data/bulk/pvc /data/bulk/models /data/bulk/registry
 sudo install -d -o 10001 -g 10001 -m 0750 /data/bulk/documents
 ```
 
-**NVMe — `/data/fast`.** 별도 디스크가 없으므로 두 가지 선택지가 있습니다.
-
-*(A) 전용 파티션 — 권장.* NVMe에 미할당 공간이 있으면 400GB 파티션을 잘라 루트 파일시스템과 격리합니다. PVC가 폭주해도 **kubelet의 nodefs eviction(루트 FS 기준)이 발동하지 않습니다.**
+**fast NVMe 512GB — `/data/fast` 로 마운트.** OS 디스크와 다른 별도 NVMe 를 통째로 씁니다. PVC 가 늘어도 루트 FS(kubelet nodefs eviction 기준)에 합산되지 않습니다.
 
 ```bash
-sudo parted -s /dev/nvme0n1 mkpart primary ext4 <시작>GB <시작+400>GB   # 미할당 영역 확인 후
-sudo mkfs.ext4 -L fast /dev/nvme0n1pN && sudo mkdir -p /data/fast
-echo "UUID=$(sudo blkid -s UUID -o value /dev/nvme0n1pN) /data/fast ext4 defaults,noatime 0 2" | sudo tee -a /etc/fstab
-sudo mount -a && findmnt /data/fast
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL        # ★ OS 디스크(/ 가 있는 nvme)와 혼동 금지 — 512GB(≈466G) 쪽을 고른다
+# 아래 nvme0n1 은 예시 (랩 실측: OS = nvme1n1 1TB, fast = nvme0n1 512GB). NVMe 번호는 부팅마다 바뀔 수 있어 fstab 은 UUID 로 건다
+sudo parted -s /dev/nvme0n1 mklabel gpt mkpart primary ext4 0% 100%
+sudo mkfs.ext4 -L fast /dev/nvme0n1p1 && sudo mkdir -p /data/fast
+echo "UUID=$(sudo blkid -s UUID -o value /dev/nvme0n1p1) /data/fast ext4 defaults,noatime 0 2" | sudo tee -a /etc/fstab
+sudo mount -a && findmnt /data/fast              # ★ SOURCE 가 fast NVMe 파티션이어야 함 (루트 디스크면 실패)
+df -h / /data/fast                               # 두 줄의 파일시스템이 달라야 정상
 ```
 
-*(B) 루트 파일시스템 위 디렉터리 — 미할당 공간이 없을 때.* **DB PVC 사용량이 루트 FS 사용량에 그대로 합산**됩니다. 루트 FS 85% 초과 시 kubelet이 `DiskPressure` 로 P3의 Pod들을 evict — 앱 전체가 P3에 있으므로 사실상 클러스터 정지입니다.
-
-```bash
-sudo mkdir -p /data/fast && df -h /data/fast     # Avail 500GB 이상이어야 안전
-```
-
-> local-path는 hostPath 기반이라 **PVC의 `requests.storage` 를 강제하지 않습니다.** (B)를 택했다면 `df -h /` 를 평가 전후로 확인하세요.
+> `/data/fast` 를 마운트하기 **전에** local-path-provisioner 를 띄우면 PVC 디렉터리가 루트 FS 의 `/data/fast` 에 생겨 OS 디스크를 채웁니다 — `findmnt /data/fast` 확인 후 §1.4.3 으로 넘어가세요.
 
 #### 1.4.3 StorageClass 배포
 
@@ -200,14 +194,14 @@ kubectl delete pod/sc-check pvc/sc-check
 sudo rm -rf /data/bulk/pvc/pvc-*               # Retain 정책이라 수동 정리
 ```
 
-> DB류 PVC를 HDD에 두면 Qdrant 검색 p95 1초 목표가 로컬에서도 깨집니다. **fast(NVMe)/bulk(HDD) 분리를 반드시 유지**하세요. 문서 원본 PVC가 NVMe로 새면 1TB가 금방 찹니다 — §4.3 ③ 의 `storageClassName` 검증을 꼭 실행하세요.
+> DB류 PVC를 HDD에 두면 Qdrant 검색 p95 1초 목표가 로컬에서도 깨집니다. **fast(NVMe)/bulk(HDD) 분리를 반드시 유지**하세요. 문서 원본 PVC가 fast NVMe로 새면 512GB가 금방 찹니다 — §4.3 ③ 의 `storageClassName` 검증을 꼭 실행하세요.
 
 ### 1.5 프라이빗 레지스트리 (P3, HDD)
 
 폐쇄망 Harbor를 모사하고 PGX가 이미지를 당겨갈 수 있도록 P3에 registry를 둡니다.
 
 ```bash
-findmnt /data/bulk || { echo "HDD 미마운트 — §1.4.2 먼저"; exit 1; }   # 미마운트 상태로 띄우면 NVMe에 이미지가 쌓인다
+findmnt /data/bulk || { echo "HDD 미마운트 — §1.4.2 먼저"; exit 1; }   # 미마운트 상태로 띄우면 OS NVMe(루트 FS)에 이미지가 쌓인다
 # ★ snap Docker(`readlink -f $(command -v docker)` 가 /usr/bin/snap)는 샌드박스 때문에 /home 밖 경로를 못 본다.
 #   -v /data/bulk/registry 를 주면 HDD 가 아니라 snap 내부 **tmpfs(RAM)** 에 마운트되어 오류 없이 동작하다가
 #   재부팅·docker 재시작 시 레지스트리가 통째로 비워진다(실제 발생). → HDD 디렉터리를 /home 아래로 bind mount 해서 넘긴다.
@@ -371,8 +365,8 @@ sudo chmod -R a+rX /data/bulk/models
 
 | 이미지 | Containerfile | 비고 |
 |---|---|---|
-| `rag/chat-gateway` `rag/rag-api` `rag/admin-api` | `apps/<svc>/Containerfile` | uv 2-stage, `uv sync --frozen --no-dev --package <svc>`, `UV_ONLY_BINARY=:all:`, 비루트 uid 10001, WORKDIR `/app`. rag-worker 는 rag-api 이미지 공유(DEC-017 — command 만 `rq worker rag-chat`) |
-| `rag/embedding-api` `rag/reranker-api` | `apps/<svc>/Containerfile` | **`UV_EXTRA=models` 기본** → torch/FlagEmbedding(cp312 amd64 휠) 포함. mock 전용 이미지는 `--build-arg UV_EXTRA=` |
+| `rag/chat-gateway` `rag/rag-api` `rag/admin-api` | `apps/<svc>/Containerfile` | **의존성 레이어 분리**(pyproject·uv.lock 만으로 `uv sync --no-install-workspace` → 소스 복사 → 멤버 설치), `--frozen --no-dev --package <svc>`, `UV_ONLY_BINARY=:all:`, 비루트 uid 10001, WORKDIR `/app`. rag-worker 는 rag-api 이미지 공유(DEC-017 — command 만 `rq worker rag-chat`) |
+| `rag/embedding-api` `rag/reranker-api` | `apps/<svc>/Containerfile` | **`UV_EXTRA=models` 기본** → torch/FlagEmbedding(cp312 휠) 포함. torch 는 **CPU 빌드**(루트 `pyproject.toml` 의 `pytorch-cpu` 인덱스 고정 — CUDA 빌드는 nvidia-*·triton 이 딸려 와 이미지가 8.9GB). mock 전용 이미지는 `--build-arg UV_EXTRA=` |
 | `rag/parser-indexer` | `apps/parser-indexer/Containerfile` | ENTRYPOINT `python -m ingestion.main` (K8s Job). `ingestion.tools.qdrant_init` 도 포함(§4.4) |
 | `rag/chat-web` | `apps/chat-web/Containerfile` (컨텍스트 `apps/chat-web`) | `node:22-alpine` 에서 `npm ci` → `npm run typecheck && npm run build` → Next standalone 산출물로 **`node server.js` :3000**, uid 10001. **`NEXT_PUBLIC_WS_URL` 은 비운 채 빌드**(기본값 = same-origin, Ingress `/ws`). `NEXT_PUBLIC_WORKSPACE_SLUG` 기본 `rag` |
 | `rag/admin-web` | `apps/admin-web/Containerfile` + `nginx.conf` (컨텍스트 `apps/admin-web`) | node 빌드 → **nginx :8080 비루트**, `/health/*` 200 |
@@ -391,7 +385,8 @@ make push-images  REG=$REG TAG=$TAG
 
 > **베이스 이미지 / 패키지 인덱스 (폐쇄망)**: 기본 베이스는 `python:3.12-slim`, `ghcr.io/astral-sh/uv:0.5`, `node:22-alpine`(chat-web), `node:20-alpine` + `nginx:1.27-alpine`(admin-web) 이며 개발망에서 pull 됩니다. 완전 폐쇄망이면 내부 미러를 build-arg 로 지정합니다 — Python: `--build-arg PYTHON_IMAGE=... --build-arg UV_IMAGE=... --build-arg UV_INDEX_URL=https://pypi.internal/simple`(cp312 바이너리 휠만, sdist 빌드 금지), Web: `--build-arg NODE_IMAGE=... --build-arg NPM_REGISTRY=...`(admin-web 은 `NGINX_IMAGE` 도). `make build-images` 는 build-arg 를 넘기지 않으므로 이 경우 Makefile 의 `docker build` 명령을 직접 실행하세요 (예: `docker build -f apps/rag-api/Containerfile --build-arg UV_INDEX_URL=... -t $REG/rag/rag-api:$TAG .`).
 >
-> **torch 휠 크기**: embedding/reranker 이미지는 torch(CPU) 포함 시 2~3GB 입니다. 두 이미지가 HDD 레지스트리와 P3 containerd 캐시(NVMe) 양쪽에 올라간다는 점을 §1.4.1 용량 계산에 반영하세요.
+> **이미지 크기와 레이어**: embedding/reranker 이미지는 CPU torch 포함 ≈ 2.4GB(CUDA torch 였을 때 8.9GB), 나머지는 80~700MB 입니다. Containerfile 이 서드파티 의존성을 별도 레이어로 두므로 `uv.lock` 이 그대로면 재빌드 시 이 레이어를 캐시에서 재사용하고, 커밋마다 새로 생기는 레이어는 소스·멤버 설치분(수 MB)뿐입니다.
+> 폐쇄망 빌드는 내부 PyPI 미러(`UV_INDEX_URL`) 외에 **CPU torch 휠(`download.pytorch.org/whl/cpu` 의 `torch-2.13.0+cpu` cp312)** 도 미러에 있어야 합니다 — `uv.lock` 이 그 URL 을 가리킵니다.
 
 vLLM 은 빌드하지 않고 **NVIDIA 제공 arm64 이미지**를 미러링합니다:
 
@@ -446,7 +441,7 @@ done
 | `--max-num-seqs` | 16 | 8 | GB10 대역폭 |
 | LLM 모델 | 운영 모델(TDD §8), `modelDir: llm/main` | **`vllm.modelDir: Qwen3.8-27B-FP8`** (교체 = 이 값만, §2.1.1) + `--language-model-only` `--reasoning-parser=qwen3`, rag-api/worker `LLM_ENABLE_THINKING=false` | §2.1 — thinking 기본 on 모델, 텍스트 전용 RAG |
 | 모델 볼륨 | `models-pvc` | **hostPath** (앱: `/data/bulk/models`, vLLM: `/home/cheolkyulee/models`) — 컨테이너에는 둘 다 `/models` | GPU 노드와 앱 노드가 달라 단일 PVC 공유 불가 |
-| 데이터 계층 | qdrant 500Gi / pg 200Gi / redis 20Gi | 50 / 20 / 10Gi + `local-fast` | NVMe 1TB 공유 (§1.4.1) |
+| 데이터 계층 | qdrant 500Gi / pg 200Gi / redis 20Gi | 50 / 20 / 10Gi + `local-fast` | fast NVMe 512GB 전용 (§1.4.1) |
 | 문서 원본 볼륨 | `documents-pvc` 1Ti (default SC=NFS, RWX) | **hostPath** `/data/bulk/documents` (`documentStorage.hostPath`) — PVC 미생성 | local-path 는 RWX 미지원 + NS 별 PVC 가 서로 다른 디렉터리라 admin-api(rag-app) 업로드를 indexer(rag-ingestion)가 못 봄. 앱 Pod 가 모두 P3 고정이라 hostPath 공유 |
 | Namespace | 사전 생성(`namespaces.create: false`) | 동일 — §4.1 에서 kubectl 로 생성 + 라벨 | Secret 을 helm 전에 만들어야 함 |
 | Ingress Controller | `networkPolicy.ingressController.namespace: ingress-nginx` | `kube-system` + podSelector `app.kubernetes.io/name: rke2-ingress-nginx` | RKE2 내장 컨트롤러 위치 |
@@ -603,7 +598,7 @@ kubectl get netpol -A | grep allow-ingress-to
 kubectl -n rag-app get netpol allow-admin-api-to-apiserver        # INDEX_JOB_TRIGGER=k8s 용 apiserver egress
 
 # ⑧ 디스크
-df -h / /data/fast /data/bulk    # NVMe 사용률 70% 미만
+df -h / /data/fast /data/bulk    # / (OS NVMe) · /data/fast (fast NVMe) 사용률 70% 미만
 ```
 
 ### 4.4 Seed / 채팅 사용자 / Qdrant 초기화
@@ -675,6 +670,7 @@ git add -A && git commit -m "..."
 scripts/redeploy_lab.sh --dry-run     # 점검 + 실행할 명령만 출력 (처음엔 권장)
 scripts/redeploy_lab.sh               # 빌드·push → helm upgrade → rollout 확인
 # 이미 push 한 커밋을 다시 배포만: scripts/redeploy_lab.sh --skip-build
+# 로컬 Docker 정리를 건너뛰려면: --no-prune (남길 태그 수 KEEP_TAGS=2, 빌드 캐시 보존 기간 CACHE_KEEP=168h)
 ```
 
 스크립트가 하는 일 (수작업 시 실제로 났던 사고를 막는 점검 포함):
@@ -684,13 +680,14 @@ scripts/redeploy_lab.sh               # 빌드·push → helm upgrade → rollou
 | 사전 점검 | 미커밋 변경 거부, `TAG=git rev-parse --short HEAD`, `REG` 기본 `registry.local:5000`, `P3_IP` 자동 감지(control-plane InternalIP), 레지스트리 접속 확인 | 빈 REG/TAG(`invalid reference format`), 태그와 내용 불일치 |
 | vLLM 태그 확인 | values-lab `vllm.imageTag`(26.09) 가 레지스트리에 있는지 확인. 없으면 **현재 배포 중인 vLLM 태그를 레지스트리 서버에서 manifest 복사**(amd64+arm64 manifest list 그대로) | vLLM `ImagePullBackOff`. `docker pull`→`push` 로 옮기면 amd64 만 남아 PGX 에서 실패 |
 | 빌드·push | `make build-images push-images` 후 `rag/*` 8종 `:$TAG` 존재 확인 | push 누락 |
+| 로컬 정리 | push 확인 뒤 P3 Docker 의 `rag/*` 를 저장소별 최근 `KEEP_TAGS`(2)개만 남기고 삭제, dangling 이미지·`CACHE_KEEP`(168h) 넘게 안 쓴 빌드 캐시 정리, `docker system df` 출력. `--no-prune` 으로 생략 | P3 OS 디스크 고갈 — 정리 단계가 없던 때 태그·빌드 캐시가 600GB 넘게 쌓여 루트 FS 81% (2026-10-11) |
 | helm upgrade | `-n rag-platform` 고정, `values-poc` + `values-lab`, `global.imageTag=$TAG`, `networkPolicy.apiServer.cidrs={P3_IP/32}`, `--timeout 15m` | `-n` 누락 ownership 오류 |
 | rollout 확인 | rag-app · rag-ai Deployment 전부 `rollout status` (15분) | 배포 실패를 모르고 넘어감 |
 
 - **vLLM 은 재시작되지 않습니다** — 앱 태그와 분리되어 있어 앱만 바뀐 배포에서는 vLLM 파드가 그대로입니다. 고정 태그로 처음 전환하는 배포에서만 1회 재시작(모델 재로딩 최대 10분)됩니다.
 - 데이터 계층(postgres/qdrant/redis)은 태그 고정이라 재시작되지 않고 데이터도 유지됩니다. DB 스키마 변경이 있으면 migrate hook Job 이 helm upgrade 중 자동 실행됩니다.
 - 브라우저는 새로고침(F5)만 하면 됩니다 — JWT 키 Secret 은 그대로라 재로그인 불필요.
-- 롤백: 이전 커밋 태그로 `helm upgrade` (이미지는 레지스트리에 남아 있음) — `git checkout <이전 sha>` 후 `scripts/redeploy_lab.sh --skip-build`, 또는 `helm rollback rag-platform -n rag-platform`.
+- 롤백: 이전 커밋 태그로 `helm upgrade` (로컬 Docker 에서 지운 태그도 레지스트리에는 남아 있음) — `git checkout <이전 sha>` 후 `scripts/redeploy_lab.sh --skip-build`, 또는 `helm rollback rag-platform -n rag-platform`.
 - 수동으로 하려면 스크립트의 `[dry-run]` 출력 명령을 순서대로 실행하면 됩니다.
 
 ---
@@ -1045,7 +1042,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | 긴 PDF 색인이 `stage=EMBEDDING`, `FAILED` (Job 로그 `ReadTimeout`) | `ingestion.extraEnv` override 로 `EMBEDDING_MAX_BATCH=8`·`EMBEDDING_TIMEOUT=120` 이 빠져 코드 기본값(64청크/30초)으로 동작 → 두 항목 복원 후 재배포 (§5.1.1) |
 | 색인 Job 은 성공했는데 질문에 "근거를 찾지 못했습니다" | 업로드 시 `allowed_channel_ids` 를 비웠거나 다른 채널 UUID 지정 → `document_channel_acl` 없음 → 검색 필터에 절대 매칭 안 됨. `psql -c "select * from document_channel_acl"` 확인 후 재업로드(같은 내용은 409 → 파일 한 글자 수정) |
 | embedding/reranker 가 뜨긴 했는데 답변이 엉뚱함 | 모델 경로 미마운트로 **mock 엔진**으로 기동 — `engine_ready` 로그에 `-mock`. hostPath `/data/bulk/models/{embedding,reranker}/...` 와 `chmod a+rX` 확인 (§4.3 ⑤) |
-| embedding/reranker 최초 기동 CrashLoop | HDD 로딩이 15분(90×10s) 초과 — `appServices.<svc>.startupFailureThreshold` 상향 또는 모델을 `/data/fast/models` 로 이동(NVMe 여유 확인 후) |
+| embedding/reranker 최초 기동 CrashLoop | HDD 로딩이 15분(90×10s) 초과 — `appServices.<svc>.startupFailureThreshold` 상향 또는 모델을 `/data/fast/models` 로 이동(fast NVMe 여유 확인 후) |
 | vLLM Pod `CreateContainerConfigError`/권한 오류 | NGC 이미지가 root 전제 — `vllm.podSecurityContext: {runAsNonRoot: false, runAsUser: 0}` (values-lab 주석) 로 예외를 명시하고 리포트에 기록(§22.4) |
 | Pod `exec format error` CrashLoop / vLLM Pod가 P3로 스케줄 시도 | amd64 이미지가 PGX 에, 또는 반대로 스케줄됨 — nodeSelector/toleration 확인, `kubectl get pod -o wide`. P3 에는 nvidia.com/gpu 리소스가 없어 vLLM Pending 이 정상 |
 | PGX에서 `nvidia.com/gpu: 0` | GPU Operator toolkit Pod(pgx) 로그 확인, containerd 재시작. `driver.enabled=false` 유지 |
@@ -1059,8 +1056,9 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 | Qdrant 검색 1s 초과 | PVC 가 local-bulk(HDD)에 생성됨 — `kubectl get pvc -n rag-data` 로 SC 확인 후 local-fast 로 재생성 |
 | PVC가 계속 `Pending` | ① `deploy/k8s/local-path-*.yaml` 의 nodePathMap 노드 이름 불일치(§1.4.3 sed 누락) — `kubectl -n local-path-storage logs deploy/local-path-provisioner-fast` ② `WaitForFirstConsumer` 라 소비 Pod 스케줄 전엔 정상 ③ Pod 가 pgx 로 갔다면 nodePathMap 에 없어 실패 — nodeSelector 확인 |
 | PVC Pending + helper-pod `ImagePullBackOff` | 폐쇄망에서 `busybox:1.36.1` pull 실패 — §1.4.3 의 sed 로 미러 경로(`registry.local:5000/library/busybox:1.36.1`) 교체 후 provisioner 재시작 |
-| **NVMe 용량 부족 / `DiskPressure`, Pod 무더기 Evicted** | 2-디스크 구성의 핵심 리스크. `df -h / /data/fast` → NVMe 소진. 원인 1순위는 PVC 가 default SC(local-fast)로 새어 문서가 NVMe 에 적재 — §4.3 ③. 즉시 조치: PVC 삭제 후 local-bulk 로 재생성, `sudo crictl rmi --prune` 로 미사용 이미지 정리 |
-| `/data/bulk` 가 비어 있는데 NVMe 만 참 | HDD 마운트 전에 디렉터리/registry/PVC 를 만든 케이스 — `findmnt /data/bulk`. 마운트 해제 → 루트 FS 의 `/data/bulk` 잔여물 삭제 → 재마운트 |
+| **`DiskPressure`, Pod 무더기 Evicted** | **루트 FS(OS NVMe 1TB)** 가 찬 것 — kubelet 은 루트 FS 만 본다. `df -h /`, `docker system df` 확인. 원인: snap Docker 의 이미지·빌드 캐시 누적(`/var/snap/docker/common/var-lib-docker` — kubelet 이미지 GC 가 지우지 못함, `redeploy_lab.sh` 정리 단계로 방지) · RKE2 containerd 이미지 누적 · 로그 · `/data/fast`·`/data/bulk` 미마운트 상태에서 쌓인 잔여물. 즉시 조치: `sudo crictl rmi --prune` 로 미사용 이미지 정리, `findmnt /data/fast /data/bulk` 로 마운트 확인 |
+| PostgreSQL/Qdrant 쓰기 오류(`No space left on device`) | **fast NVMe 512GB(`/data/fast`)** 가 찬 것 — 별도 디스크라 DiskPressure 로는 드러나지 않는다. `df -h /data/fast`, `sudo du -sh /data/fast/*`. 원인 1순위는 문서 등 대용량 PVC 가 default SC(local-fast)로 샌 경우 — §4.3 ③. PVC 삭제 후 local-bulk 로 재생성 |
+| `/data/bulk`·`/data/fast` 가 비어 있는데 OS NVMe(루트 FS)만 참 | 디스크 마운트 전에 디렉터리/registry/PVC 를 만든 케이스 — `findmnt /data/bulk /data/fast`. 마운트 해제 → 루트 FS 의 잔여물 삭제 → 재마운트 |
 | 색인 Job 이 평소보다 훨씬 느림 | HDD 한 대에 문서 원본 + registry + 모델 공존 — 이미지 push/pull, 다중 색인 Job 동시 실행을 피하고 순차 실행. `iostat -x 2 /dev/sda` 로 `%util` 확인 |
 | PVC 삭제 후에도 HDD 용량 미반환 | `local-bulk` 는 `reclaimPolicy: Retain` — `kubectl get pv \| grep Released` 후 `sudo rm -rf /data/bulk/pvc/pvc-<uid>` 수동 정리 |
 | Pod Event `Failed to pull image ... http: server gave HTTP response to HTTPS client` | 해당 노드 `/etc/rancher/rke2/registries.yaml` 의 endpoint 오타(예: `http:IP//:5000`) 또는 파일 누락 → containerd 가 미러를 못 쓰고 `https://registry.local:5000` 으로 직접 접속. `endpoint: ["http://<P3_IP>:5000"]` 로 수정 후 rke2-server/agent 재시작, `sudo grep -r server /var/lib/rancher/rke2/agent/etc/containerd/certs.d/` 로 반영 확인 |
@@ -1095,7 +1093,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 
 ## 9. 확장 과제 (선택)
 
-- **모니터링**: kube-prometheus-stack 설치 후 `monitoring.grafanaDashboards=true` 로 `helm upgrade` — chart 가 `rag-grafana-dashboards` ConfigMap(sidecar 라벨 `grafana_dashboard: "1"`, 질문 ACK p95 · 답변 지연 p95 · 큐 깊이 · WebSocket 연결 · 근거부족 · 만족률 · 위조 피드백 토큰 · embedding/rerank 지연 패널)을 `monitoring` NS 에 생성합니다. 2-디스크 구성에서는 `node_filesystem_avail_bytes{mountpoint=~"/|/data/.*"}` 알람을 최우선으로 — NVMe 소진이 이 랩의 단일 최대 장애 요인입니다.
+- **모니터링**: kube-prometheus-stack 설치 후 `monitoring.grafanaDashboards=true` 로 `helm upgrade` — chart 가 `rag-grafana-dashboards` ConfigMap(sidecar 라벨 `grafana_dashboard: "1"`, 질문 ACK p95 · 답변 지연 p95 · 큐 깊이 · WebSocket 연결 · 근거부족 · 만족률 · 위조 피드백 토큰 · embedding/rerank 지연 패널)을 `monitoring` NS 에 생성합니다. `node_filesystem_avail_bytes{mountpoint=~"/|/data/.*"}` 알람을 최우선으로 — 루트 FS(OS NVMe) 소진은 DiskPressure 로 P3 전체를, `/data/fast`(fast NVMe 512GB) 소진은 DB 쓰기를 멈춥니다.
 - **PGX Grace CPU 활용**: embedding/reranker 를 arm64 로도 빌드(`docker buildx build --platform linux/amd64,linux/arm64`)해 PGX 에 배치하면 색인 처리량 향상. taint 정책 재설계 필요.
 - **vLLM 2-replica 모사**: 단일 GPU 에서 MPS/시간분할은 비권장 — HA(NFR-HA-002)는 순차 재기동 테스트로 대체.
 - **이미지 전용 쪽 OCR**(§5.1.2): 흐름도·도표 안 한글(문서 3 의 분야별 판단 흐름도 등)을 검색하려면 `stats.image_only_pages` 쪽만 골라 OCR 하는 경로가 필요합니다. 후보는 PaddleOCR PP-OCRv5 한국어 인식 모델(또는 그 ONNX 변환을 쓰는 RapidOCR) — 모델 파일 반입·로컬 경로 로딩, TDD §7.7 의 격리 `ocr-worker` 설계를 따릅니다.
@@ -1107,7 +1105,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 ## 10. 검증 완료 체크리스트
 
 - [ ] 노드 2대 Ready, 라벨/테인트 적용 (`tier=app`/`tier=llm`), PGX `nvidia.com/gpu: 1` allocatable
-- [ ] HDD `/data/bulk` 마운트(`findmnt`), NVMe `/data/fast` 준비, StorageClass `local-fast`/`local-bulk` Bound 테스트 통과(§1.4.3), nodePathMap 치환
+- [ ] HDD `/data/bulk` · fast NVMe 512GB `/data/fast` 마운트(`findmnt`, 루트 FS 와 다른 디바이스), StorageClass `local-fast`/`local-bulk` Bound 테스트 통과(§1.4.3), nodePathMap 치환
 - [ ] **이미지 8종**(chat-gateway · rag-api · admin-api · embedding-api · reranker-api · parser-indexer · chat-web · admin-web) + vLLM arm64 + data 3종 + busybox 레지스트리 push, manifest arch 확인
 - [ ] **NS 4종 + `rag-platform=true` 라벨**, Secret 5개(`rag-chat-secrets`, `rag-chat-tls`(SAN 두 호스트), `rag-postgresql-secret`×3)
 - [ ] `helm upgrade --install` 성공(hook `rag-db-migrate` 포함), `alembic current` = `0003_webchat (head)`

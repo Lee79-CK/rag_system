@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG 챗봇 랩 아키텍처</title>
+<!-- 생성 파일: docs/manual/architecture/build_diagrams.py 가 template.html 에 SVG 를 넣어 만든다. 직접 고치지 말 것 -->
+<style>
+:root{
+  --bg:#f4f6f9;--paper:#ffffff;--fg:#1d2330;--muted:#5b6475;--line:#d9dee7;--accent:#3b78e7;
+  --code-bg:#eef1f6;--th-bg:#f1f4f8;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11151c;--paper:#1a2029;--fg:#e6e9ef;--muted:#a3acbb;--line:#2e3644;--accent:#7aa7ff;
+    --code-bg:#252c38;--th-bg:#222937;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11151c;--paper:#1a2029;--fg:#e6e9ef;--muted:#a3acbb;--line:#2e3644;--accent:#7aa7ff;
+  --code-bg:#252c38;--th-bg:#222937;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);
+  font-family:'Pretendard','Noto Sans KR','Noto Sans CJK KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;
+  line-height:1.65;font-size:15.5px}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 16px 64px}
+header h1{font-size:1.75rem;margin:0 0 6px;letter-spacing:-.01em}
+header p{margin:0;color:var(--muted)}
+nav.toc{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:22px 0 8px}
+nav.toc ol{margin:6px 0 0;padding-left:1.3em;columns:2;column-gap:32px}
+nav.toc a{color:var(--accent);text-decoration:none}
+nav.toc a:hover{text-decoration:underline}
+section{margin-top:40px}
+h2{font-size:1.32rem;margin:0 0 4px;padding-top:6px;border-top:2px solid var(--line)}
+h2 small{font-weight:400;color:var(--muted);font-size:.85rem;margin-left:6px}
+h3{font-size:1.05rem;margin:22px 0 6px}
+.lead{color:var(--muted);margin:2px 0 12px}
+figure{margin:12px 0 10px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px;overflow-x:auto}
+figure svg{display:block;width:100%;height:auto;min-width:860px}
+figcaption{font-size:.85rem;color:#5b6475;margin-top:6px;padding:0 4px}
+figcaption a{color:#3b78e7}
+.callout{background:var(--paper);border-left:4px solid var(--accent);border-radius:8px;padding:10px 14px;margin:12px 0}
+table{border-collapse:collapse;width:100%;background:var(--paper);border:1px solid var(--line);border-radius:10px;
+  overflow:hidden;font-size:.92rem;margin:10px 0}
+th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--th-bg);font-weight:700;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+.tw{overflow-x:auto}
+code{background:var(--code-bg);padding:1px 5px;border-radius:5px;font-size:.88em;
+  font-family:'DejaVu Sans Mono',Consolas,monospace}
+ul.compact{margin:6px 0;padding-left:1.2em}
+ul.compact li{margin:2px 0}
+footer{margin-top:48px;color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padding-top:12px}
+@media (max-width:720px){
+  nav.toc ol{columns:1}
+  header h1{font-size:1.4rem}
+}
+@media print{
+  body{background:#fff;color:#000}
+  figure{break-inside:avoid}
+  nav.toc{display:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>RAG 챗봇 플랫폼 — 랩(P3 + PGX) 시스템 아키텍처</h1>
+  <p>폐쇄망 2노드 RKE2 데모 환경 · 2026-10-11 클러스터 실측 기준 · 대상: 처음 보는 사람부터 운영자까지</p>
+</header>
+
+<nav class="toc" aria-label="목차">
+  <strong>목차</strong>
+  <ol>
+    <li><a href="#overview">한눈에 보기 (처음 보는 분)</a></li>
+    <li><a href="#isolation">채널 격리 — 누가 어떤 문서를 보나</a></li>
+    <li><a href="#hardware">하드웨어 아키텍처</a></li>
+    <li><a href="#pods">Kubernetes Pod 아키텍처</a></li>
+    <li><a href="#software">소프트웨어 아키텍처</a></li>
+    <li><a href="#sequence">질문 한 건의 처리 순서</a></li>
+    <li><a href="#indexing">문서 색인 파이프라인</a></li>
+    <li><a href="#deploy">빌드·배포 흐름</a></li>
+    <li><a href="#reference">포트·주소·용어 정리</a></li>
+  </ol>
+</nav>
+
+<section id="overview">
+  <h2>1. 한눈에 보기 <small>처음 보는 분을 위한 그림</small></h2>
+  <p class="lead">이 시스템은 <b>회사 문서를 근거로 답하는 사내 챗봇</b>입니다. 일반 AI 챗봇과 달리, 관리자가 미리 넣어 둔 문서에서 근거를 찾아 그 내용만으로 답하고, 어느 문서의 몇 쪽을 참고했는지 표로 함께 보여 줍니다.</p>
+  <figure><!--SVG:01-overview--><figcaption>그림 1. 두 가지 흐름 — 위: 질문하고 답 받기, 아래: 문서 넣기. 이미지: <a href="architecture/01-overview.png">PNG</a> · <a href="architecture/01-overview.svg">SVG</a></figcaption></figure>
+  <div class="callout"><b>도서관에 비유하면</b> — 관리자는 책을 들여와 쪽마다 색인 카드를 만들어 두는 사서(②), 사용자가 질문하면 색인 카드로 관련 쪽을 찾아(근거 찾기) 그 쪽만 읽고 요약해 주는 상담원(답변 작성)이 있는 셈입니다. "색인 카드"가 <b>벡터</b>, 카드 보관함이 <b>Qdrant</b>, 요약하는 상담원이 <b>LLM(vLLM)</b>입니다.</div>
+  <ul class="compact">
+    <li><b>RAG</b>(Retrieval-Augmented Generation): 먼저 <i>찾고</i>(Retrieval) 찾은 내용을 넣어 <i>답을 만든다</i>(Generation). AI가 모르는 사내 내용도 근거 있게 답하는 방식.</li>
+    <li>답변은 한꺼번에 나오지 않고 <b>글자가 만들어지는 대로</b> 화면에 나타납니다(스트리밍).</li>
+    <li>근거를 찾지 못하면 지어내지 않고 "근거 부족"으로 답합니다.</li>
+  </ul>
+</section>
+
+<section id="isolation">
+  <h2>2. 채널 격리 <small>누가 어떤 문서를 근거로 받나</small></h2>
+  <p class="lead">대화방(채널)마다 볼 수 있는 문서가 정해져 있습니다. 문서를 올릴 때 "허용 채널"을 지정하면, 그 채널에서 한 질문만 그 문서를 근거로 쓸 수 있습니다.</p>
+  <figure><!--SVG:07-channel-isolation--><figcaption>그림 2. 같은 서고를 쓰지만 채널마다 검색 범위가 다르다. <a href="architecture/07-channel-isolation.png">PNG</a> · <a href="architecture/07-channel-isolation.svg">SVG</a></figcaption></figure>
+  <ul class="compact">
+    <li>검색은 반드시 <code>build_filter()</code>로 채널 조건을 <b>먼저</b> 걸고 실행합니다(찾은 뒤에 거르는 방식 금지) — 다른 채널 문서는 후보에도 오르지 않습니다.</li>
+    <li>문서를 [비활성화]하면 <code>is_active=false</code>가 되어 어느 채널에서도 검색되지 않습니다.</li>
+    <li>격리 정확도 100%는 배포 차단 테스트(CH-001~010)로 매번 검증합니다.</li>
+  </ul>
+</section>
+
+<section id="hardware">
+  <h2>3. 하드웨어 아키텍처 <small>물리 서버 2대</small></h2>
+  <p class="lead">역할을 나눴습니다. <b>P3</b>는 화면·API·검색 모델·데이터베이스를 모두 맡는 "본체", <b>PGX</b>는 GPU로 답변 문장만 만드는 "AI 전용기"입니다. 두 대는 사내 LAN으로 연결되고 인터넷에는 연결되지 않습니다.</p>
+  <figure><!--SVG:02-hardware--><figcaption>그림 3. 노드·디스크 배치. <a href="architecture/02-hardware.png">PNG</a> · <a href="architecture/02-hardware.svg">SVG</a></figcaption></figure>
+  <div class="tw"><table>
+    <tr><th>항목</th><th>P3 (rke2-master-01)</th><th>PGX (pgx)</th></tr>
+    <tr><td>IP · 아키텍처</td><td>192.168.168.109 · amd64</td><td>192.168.168.108 · arm64</td></tr>
+    <tr><td>OS · RKE2</td><td>Ubuntu 26.04 · server (control-plane, etcd)</td><td>Ubuntu 24.04 (NVIDIA 커널) · agent</td></tr>
+    <tr><td>CPU · 메모리</td><td>Intel 20코어 · 128 GB</td><td>Arm(Grace) 20코어 · 128 GB 통합 메모리 (GPU와 공유)</td></tr>
+    <tr><td>GPU</td><td>RTX A400 4GB — 플랫폼에서 사용 안 함</td><td>NVIDIA GB10 (Blackwell) — vLLM 전용</td></tr>
+    <tr><td>디스크</td><td>NVMe 1TB (OS·etcd·이미지) + NVMe 512GB (DB 볼륨 전용, 별도 추가) + HDD 4TB (문서·모델·레지스트리)</td><td>NVMe 4TB (LLM 가중치·이미지)</td></tr>
+    <tr><td>K8s 라벨 · taint</td><td><code>ragplatform.io/tier=app</code></td><td><code>ragplatform.io/tier=llm</code> · <code>dedicated=llm:NoSchedule</code></td></tr>
+  </table></div>
+  <ul class="compact">
+    <li><b>왜 DB 전용 NVMe를 따로?</b> 검색(Qdrant)·DB는 작은 읽기/쓰기가 많아 HDD에서는 느립니다. OS 디스크와 분리해 두었기 때문에 DB가 커져도 OS 디스크가 차서 노드 전체가 멈추는(DiskPressure) 일이 없습니다. 대신 두 NVMe(<code>/</code>, <code>/data/fast</code>)의 여유 공간을 각각 감시해야 합니다.</li>
+    <li><b>왜 임베딩·리랭커는 CPU?</b> GPU 1장은 LLM 전용(ADR-009/010). 그래서 대용량 문서 색인은 CPU 속도에 묶입니다(그림 7 참고).</li>
+  </ul>
+</section>
+
+<section id="pods">
+  <h2>4. Kubernetes Pod 아키텍처 <small>무엇이 어디에, 얼마나</small></h2>
+  <p class="lead">한 개의 Helm chart(<code>deploy/helm/rag-platform</code>, release <code>rag-platform</code>)가 네임스페이스 4개(rag-app · rag-ai · rag-data · rag-ingestion)에 나눠 배포합니다. vLLM 하나만 PGX에 뜨고 나머지는 모두 P3에 뜹니다.</p>
+  <figure><!--SVG:03-k8s-pods--><figcaption>그림 4. 노드·네임스페이스별 Pod, 포트, CPU·메모리(요청/상한), 볼륨. <a href="architecture/03-k8s-pods.png">PNG</a> · <a href="architecture/03-k8s-pods.svg">SVG</a></figcaption></figure>
+  <div class="tw"><table>
+    <tr><th>네임스페이스</th><th>워크로드</th><th>종류 · 개수</th><th>Service</th><th>저장소</th></tr>
+    <tr><td>rag-app</td><td>chat-web · chat-gateway · admin-web · admin-api · rag-api</td><td>Deployment ×1</td><td>:3000 · :8001 · :8080 · :8003 · :8002</td><td>admin-api: 문서 hostPath(RW), Secret 파일 마운트</td></tr>
+    <tr><td>rag-app</td><td>rag-worker</td><td>Deployment ×2</td><td>—</td><td>—</td></tr>
+    <tr><td>rag-ai</td><td>embedding-api · reranker-api</td><td>Deployment ×1</td><td>:8004 · :8005</td><td>모델 hostPath <code>/data/bulk/models</code>(RO)</td></tr>
+    <tr><td>rag-ai</td><td>vllm-llm-0 (PGX)</td><td>Deployment ×1, GPU 1</td><td>vllm-service :8000</td><td>모델 hostPath(RO), <code>/dev/shm</code> 8Gi</td></tr>
+    <tr><td>rag-data</td><td>postgresql · qdrant · redis</td><td>StatefulSet ×1</td><td>:5432 · :6333 · :6379</td><td>PVC 20/50/10Gi (local-fast)</td></tr>
+    <tr><td>rag-ingestion</td><td>index-job-* (parser-indexer)</td><td>Job, 업로드마다</td><td>—</td><td>문서 hostPath(RO), 모델 hostPath</td></tr>
+  </table></div>
+  <ul class="compact">
+    <li>모든 컨테이너는 비루트(uid 10001)로 실행하고, Secret(JWT 키·비밀번호 pepper·피드백 서명키)은 필요한 Pod에 필요한 키만 파일로 마운트합니다.</li>
+    <li>DB 마이그레이션은 <code>helm upgrade</code> 때 Alembic hook Job(<code>rag-db-migrate</code>)이 수행합니다.</li>
+  </ul>
+</section>
+
+<section id="software">
+  <h2>5. 소프트웨어 아키텍처 <small>계층과 구성요소</small></h2>
+  <p class="lead">브라우저 요청은 ingress-nginx를 거쳐 화면(정적)과 API로 나뉩니다. 오래 걸리는 RAG 처리는 API가 직접 하지 않고 큐(Redis)에 넣어 worker가 처리합니다 — 질문 접수는 1초 안에, 답변은 그 뒤 스트리밍으로.</p>
+  <figure><!--SVG:04-software--><figcaption>그림 5. 계층별 구성. 상자 아래 "사용:" 줄은 그 구성요소를 호출하는 서비스. <a href="architecture/04-software.png">PNG</a> · <a href="architecture/04-software.svg">SVG</a></figcaption></figure>
+  <div class="tw"><table>
+    <tr><th>구분</th><th>기술</th></tr>
+    <tr><td>백엔드</td><td>Python 3.12 · FastAPI · python-socketio · SQLAlchemy 2 + Alembic · RQ · structlog · Prometheus client (uv workspace 모노레포)</td></tr>
+    <tr><td>프런트엔드</td><td>chat-web: Next.js 15 · React 19 · TanStack Query · zustand / admin-web: React 18 · Vite · antd</td></tr>
+    <tr><td>AI</td><td>vLLM (OpenAI 호환) · Qwen3.8-27B-FP8 · KURE-v1 임베딩 · bge-reranker-v2-m3 · FlagEmbedding</td></tr>
+    <tr><td>데이터</td><td>PostgreSQL 16 · Redis 7 · Qdrant 1.12</td></tr>
+    <tr><td>인프라</td><td>RKE2 v1.34 · containerd · Canal(CNI) · ingress-nginx · local-path-provisioner · NVIDIA GPU Operator · Helm</td></tr>
+  </table></div>
+  <h3>설계 원칙 (요약)</h3>
+  <ul class="compact">
+    <li><b>폐쇄망</b>: 실행 중 외부 네트워크 호출 없음 — 모델·패키지·폰트 모두 미리 반입, 로컬 경로에서만 로딩.</li>
+    <li><b>계약 한 곳</b>: 서비스 간 데이터 형식은 <code>libs/schemas</code>(rag_schemas)에서만 정의. 앱끼리 직접 import 금지.</li>
+    <li><b>보안 기본값</b>: 비밀번호 원문은 서버로 오지 않음(브라우저에서 PBKDF2 prehash). Secret 파일이 없으면 기동은 하되 로그인·피드백을 거부(fail-closed).</li>
+    <li><b>중복 방지</b>: worker는 <code>claim_job</code>(QUEUED→RUNNING 원자 전이)에 성공한 작업만 처리 — 같은 답변이 두 번 쓰이지 않음.</li>
+  </ul>
+</section>
+
+<section id="sequence">
+  <h2>6. 질문 한 건의 처리 순서</h2>
+  <p class="lead">사용자가 [전송]을 누른 순간부터 답변이 확정될 때까지의 흐름입니다. ①~④가 "접수", ⑤~⑯이 "백그라운드 처리"입니다.</p>
+  <figure><!--SVG:05-question-sequence--><figcaption>그림 6. 시퀀스 다이어그램 — 세로선은 각 구성요소, 가로 화살표는 호출(점선은 응답·전달). <a href="architecture/05-question-sequence.png">PNG</a> · <a href="architecture/05-question-sequence.svg">SVG</a></figcaption></figure>
+  <ul class="compact">
+    <li>gateway가 여러 개여도 Redis pub/sub으로 모든 gateway에 이벤트가 전달되므로, 어느 gateway에 접속했든 같은 채널 화면에 글자가 나타납니다.</li>
+    <li>리랭커가 느리면(45초 초과) 벡터 검색 순서로 대체해 답변을 계속합니다(로그 <code>worker.rerank_fallback</code>).</li>
+    <li>답변의 최종 원본은 PostgreSQL의 Bot Post입니다. 스트리밍 글자는 화면 표시용(유실돼도 최종 저장본으로 확정).</li>
+  </ul>
+</section>
+
+<section id="indexing">
+  <h2>7. 문서 색인 파이프라인</h2>
+  <p class="lead">문서를 올린 뒤 검색에 쓰이기까지의 과정입니다. 무거운 작업이라 서비스와 분리된 일회성 K8s Job으로 실행하고, 한 번에 하나씩 처리합니다.</p>
+  <figure><!--SVG:06-indexing-pipeline--><figcaption>그림 7. 업로드 → Job 생성 → 6단계 처리. <a href="architecture/06-indexing-pipeline.png">PNG</a> · <a href="architecture/06-indexing-pipeline.svg">SVG</a></figcaption></figure>
+  <ul class="compact">
+    <li>같은 내용(sha256)의 문서는 중복으로 거부되고, 기존 문서에 채널만 추가하도록 안내합니다.</li>
+    <li>재색인하면 새 버전을 만든 뒤 검증이 끝나야 이전 버전을 내립니다 — 색인 중에도 기존 답변은 계속 동작합니다.</li>
+    <li>스캔(이미지) PDF는 OCR이 꺼져 있어 색인되지 않습니다. 일부 쪽만 이미지면 그 쪽만 빠집니다.</li>
+  </ul>
+</section>
+
+<section id="deploy">
+  <h2>8. 빌드·배포 흐름</h2>
+  <figure><!--SVG:08-deploy-flow--><figcaption>그림 8. 소스 변경 → 랩 반영. <a href="architecture/08-deploy-flow.png">PNG</a> · <a href="architecture/08-deploy-flow.svg">SVG</a></figcaption></figure>
+</section>
+
+<section id="reference">
+  <h2>9. 포트·주소·용어 정리</h2>
+  <h3>접속 주소</h3>
+  <div class="tw"><table>
+    <tr><th>주소</th><th>경로</th><th>대상</th><th>비고</th></tr>
+    <tr><td><code>https://chat.rag.lab.local</code></td><td><code>/</code></td><td>chat-web :3000</td><td>사용자 채팅 (HTTPS 필수 — 브라우저 암호화 API 사용)</td></tr>
+    <tr><td></td><td><code>/api/v1</code>, <code>/ws</code></td><td>chat-gateway :8001</td><td>REST · socket.io(websocket 전용) · 업로드 상한 1MB</td></tr>
+    <tr><td><code>https://rag.lab.local</code></td><td><code>/</code></td><td>admin-web :8080</td><td>관리자 콘솔</td></tr>
+    <tr><td></td><td><code>/api</code></td><td>admin-api :8003</td><td>업로드 상한 110MB (파일 합계 100MB는 API가 강제)</td></tr>
+  </table></div>
+  <h3>클러스터 내부 주소</h3>
+  <div class="tw"><table>
+    <tr><th>Service</th><th>주소</th><th>호출하는 쪽</th></tr>
+    <tr><td>vLLM</td><td><code>http://vllm-service.rag-ai:8000/v1</code></td><td>rag-worker, rag-api</td></tr>
+    <tr><td>embedding-api</td><td><code>http://embedding-api.rag-ai:8004</code></td><td>rag-worker, rag-api, index-job</td></tr>
+    <tr><td>reranker-api</td><td><code>http://reranker-api.rag-ai:8005</code></td><td>rag-worker, rag-api</td></tr>
+    <tr><td>PostgreSQL</td><td><code>postgresql.rag-data:5432</code></td><td>chat-gateway, rag-worker, rag-api, admin-api, index-job</td></tr>
+    <tr><td>Redis</td><td><code>redis://redis.rag-data:6379/0</code></td><td>chat-gateway, rag-worker</td></tr>
+    <tr><td>Qdrant</td><td><code>http://qdrant.rag-data:6333</code></td><td>rag-worker, rag-api, admin-api, index-job</td></tr>
+    <tr><td>레지스트리</td><td><code>registry.local:5000</code> (P3 Docker, K8s 밖)</td><td>양쪽 노드 containerd</td></tr>
+  </table></div>
+  <h3>용어</h3>
+  <div class="tw"><table>
+    <tr><th>용어</th><th>뜻</th></tr>
+    <tr><td>노드 / Pod</td><td>노드 = K8s에 참여한 서버 한 대(P3, PGX). Pod = 컨테이너가 실제로 실행되는 최소 단위.</td></tr>
+    <tr><td>네임스페이스</td><td>Pod들을 용도별로 묶는 폴더. 여기서는 rag-app/ai/data/ingestion.</td></tr>
+    <tr><td>Service</td><td>Pod가 바뀌어도 변하지 않는 내부 주소(예: <code>qdrant.rag-data:6333</code>).</td></tr>
+    <tr><td>Ingress</td><td>밖에서 들어오는 HTTPS를 주소·경로에 따라 알맞은 Service로 보내는 관문.</td></tr>
+    <tr><td>PVC · hostPath</td><td>Pod가 쓰는 디스크. PVC는 K8s가 관리하는 볼륨, hostPath는 노드의 폴더를 그대로 연결.</td></tr>
+    <tr><td>Job</td><td>한 번 실행하고 끝나는 Pod(문서 색인).</td></tr>
+    <tr><td>taint / toleration</td><td>노드에 "이 표식을 견디는 Pod만 와라"라는 표시. PGX는 vLLM만 받는다.</td></tr>
+    <tr><td>임베딩 · 벡터</td><td>문장의 뜻을 숫자 목록(여기서는 1,024개)으로 바꾼 것. 뜻이 비슷하면 숫자도 가깝다.</td></tr>
+    <tr><td>청크</td><td>문서를 검색하기 좋은 크기(약 800토큰)로 자른 조각.</td></tr>
+    <tr><td>리랭커</td><td>검색으로 고른 후보를 질문과 함께 다시 읽어 관련도 순으로 재정렬하는 모델.</td></tr>
+    <tr><td>LLM · vLLM</td><td>LLM = 문장을 만드는 대형 언어 모델(Qwen3.8 27B). vLLM = 이를 GPU에서 빠르게 서빙하는 엔진.</td></tr>
+    <tr><td>RQ · pub/sub</td><td>RQ = Redis 기반 작업 큐. pub/sub = Redis로 이벤트를 여러 수신자에게 뿌리는 방식.</td></tr>
+    <tr><td>토큰</td><td>모델이 글을 세는 단위. 한글은 대략 1.9자 ≈ 1토큰.</td></tr>
+  </table></div>
+</section>
+
+<footer>
+  생성: <code>uv run --with cairosvg python docs/manual/architecture/build_diagrams.py</code> — 그림 원본(SVG)과 PNG는 <code>docs/manual/architecture/</code>.
+  관련 문서: <code>docs/TDD.md</code>(설계 SSOT) · <code>rke2_two_node_test_guide.md</code>(랩 구축) · <code>docs/manual/operator-manual.md</code>.
+</footer>
+</div>
+</body>
+</html>

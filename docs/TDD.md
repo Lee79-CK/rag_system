@@ -279,7 +279,7 @@ rag-platform/
 └── CLAUDE.md                       # Claude Code용 프로젝트 컨텍스트 (§17 참조)
 ```
 
-> v2.0 삭제: `apps/mattermost-bridge`(pkg `bridge`), `libs/mattermost-adapter`, `rag_schemas/mattermost.py`, `tests/mattermost`. 이미지 빌드 자산은 저장소에 포함한다: `apps/{chat-gateway,rag-api,admin-api,embedding-api,reranker-api,parser-indexer}/Containerfile`(uv 2-stage, 리포 루트 컨텍스트, `UV_ONLY_BINARY`, uid 10001, `ARG PYTHON_IMAGE/UV_IMAGE/UV_INDEX_URL/UV_EXTRA` — embedding/reranker 는 `UV_EXTRA=models` 기본), `apps/admin-web/Containerfile`+`nginx.conf`(:8080 비루트), `apps/chat-web/Containerfile`(Next standalone, 컨텍스트 = `apps/chat-web`), `.dockerignore`. 빌드/푸시는 `make build-images` / `make push-images`(`REG=`, `TAG=`) (§14.2).
+> v2.0 삭제: `apps/mattermost-bridge`(pkg `bridge`), `libs/mattermost-adapter`, `rag_schemas/mattermost.py`, `tests/mattermost`. 이미지 빌드 자산은 저장소에 포함한다: `apps/{chat-gateway,rag-api,admin-api,embedding-api,reranker-api,parser-indexer}/Containerfile`(manifests 단계 + 의존성/소스 레이어 분리 — `uv sync --no-install-workspace` 후 소스 복사, 리포 루트 컨텍스트, `UV_ONLY_BINARY`, uid 10001, `ARG PYTHON_IMAGE/UV_IMAGE/UV_INDEX_URL/UV_EXTRA` — embedding/reranker 는 `UV_EXTRA=models` 기본), `apps/admin-web/Containerfile`+`nginx.conf`(:8080 비루트), `apps/chat-web/Containerfile`(Next standalone, 컨텍스트 = `apps/chat-web`), `.dockerignore`. 빌드/푸시는 `make build-images` / `make push-images`(`REG=`, `TAG=`) (§14.2).
 
 ### 2.1 구조 규칙
 

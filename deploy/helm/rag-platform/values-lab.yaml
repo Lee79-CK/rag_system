@@ -9,7 +9,7 @@
 # 운영(PoC)과 다른 점 — 리포트에 반드시 기록할 것:
 #   - vLLM replica 2 → 1 (GPU 노드 1대). NFR-HA-002 는 순차 재기동으로 대체 검증
 #   - 앱 replica 2 → 1 (P3 20코어 한계). PDB 는 minAvailable 유지 시 rollout 이 막히므로 해제(null)
-#   - 데이터 계층 용량 축소 (NVMe 1TB 공유 — 가이드 §1.4.1)
+#   - 데이터 계층 용량 축소 (fast NVMe 512GB 전용 디스크 — 가이드 §1.4.1)
 #   - max-num-seqs 16 → 8 (GB10 메모리 대역폭 ~273GB/s 고려)
 #   - Namespace 는 가이드 §4.1 에서 kubectl 로 사전 생성 + 라벨 rag-platform=true (namespaces.create=false), Ingress Controller = RKE2 내장(kube-system)
 #   - admin-web 을 appServices 로 추가 (admin host Ingress `/`)
@@ -65,7 +65,7 @@ tolerations: []
 
 # ---- 스토리지 티어 (가이드 §1.4 — 이 랩의 핵심) ----
 data:
-  storageClass: local-fast        # qdrant/postgresql/redis → NVMe
+  storageClass: local-fast        # qdrant/postgresql/redis → fast NVMe 512GB (/data/fast)
   # data 계층 image 는 global.imageRegistry 를 타지 않고 full string 이다 → 랩 레지스트리로 직접 교체.
   # 사전에 미러링: docker pull <원본> && docker tag ... registry.local:5000/library/<name> && docker push
   qdrant:

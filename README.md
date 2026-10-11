@@ -41,7 +41,7 @@ TDD §15 로드맵 **M1–M12 구현 완료** (M12 = Web Chat 전환). 로컬은
 
 **로컬 실행 캐비엇**: 이 저장소는 Intel macOS(GPU 없음)에서 개발되어 실 모델 의존성(`torch`/`FlagEmbedding`)은
 optional `models` extra로 분리했다. 기본 경로는 `EMBEDDING_MOCK=1`/`RERANKER_MOCK=1` + `make mock-llm`.
-GPU 노드에서는 `uv sync --extra models` 로 실 엔진을 활성화한다. testcontainers 통합/격리 테스트는 Docker 필요.
+실 엔진은 `uv sync --extra models` 로 활성화한다(torch 는 CPU 빌드 — embedding/reranker 는 CPU 서빙, ADR-010). testcontainers 통합/격리 테스트는 Docker 필요.
 
 **알려진 후속(admin-web가 graceful degrade 처리)**: admin-api에 아직 없는 조회/액션 엔드포인트 —
 `GET /index-jobs`·`/index-jobs/{id}/retry`, `GET /audit-logs`(감사 로그는 기록만 하고 조회 API 미제공),
@@ -553,7 +553,8 @@ make push-images  REG=harbor.internal TAG=$(git rev-parse --short HEAD)
 
 - Base image: 승인된 `harbor.internal/library/python:3.12-slim@sha256:...` (digest 고정, `latest` 금지) — `--build-arg PYTHON_IMAGE=... UV_IMAGE=...` (web 은 `NODE_IMAGE`)
 - 빌드 시 내부 PyPI만 참조: `--build-arg UV_INDEX_URL=https://nexus.internal.example/...` (`UV_ONLY_BINARY` 로 sdist 빌드 차단). web 이미지는 `--build-arg NPM_REGISTRY=...`
-- embedding-api / reranker-api 는 `UV_EXTRA=models` 가 기본 (실 모델 엔진 포함)
+- embedding-api / reranker-api 는 `UV_EXTRA=models` 가 기본 (실 모델 엔진 포함). torch 는 CPU 빌드로 고정(루트 `pyproject.toml` 의 `pytorch-cpu` 인덱스, ADR-010) — 폐쇄망 미러에 `torch-2.13.0+cpu` 휠 필요
+- Python 이미지는 의존성 레이어(`pyproject.toml`·`uv.lock` 만으로 설치)와 소스 레이어를 분리 — lock 이 같으면 재빌드 시 의존성 레이어를 캐시에서 재사용
 
 ### 7.2 CI/CD 파이프라인 (PRD §26.2)
 

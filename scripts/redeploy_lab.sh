@@ -5,6 +5,7 @@
 #   scripts/redeploy_lab.sh              # 커밋된 HEAD 를 빌드·배포
 #   scripts/redeploy_lab.sh --dry-run    # 점검만 하고 실행할 명령을 출력
 #   scripts/redeploy_lab.sh --skip-build # 이미 push 한 HEAD 태그로 helm upgrade 만
+#   scripts/redeploy_lab.sh --no-prune   # 로컬 Docker 정리(오래된 태그·빌드 캐시) 생략
 #
 # 수작업에서 실제로 났던 사고를 막는다:
 #   - REG/TAG 빈 값(잘린 이미지 경로)  → TAG 는 항상 git HEAD, REG 기본값 고정
@@ -12,6 +13,8 @@
 #   - helm -n 누락(ownership 오류)      → release NS 고정
 #   - vLLM 태그 불일치(ImagePullBackOff) → vLLM 은 values-lab 의 고정 태그(vllm.imageTag). 레지스트리에 없으면
 #     현재 배포 중인 태그의 manifest 를 서버 측 복사(멀티아키 manifest list 그대로 — docker pull/push 하면 amd64 만 남는다)
+#   - P3 OS 디스크 고갈(재배포마다 태그·빌드 캐시 누적 → 2026-10 실측 600GB+) → push 확인 뒤 로컬 정리.
+#     레지스트리(HDD)에는 모든 태그가 남으므로 롤백은 레지스트리에서 받는다.
 set -euo pipefail
 
 REG=${REG:-registry.local:5000}
@@ -20,15 +23,19 @@ RELEASE_NS=rag-platform
 CHART=deploy/helm/rag-platform
 VALUES=(-f "$CHART/values-poc.yaml" -f "$CHART/values-lab.yaml")
 TIMEOUT=${TIMEOUT:-15m}
+KEEP_TAGS=${KEEP_TAGS:-2}            # 로컬 Docker 에 남길 rag/* 최근 태그 수 (이번 배포 + 직전 1개)
+CACHE_KEEP=${CACHE_KEEP:-168h}       # 이 기간 안에 쓰인 빌드 캐시(uv 휠 캐시 포함)는 남긴다
 MANIFEST_ACCEPT='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
 
 DRY_RUN=0
 SKIP_BUILD=0
+PRUNE=1
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
-    -h | --help) sed -n '2,8p' "$0"; exit 0 ;;
+    --no-prune) PRUNE=0 ;;
+    -h | --help) sed -n '2,9p' "$0"; exit 0 ;;
     *) echo "알 수 없는 옵션: $arg" >&2; exit 2 ;;
   esac
 done
@@ -37,6 +44,9 @@ log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[31m[중단] %s\033[0m\n' "$*" >&2; exit 1; }
 run() {
   if ((DRY_RUN)); then printf '  [dry-run] %s\n' "$*"; else "$@"; fi
+}
+run_quiet() { # 실행 출력은 버리고, dry-run 표시는 남긴다
+  if ((DRY_RUN)); then printf '  [dry-run] %s\n' "$*"; else "$@" >/dev/null; fi
 }
 manifest_exists() { # repo tag
   [[ $(curl -s -o /dev/null -w '%{http_code}' -I -H "Accept: $MANIFEST_ACCEPT" \
@@ -105,6 +115,21 @@ if ! ((DRY_RUN)); then
   done
   ((${#missing[@]} == 0)) || die "레지스트리에 $TAG 태그가 없는 이미지: ${missing[*]}"
   echo "  레지스트리 확인: rag/* 8종 :$TAG 존재"
+fi
+
+# ---- 2-1. 로컬 Docker 정리 (P3 OS 디스크 보호) ----
+# 레지스트리 push 를 확인한 뒤에만 지운다. docker images 는 생성 시각 내림차순이라 저장소별 앞의 KEEP_TAGS 개만 남는다.
+if ((PRUNE)); then
+  log "로컬 Docker 정리 — rag/* 저장소별 최근 $KEEP_TAGS 개 태그만 유지, $CACHE_KEEP 넘게 안 쓴 빌드 캐시 삭제"
+  mapfile -t old < <(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$REG/rag/*" |
+    awk -v keep="$KEEP_TAGS" -v cur=":$TAG" '{ r = $0; sub(/:[^:]*$/, "", r); if (++n[r] > keep && substr($0, length($0) - length(cur) + 1) != cur) print }')
+  if ((${#old[@]})); then
+    run_quiet docker rmi "${old[@]}"
+    echo "  오래된 로컬 태그 ${#old[@]}개 삭제 (레지스트리에는 남아 있음)"
+  fi
+  run_quiet docker image prune -f
+  run_quiet docker builder prune -f --filter "until=$CACHE_KEEP"
+  ((DRY_RUN)) || docker system df | sed 's/^/  /'
 fi
 
 # ---- 3. helm upgrade ----

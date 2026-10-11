@@ -356,10 +356,11 @@ RAG_API_URL=http://localhost:8002 uv run python -m evaluation.runner \
 cd ~/workspace/rag_system
 git add -A && git commit -m "변경 내용"
 scripts/redeploy_lab.sh --dry-run    # 점검 + 실행 명령 출력
-scripts/redeploy_lab.sh              # 빌드·push → helm upgrade(-n rag-platform) → rollout 확인
+scripts/redeploy_lab.sh              # 빌드·push → 로컬 Docker 정리 → helm upgrade(-n rag-platform) → rollout 확인
 ```
 
 - 커밋하지 않은 변경이 있으면 중단합니다(이미지 태그 = 커밋 sha).
+- push 확인 뒤 P3 의 로컬 이미지를 서비스별 최근 2개 태그만 남기고 정리합니다(OS 디스크 보호, `--no-prune` 으로 생략). 지운 태그도 레지스트리에는 남아 있어 롤백에 지장 없습니다.
 - vLLM(고정 태그 `vllm.imageTag`)과 데이터 계층은 재시작되지 않습니다. DB 스키마 변경은 migrate hook Job 이 자동 적용합니다.
 - 사용자는 새로고침(F5)만 하면 됩니다(재로그인 불필요).
 - 롤백: `helm rollback rag-platform -n rag-platform` 또는 이전 커밋 checkout 후 `scripts/redeploy_lab.sh --skip-build`.
@@ -373,7 +374,7 @@ kubectl -n rag-app logs deploy/chat-gateway | grep -c "startup.*_missing"       
 kubectl -n rag-ai logs deploy/embedding-api | grep engine_ready                  # model 에 "-mock" 없어야 함
 kubectl -n rag-ai logs deploy/reranker-api  | grep engine_ready
 kubectl -n rag-app exec deploy/rag-api -- python -c "import httpx;print(httpx.get('http://vllm-service.rag-ai:8000/v1/models',timeout=10).json()['data'][0]['id'])"   # internal-rag-llm
-df -h / /data/fast /data/bulk                                                    # NVMe 70% 미만
+df -h / /data/fast /data/bulk                                                    # / (OS NVMe)·/data/fast (DB NVMe) 70% 미만
 ```
 그리고 사용자 계정으로 시험 질문 1건(출처 표 확인).
 
@@ -498,7 +499,7 @@ sudo tar -C /data/bulk -czf /data/bulk/backup/documents-$(date +%F).tgz document
 ```
 
 - Qdrant 는 PostgreSQL(문서 메타·ACL) + 문서 원본만 있으면 **전 문서 재색인으로 복원**할 수 있습니다(시간은 문서량에 비례).
-- 백업 파일에도 원본과 같은 접근 통제를 적용하세요. 백업 디렉터리는 HDD(`/data/bulk`)에 두고 NVMe 를 채우지 마세요.
+- 백업 파일에도 원본과 같은 접근 통제를 적용하세요. 백업 디렉터리는 HDD(`/data/bulk`)에 두고 OS 디스크나 DB 디스크(`/data/fast`)를 채우지 마세요.
 - 보관 기간 정책(대화 90일, 감사 180일)에 따른 자동 삭제 Job 도 아직 없습니다.
 
 ---
@@ -581,7 +582,8 @@ kubectl -n rag-ai logs deploy/vllm-llm-0    --since=1h | tail -50           # ..
 | vLLM 기동 실패/CrashLoop | 모델 경로·권한·버전·인자 | `kubectl -n rag-ai logs deploy/vllm-llm-0` → 가이드 §8 vLLM 항목 |
 | vLLM OOM / 급격한 지연 | GPU 통합 메모리 경합 | `--gpu-memory-utilization` 0.85 로 하향 |
 | Qdrant 검색 1초 초과 | PVC 가 HDD 에 생성 | `kubectl get pvc -n rag-data` SC 확인 |
-| 노드 DiskPressure, 파드 대량 Evicted | NVMe 고갈 | 미사용 이미지 정리 `sudo crictl rmi --prune`, PVC 위치 확인 |
+| 노드 DiskPressure, 파드 대량 Evicted | 루트 FS(OS NVMe 1TB) 고갈 | `df -h /`, 미사용 이미지 정리 `sudo crictl rmi --prune`, `/data/fast`·`/data/bulk` 마운트 확인 |
+| PostgreSQL/Qdrant 쓰기 오류 (No space left) | DB 디스크(`/data/fast`, NVMe 512GB) 고갈 | `df -h /data/fast`, 대용량 PVC 가 local-fast 로 샜는지 확인 |
 | helm `ownership` 오류 | `-n rag-platform` 누락 | `scripts/redeploy_lab.sh` 사용 |
 | 문서 채널 변경·비활성화·삭제 409 `INDEX_JOB_RUNNING` | 색인 진행 중 | 완료 후 재시도 |
 | 오류 로그 [로그 조회] 503 `POD_LOGS_DISABLED` / 502 | 파드 로그 조회 미설정·권한·apiserver 접근 | 가이드 §8 오류 로그 항목, 임시로 §10.2.1 kubectl |
@@ -638,7 +640,7 @@ kubectl get pods -A -l app.kubernetes.io/part-of=rag-platform -o wide
 helm list -n rag-platform
 
 # 재배포 / 롤백
-scripts/redeploy_lab.sh [--dry-run|--skip-build]
+scripts/redeploy_lab.sh [--dry-run|--skip-build|--no-prune]
 helm rollback rag-platform -n rag-platform
 
 # 관리자 API (랩)

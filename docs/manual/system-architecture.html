@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG 챗봇 랩 아키텍처</title>
+<!-- 생성 파일: docs/manual/architecture/build_diagrams.py 가 template.html 에 SVG 를 넣어 만든다. 직접 고치지 말 것 -->
+<style>
+:root{
+  --bg:#f4f6f9;--paper:#ffffff;--fg:#1d2330;--muted:#5b6475;--line:#d9dee7;--accent:#3b78e7;
+  --code-bg:#eef1f6;--th-bg:#f1f4f8;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11151c;--paper:#1a2029;--fg:#e6e9ef;--muted:#a3acbb;--line:#2e3644;--accent:#7aa7ff;
+    --code-bg:#252c38;--th-bg:#222937;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11151c;--paper:#1a2029;--fg:#e6e9ef;--muted:#a3acbb;--line:#2e3644;--accent:#7aa7ff;
+  --code-bg:#252c38;--th-bg:#222937;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);
+  font-family:'Pretendard','Noto Sans KR','Noto Sans CJK KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;
+  line-height:1.65;font-size:15.5px}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 16px 64px}
+header h1{font-size:1.75rem;margin:0 0 6px;letter-spacing:-.01em}
+header p{margin:0;color:var(--muted)}
+nav.toc{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:22px 0 8px}
+nav.toc ol{margin:6px 0 0;padding-left:1.3em;columns:2;column-gap:32px}
+nav.toc a{color:var(--accent);text-decoration:none}
+nav.toc a:hover{text-decoration:underline}
+section{margin-top:40px}
+h2{font-size:1.32rem;margin:0 0 4px;padding-top:6px;border-top:2px solid var(--line)}
+h2 small{font-weight:400;color:var(--muted);font-size:.85rem;margin-left:6px}
+h3{font-size:1.05rem;margin:22px 0 6px}
+.lead{color:var(--muted);margin:2px 0 12px}
+figure{margin:12px 0 10px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px;overflow-x:auto}
+figure svg{display:block;width:100%;height:auto;min-width:860px}
+figcaption{font-size:.85rem;color:#5b6475;margin-top:6px;padding:0 4px}
+figcaption a{color:#3b78e7}
+.callout{background:var(--paper);border-left:4px solid var(--accent);border-radius:8px;padding:10px 14px;margin:12px 0}
+table{border-collapse:collapse;width:100%;background:var(--paper);border:1px solid var(--line);border-radius:10px;
+  overflow:hidden;font-size:.92rem;margin:10px 0}
+th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--th-bg);font-weight:700;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+.tw{overflow-x:auto}
+code{background:var(--code-bg);padding:1px 5px;border-radius:5px;font-size:.88em;
+  font-family:'DejaVu Sans Mono',Consolas,monospace}
+ul.compact{margin:6px 0;padding-left:1.2em}
+ul.compact li{margin:2px 0}
+footer{margin-top:48px;color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padding-top:12px}
+@media (max-width:720px){
+  nav.toc ol{columns:1}
+  header h1{font-size:1.4rem}
+}
+@media print{
+  body{background:#fff;color:#000}
+  figure{break-inside:avoid}
+  nav.toc{display:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>RAG 챗봇 플랫폼 — 랩(P3 + PGX) 시스템 아키텍처</h1>
+  <p>폐쇄망 2노드 RKE2 데모 환경 · 2026-10-11 클러스터 실측 기준 · 대상: 처음 보는 사람부터 운영자까지</p>
+</header>
+
+<nav class="toc" aria-label="목차">
+  <strong>목차</strong>
+  <ol>
+    <li><a href="#overview">한눈에 보기 (처음 보는 분)</a></li>
+    <li><a href="#isolation">채널 격리 — 누가 어떤 문서를 보나</a></li>
+    <li><a href="#hardware">하드웨어 아키텍처</a></li>
+    <li><a href="#pods">Kubernetes Pod 아키텍처</a></li>
+    <li><a href="#software">소프트웨어 아키텍처</a></li>
+    <li><a href="#sequence">질문 한 건의 처리 순서</a></li>
+    <li><a href="#indexing">문서 색인 파이프라인</a></li>
+    <li><a href="#deploy">빌드·배포 흐름</a></li>
+    <li><a href="#reference">포트·주소·용어 정리</a></li>
+  </ol>
+</nav>
+
+<section id="overview">
+  <h2>1. 한눈에 보기 <small>처음 보는 분을 위한 그림</small></h2>
+  <p class="lead">이 시스템은 <b>회사 문서를 근거로 답하는 사내 챗봇</b>입니다. 일반 AI 챗봇과 달리, 관리자가 미리 넣어 둔 문서에서 근거를 찾아 그 내용만으로 답하고, 어느 문서의 몇 쪽을 참고했는지 표로 함께 보여 줍니다.</p>
+  <figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 470" width="1060" height="470" role="img" aria-label="한눈에 보기 — 질문하고 답 받기 / 문서 넣기"><title>한눈에 보기 — 질문하고 답 받기 / 문서 넣기</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f1-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f1-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f1-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f1-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f1-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f1-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f1-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f1-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f1-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f1-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f1-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f1-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f1-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1060" height="470" fill="#ffffff" stroke="none"/><rect x="10" y="10" width="1040" height="215" rx="14" class="lane" /><text x="28" y="38" class="lbl" text-anchor="start" >① 질문하고 답 받기 — 사용자가 매번 하는 일</text><rect x="10" y="245" width="1040" height="215" rx="14" class="lane" /><text x="28" y="273" class="lbl" text-anchor="start" >② 문서 넣기 — 관리자가 미리 해 두는 일</text><rect x="30" y="95" width="135" height="105" rx="10" class="user" /><text x="97.5" y="136.7" class="tl" text-anchor="middle" >사용자</text><text x="97.5" y="155.6" class="s" text-anchor="middle" >웹 브라우저</text><text x="97.5" y="171.9" class="m" text-anchor="middle" >chat.rag.lab.local</text><rect x="200" y="95" width="185" height="105" rx="10" class="api" /><text x="292.5" y="127.5" class="t" text-anchor="middle" >질문 접수</text><text x="292.5" y="145.8" class="s" text-anchor="middle" >질문을 저장하고</text><text x="292.5" y="163.3" class="s" text-anchor="middle" >작업 대기열에 넣음</text><text x="292.5" y="179.7" class="m" text-anchor="middle" >chat-gateway</text><rect x="415" y="95" width="185" height="105" rx="10" class="ai" /><text x="507.5" y="127.5" class="t" text-anchor="middle" >근거 문서 찾기</text><text x="507.5" y="145.8" class="s" text-anchor="middle" >질문과 뜻이 비슷한</text><text x="507.5" y="163.3" class="s" text-anchor="middle" >문서 조각을 골라냄</text><text x="507.5" y="179.7" class="m" text-anchor="middle" >embedding·Qdrant·reranker</text><rect x="630" y="95" width="185" height="105" rx="10" class="gpu" /><text x="722.5" y="127.5" class="t" text-anchor="middle" >답변 작성 (AI)</text><text x="722.5" y="145.8" class="s" text-anchor="middle" >찾은 근거만 보고</text><text x="722.5" y="163.3" class="s" text-anchor="middle" >한국어로 답을 씀</text><text x="722.5" y="179.7" class="m" text-anchor="middle" >vLLM · PGX GPU</text><rect x="845" y="95" width="185" height="105" rx="10" class="web" /><text x="937.5" y="127.5" class="t" text-anchor="middle" >실시간 표시</text><text x="937.5" y="145.8" class="s" text-anchor="middle" >글자가 만들어지는 대로</text><text x="937.5" y="163.3" class="s" text-anchor="middle" >화면에 흘려 보냄</text><text x="937.5" y="179.7" class="m" text-anchor="middle" >socket.io</text><path d="M165,147.5 L197,147.5" class="ar" marker-end="url(#f1-a)"/><path d="M385,147.5 L412,147.5" class="ar" marker-end="url(#f1-a)"/><path d="M600,147.5 L627,147.5" class="ar" marker-end="url(#f1-a)"/><path d="M815,147.5 L842,147.5" class="ar" marker-end="url(#f1-a)"/><path d="M937.5,95 C937.5,52 97,52 97,92" class="ar-b" marker-end="url(#f1-a-b)"/><rect x="411.1" y="53.0" width="237.8" height="19.0" rx="4" class="lbg"/><text x="530" y="66" class="alb" text-anchor="middle" >답변과 근거 문서 표가 채팅 화면에 나타남</text><rect x="30" y="330" width="135" height="105" rx="10" class="user" /><text x="97.5" y="371.7" class="tl" text-anchor="middle" >관리자</text><text x="97.5" y="390.6" class="s" text-anchor="middle" >웹 브라우저</text><text x="97.5" y="406.9" class="m" text-anchor="middle" >rag.lab.local</text><rect x="200" y="330" width="185" height="105" rx="10" class="web" /><text x="292.5" y="362.5" class="t" text-anchor="middle" >문서 올리기</text><text x="292.5" y="380.8" class="s" text-anchor="middle" >PDF·Word·HWP 등</text><text x="292.5" y="398.3" class="s" text-anchor="middle" >한 번에 최대 10개</text><text x="292.5" y="414.7" class="m" text-anchor="middle" >admin-web → admin-api</text><rect x="415" y="330" width="185" height="105" rx="10" class="work" /><text x="507.5" y="362.5" class="t" text-anchor="middle" >글자 꺼내 조각내기</text><text x="507.5" y="380.8" class="s" text-anchor="middle" >본문·표를 추출해</text><text x="507.5" y="398.3" class="s" text-anchor="middle" >약 800토큰씩 자름</text><text x="507.5" y="414.7" class="m" text-anchor="middle" >parser-indexer</text><rect x="630" y="330" width="185" height="105" rx="10" class="ai" /><text x="722.5" y="362.5" class="t" text-anchor="middle" >뜻을 숫자로 바꾸기</text><text x="722.5" y="380.8" class="s" text-anchor="middle" >조각마다 숫자 1,024개</text><text x="722.5" y="398.3" class="s" text-anchor="middle" >(벡터)로 변환</text><text x="722.5" y="414.7" class="m" text-anchor="middle" >embedding-api</text><rect x="845" y="330" width="185" height="105" rx="10" class="data" /><text x="937.5" y="362.5" class="t" text-anchor="middle" >검색 서고에 보관</text><text x="937.5" y="380.8" class="s" text-anchor="middle" >벡터 + 볼 수 있는</text><text x="937.5" y="398.3" class="s" text-anchor="middle" >채널 목록을 함께 저장</text><text x="937.5" y="414.7" class="m" text-anchor="middle" >Qdrant</text><path d="M165,382.5 L197,382.5" class="ar" marker-end="url(#f1-a)"/><path d="M385,382.5 L412,382.5" class="ar" marker-end="url(#f1-a)"/><path d="M600,382.5 L627,382.5" class="ar" marker-end="url(#f1-a)"/><path d="M815,382.5 L842,382.5" class="ar" marker-end="url(#f1-a)"/><path d="M937.5,330 C937.5,275 507.5,260 507.5,203" class="ar-o dash" marker-end="url(#f1-a-o)"/><rect x="644.1" y="234.0" width="181.8" height="19.0" rx="4" class="lbg"/><text x="735" y="247" class="alb" text-anchor="middle" >질문이 오면 여기서 근거를 찾음</text></svg><figcaption>그림 1. 두 가지 흐름 — 위: 질문하고 답 받기, 아래: 문서 넣기. 이미지: <a href="architecture/01-overview.png">PNG</a> · <a href="architecture/01-overview.svg">SVG</a></figcaption></figure>
+  <div class="callout"><b>도서관에 비유하면</b> — 관리자는 책을 들여와 쪽마다 색인 카드를 만들어 두는 사서(②), 사용자가 질문하면 색인 카드로 관련 쪽을 찾아(근거 찾기) 그 쪽만 읽고 요약해 주는 상담원(답변 작성)이 있는 셈입니다. "색인 카드"가 <b>벡터</b>, 카드 보관함이 <b>Qdrant</b>, 요약하는 상담원이 <b>LLM(vLLM)</b>입니다.</div>
+  <ul class="compact">
+    <li><b>RAG</b>(Retrieval-Augmented Generation): 먼저 <i>찾고</i>(Retrieval) 찾은 내용을 넣어 <i>답을 만든다</i>(Generation). AI가 모르는 사내 내용도 근거 있게 답하는 방식.</li>
+    <li>답변은 한꺼번에 나오지 않고 <b>글자가 만들어지는 대로</b> 화면에 나타납니다(스트리밍).</li>
+    <li>근거를 찾지 못하면 지어내지 않고 "근거 부족"으로 답합니다.</li>
+  </ul>
+</section>
+
+<section id="isolation">
+  <h2>2. 채널 격리 <small>누가 어떤 문서를 근거로 받나</small></h2>
+  <p class="lead">대화방(채널)마다 볼 수 있는 문서가 정해져 있습니다. 문서를 올릴 때 "허용 채널"을 지정하면, 그 채널에서 한 질문만 그 문서를 근거로 쓸 수 있습니다.</p>
+  <figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 500" width="1120" height="500" role="img" aria-label="채널 격리 — 내 채널에 허용된 문서만 근거로 쓴다"><title>채널 격리 — 내 채널에 허용된 문서만 근거로 쓴다</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f7-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f7-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f7-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f7-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f7-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f7-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f7-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f7-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f7-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f7-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f7-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f7-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f7-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f7-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1120" height="500" fill="#ffffff" stroke="none"/><rect x="20" y="60" width="230" height="130" rx="10" class="web" /><text x="135.0" y="113.0" class="t" text-anchor="middle" >채널 rag-hr (인사)</text><text x="135.0" y="131.3" class="s" text-anchor="middle" >멤버: 김OO</text><text x="135.0" y="148.8" class="s" text-anchor="middle" >질문: &quot;연차 며칠이에요?&quot;</text><rect x="20" y="270" width="230" height="130" rx="10" class="api" /><text x="135.0" y="323.0" class="t" text-anchor="middle" >채널 rag-cloud-ops (운영)</text><text x="135.0" y="341.3" class="s" text-anchor="middle" >멤버: 홍OO</text><text x="135.0" y="358.8" class="s" text-anchor="middle" >질문: &quot;1등급 장애 절차?&quot;</text><rect x="295" y="90" width="200" height="70" rx="10" class="note" /><text x="395.0" y="121.2" class="alb" text-anchor="middle" >검색 필터</text><text x="395.0" y="137.2" class="m" text-anchor="middle" >채널 = rag-hr</text><rect x="295" y="300" width="200" height="70" rx="10" class="note" /><text x="395.0" y="331.2" class="alb" text-anchor="middle" >검색 필터</text><text x="395.0" y="347.2" class="m" text-anchor="middle" >채널 = rag-cloud-ops</text><path d="M250,125 L292,125" class="ar-b" marker-end="url(#f7-a-b)"/><path d="M250,335 L292,335" class="ar-t" marker-end="url(#f7-a-t)"/><rect x="545" y="30" width="300" height="420" rx="14" class="data" /><text x="695" y="58" class="t" text-anchor="middle" >Qdrant — 문서 조각 서고</text><rect x="565" y="80" width="260" height="72" rx="8" class="lane" /><text x="695.0" y="112.5" class="s" text-anchor="middle" >인사규정집 조각들</text><text x="695.0" y="128.9" class="m" text-anchor="middle" >허용: rag-hr</text><rect x="565" y="170" width="260" height="72" rx="8" class="lane" /><text x="695.0" y="202.6" class="s" text-anchor="middle" >장애대응매뉴얼 조각들</text><text x="695.0" y="218.9" class="m" text-anchor="middle" >허용: rag-cloud-ops</text><rect x="565" y="260" width="260" height="72" rx="8" class="lane" /><text x="695.0" y="292.6" class="s" text-anchor="middle" >공통 보안수칙 조각들</text><text x="695.0" y="308.9" class="m" text-anchor="middle" >허용: rag-hr, rag-cloud-ops</text><rect x="565" y="350" width="260" height="72" rx="8" class="off" /><text x="695.0" y="382.6" class="s" text-anchor="middle" >비활성화한 문서</text><text x="695.0" y="398.9" class="m" text-anchor="middle" >is_active = false → 아무도 못 찾음</text><path d="M495,118 C525,118 530,116 562,116" class="ar-b" marker-end="url(#f7-a-b)"/><path d="M495,130 C530,140 530,290 562,292" class="ar-b" marker-end="url(#f7-a-b)"/><path d="M495,330 C530,320 530,210 562,206" class="ar-t" marker-end="url(#f7-a-t)"/><path d="M495,342 C530,342 530,300 562,300" class="ar-t" marker-end="url(#f7-a-t)"/><rect x="885" y="60" width="215" height="130" rx="10" class="web" /><text x="992.5" y="104.2" class="t" text-anchor="middle" >rag-hr 이 받는 근거</text><text x="992.5" y="122.5" class="s" text-anchor="middle" >○ 인사규정집</text><text x="992.5" y="140.1" class="s" text-anchor="middle" >○ 공통 보안수칙</text><text x="992.5" y="157.6" class="s" text-anchor="middle" >× 장애대응매뉴얼</text><rect x="885" y="270" width="215" height="130" rx="10" class="api" /><text x="992.5" y="314.2" class="t" text-anchor="middle" >rag-cloud-ops 이 받는 근거</text><text x="992.5" y="332.6" class="s" text-anchor="middle" >○ 장애대응매뉴얼</text><text x="992.5" y="350.1" class="s" text-anchor="middle" >○ 공통 보안수칙</text><text x="992.5" y="367.6" class="s" text-anchor="middle" >× 인사규정집</text><path d="M845,125 L882,125" class="ar-b" marker-end="url(#f7-a-b)"/><path d="M845,335 L882,335" class="ar-t" marker-end="url(#f7-a-t)"/><rect x="20" y="420" width="500" height="66" rx="8" class="note" /><text x="32" y="441.2" class="alb" text-anchor="start" >두 겹의 벽</text><text x="32" y="457.2" class="sm" text-anchor="start" >1) 채널 멤버가 아니면 채널 자체가 안 보임 (404)</text><text x="32" y="473.2" class="sm" text-anchor="start" >2) 검색할 때 필터를 반드시 먼저 걸어 다른 채널 문서는 후보조차 안 됨</text></svg><figcaption>그림 2. 같은 서고를 쓰지만 채널마다 검색 범위가 다르다. <a href="architecture/07-channel-isolation.png">PNG</a> · <a href="architecture/07-channel-isolation.svg">SVG</a></figcaption></figure>
+  <ul class="compact">
+    <li>검색은 반드시 <code>build_filter()</code>로 채널 조건을 <b>먼저</b> 걸고 실행합니다(찾은 뒤에 거르는 방식 금지) — 다른 채널 문서는 후보에도 오르지 않습니다.</li>
+    <li>문서를 [비활성화]하면 <code>is_active=false</code>가 되어 어느 채널에서도 검색되지 않습니다.</li>
+    <li>격리 정확도 100%는 배포 차단 테스트(CH-001~010)로 매번 검증합니다.</li>
+  </ul>
+</section>
+
+<section id="hardware">
+  <h2>3. 하드웨어 아키텍처 <small>물리 서버 2대</small></h2>
+  <p class="lead">역할을 나눴습니다. <b>P3</b>는 화면·API·검색 모델·데이터베이스를 모두 맡는 "본체", <b>PGX</b>는 GPU로 답변 문장만 만드는 "AI 전용기"입니다. 두 대는 사내 LAN으로 연결되고 인터넷에는 연결되지 않습니다.</p>
+  <figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 730" width="1100" height="730" role="img" aria-label="하드웨어 아키텍처 — P3 + PGX 2노드"><title>하드웨어 아키텍처 — P3 + PGX 2노드</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f2-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f2-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f2-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f2-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f2-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f2-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f2-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f2-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f2-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f2-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f2-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f2-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f2-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1100" height="730" fill="#ffffff" stroke="none"/><rect x="375" y="14" width="350" height="66" rx="10" class="user" /><text x="550.0" y="44.5" class="t" text-anchor="middle" >사용자 · 관리자 PC (웹 브라우저)</text><text x="550.0" y="61.7" class="m" text-anchor="middle" >hosts: *.rag.lab.local → 노드 IP</text><line x1="40" y1="118" x2="1060" y2="118" class="bus"/><text x="44" y="108" class="lbl" text-anchor="start" >사내 LAN 192.168.168.0/24 — 폐쇄망 (인터넷 연결 없음)</text><path d="M550,80 L550,113" class="ar-b" marker-end="url(#f2-a-b)"/><rect x="555.0" y="88.0" width="69.6" height="19.0" rx="4" class="lbg"/><text x="560" y="101" class="al" text-anchor="start" >HTTPS 443</text><line x1="275" y1="118" x2="275" y2="168" class="ar"/><line x1="835" y1="118" x2="835" y2="168" class="ar"/><path d="M805,146 L310,146" class="ar dash" marker-end="url(#f2-a)"/><rect x="318.7" y="138.0" width="476.7" height="19.0" rx="4" class="lbg"/><text x="557" y="151" class="al" text-anchor="middle" >PGX → P3: 이미지 pull(:5000) · K8s API(:6443) · Pod 네트워크(Canal VXLAN)</text><rect x="20" y="170" width="510" height="545" rx="16" class="node" /><text x="40" y="202" class="h" text-anchor="start" >P3 · rke2-master-01</text><text x="40" y="224" class="m" text-anchor="start" >192.168.168.109 · amd64 · Ubuntu 26.04 · RKE2 v1.34 server</text><rect x="40.0" y="240" width="150.0" height="70" rx="10" class="infra" /><text x="115.0" y="259.9" class="sm" text-anchor="middle" >CPU</text><text x="115.0" y="279.7" class="t" text-anchor="middle" >Intel x86-64</text><text x="115.0" y="298.1" class="s" text-anchor="middle" >20코어</text><rect x="200.0" y="240" width="150.0" height="70" rx="10" class="infra" /><text x="275.0" y="259.9" class="sm" text-anchor="middle" >메모리</text><text x="275.0" y="279.7" class="t" text-anchor="middle" >128 GB</text><text x="275.0" y="298.1" class="s" text-anchor="middle" >시스템 메모리</text><rect x="360.0" y="240" width="150.0" height="70" rx="10" class="off" /><text x="435.0" y="259.9" class="sm" text-anchor="middle" >GPU</text><text x="435.0" y="279.7" class="t" text-anchor="middle" >RTX A400 4GB</text><text x="435.0" y="298.1" class="s" text-anchor="middle" >플랫폼 미사용</text><rect x="40" y="322" width="470" height="84" rx="10" class="infra" /><text x="275.0" y="352.0" class="t" text-anchor="middle" >K8s 역할: control-plane · etcd + 앱 워커</text><text x="275.0" y="370.3" class="s" text-anchor="middle" >웹·API 6종, AI(CPU) 2종, DB 3종, 색인 Job</text><text x="275.0" y="387.8" class="s" text-anchor="middle" >ingress-nginx (80/443) · Docker 레지스트리 (:5000)</text><rect x="570" y="170" width="510" height="545" rx="16" class="node" /><text x="590" y="202" class="h" text-anchor="start" >PGX · pgx</text><text x="590" y="224" class="m" text-anchor="start" >192.168.168.108 · arm64 · Ubuntu 24.04 (NVIDIA 커널) · RKE2 agent</text><rect x="590.0" y="240" width="150.0" height="70" rx="10" class="infra" /><text x="665.0" y="259.9" class="sm" text-anchor="middle" >CPU</text><text x="665.0" y="279.7" class="t" text-anchor="middle" >Arm 20코어</text><text x="665.0" y="298.1" class="s" text-anchor="middle" >Grace</text><rect x="750.0" y="240" width="150.0" height="70" rx="10" class="infra" /><text x="825.0" y="259.9" class="sm" text-anchor="middle" >통합 메모리</text><text x="825.0" y="279.7" class="t" text-anchor="middle" >128 GB</text><text x="825.0" y="298.1" class="s" text-anchor="middle" >CPU·GPU 공유</text><rect x="910.0" y="240" width="150.0" height="70" rx="10" class="gpu" /><text x="985.0" y="259.9" class="sm" text-anchor="middle" >GPU</text><text x="985.0" y="279.7" class="t" text-anchor="middle" >NVIDIA GB10</text><text x="985.0" y="298.1" class="s" text-anchor="middle" >Blackwell</text><rect x="590" y="322" width="470" height="84" rx="10" class="infra" /><text x="825.0" y="352.0" class="t" text-anchor="middle" >K8s 역할: LLM 전용 워커</text><text x="825.0" y="370.3" class="s" text-anchor="middle" >taint dedicated=llm:NoSchedule → vLLM 만 배치</text><text x="825.0" y="387.8" class="s" text-anchor="middle" >ingress-nginx (80/443) · GPU Operator</text><rect x="40" y="420" width="140" height="280" rx="12" class="infra" /><text x="110.0" y="444" class="t" text-anchor="middle" >NVMe 1TB</text><text x="110.0" y="462" class="sm" text-anchor="middle" >OS 전용</text><rect x="50" y="474" width="120" height="48" rx="8" class="lane" /><text x="110.0" y="494.2" class="m" text-anchor="middle" >/  (루트 FS)</text><text x="110.0" y="510.2" class="sm" text-anchor="middle" >OS · 로그</text><rect x="50" y="530" width="120" height="48" rx="8" class="lane" /><text x="110.0" y="550.2" class="m" text-anchor="middle" >/var/lib/rancher</text><text x="110.0" y="566.2" class="sm" text-anchor="middle" >etcd · containerd</text><rect x="50" y="586" width="120" height="48" rx="8" class="lane" /><text x="110.0" y="606.2" class="sm" text-anchor="middle" >DiskPressure</text><text x="110.0" y="622.2" class="sm" text-anchor="middle" >판단 기준</text><rect x="190" y="420" width="140" height="280" rx="12" class="data" /><text x="260.0" y="444" class="t" text-anchor="middle" >NVMe 512GB</text><text x="260.0" y="462" class="sm" text-anchor="middle" >DB 전용 (별도 추가)</text><rect x="200" y="474" width="120" height="48" rx="8" class="lane" /><text x="260.0" y="494.2" class="m" text-anchor="middle" >/data/fast</text><text x="260.0" y="510.2" class="sm" text-anchor="middle" >local-fast PVC</text><rect x="200" y="530" width="120" height="48" rx="8" class="lane" /><text x="260.0" y="558.2" class="sm" text-anchor="middle" >PostgreSQL 20Gi</text><rect x="200" y="586" width="120" height="48" rx="8" class="lane" /><text x="260.0" y="614.2" class="sm" text-anchor="middle" >Qdrant 50Gi</text><rect x="200" y="642" width="120" height="48" rx="8" class="lane" /><text x="260.0" y="670.2" class="sm" text-anchor="middle" >Redis 10Gi</text><rect x="340" y="420" width="170" height="280" rx="12" class="data" /><text x="425.0" y="444" class="t" text-anchor="middle" >HDD 4TB</text><text x="425.0" y="462" class="sm" text-anchor="middle" >대용량 (/data/bulk)</text><rect x="350" y="474" width="150" height="48" rx="8" class="lane" /><text x="425.0" y="494.2" class="m" text-anchor="middle" >documents</text><text x="425.0" y="510.2" class="sm" text-anchor="middle" >업로드 문서 원본</text><rect x="350" y="530" width="150" height="48" rx="8" class="lane" /><text x="425.0" y="550.2" class="m" text-anchor="middle" >models</text><text x="425.0" y="566.2" class="sm" text-anchor="middle" >임베딩·리랭커 모델</text><rect x="350" y="586" width="150" height="48" rx="8" class="lane" /><text x="425.0" y="606.2" class="m" text-anchor="middle" >registry</text><text x="425.0" y="622.2" class="sm" text-anchor="middle" >이미지 레지스트리</text><rect x="350" y="642" width="150" height="48" rx="8" class="lane" /><text x="425.0" y="662.2" class="m" text-anchor="middle" >pvc</text><text x="425.0" y="678.2" class="sm" text-anchor="middle" >local-bulk PVC</text><rect x="590" y="420" width="470" height="280" rx="12" class="data" /><text x="825" y="446" class="t" text-anchor="middle" >NVMe SSD 4TB</text><rect x="608" y="462" width="434" height="92" rx="8" class="gpu" /><text x="825.0" y="495.4" class="m" text-anchor="middle" >/home/&lt;user&gt;/models/Qwen3.8-27B-FP8</text><text x="825.0" y="512.5" class="s" text-anchor="middle" >LLM 가중치 ≈29GB — vLLM 이 /models 로 읽기 전용 마운트</text><text x="825.0" y="528.9" class="sm" text-anchor="middle" >GPU 메모리 사용 상한 90% (gpu-memory-utilization 0.90)</text><rect x="608" y="566" width="434" height="56" rx="8" class="lane" /><text x="825.0" y="590.5" class="s" text-anchor="middle" >OS · /var/lib/rancher</text><text x="825.0" y="606.9" class="sm" text-anchor="middle" >containerd 이미지 (vLLM arm64 ≈ 수십 GB)</text><rect x="608" y="634" width="434" height="52" rx="8" class="lane" /><text x="825.0" y="664.2" class="sm" text-anchor="middle" >DB·문서 저장 없음 — 상태(stateful) 데이터는 모두 P3</text></svg><figcaption>그림 3. 노드·디스크 배치. <a href="architecture/02-hardware.png">PNG</a> · <a href="architecture/02-hardware.svg">SVG</a></figcaption></figure>
+  <div class="tw"><table>
+    <tr><th>항목</th><th>P3 (rke2-master-01)</th><th>PGX (pgx)</th></tr>
+    <tr><td>IP · 아키텍처</td><td>192.168.168.109 · amd64</td><td>192.168.168.108 · arm64</td></tr>
+    <tr><td>OS · RKE2</td><td>Ubuntu 26.04 · server (control-plane, etcd)</td><td>Ubuntu 24.04 (NVIDIA 커널) · agent</td></tr>
+    <tr><td>CPU · 메모리</td><td>Intel 20코어 · 128 GB</td><td>Arm(Grace) 20코어 · 128 GB 통합 메모리 (GPU와 공유)</td></tr>
+    <tr><td>GPU</td><td>RTX A400 4GB — 플랫폼에서 사용 안 함</td><td>NVIDIA GB10 (Blackwell) — vLLM 전용</td></tr>
+    <tr><td>디스크</td><td>NVMe 1TB (OS·etcd·이미지) + NVMe 512GB (DB 볼륨 전용, 별도 추가) + HDD 4TB (문서·모델·레지스트리)</td><td>NVMe 4TB (LLM 가중치·이미지)</td></tr>
+    <tr><td>K8s 라벨 · taint</td><td><code>ragplatform.io/tier=app</code></td><td><code>ragplatform.io/tier=llm</code> · <code>dedicated=llm:NoSchedule</code></td></tr>
+  </table></div>
+  <ul class="compact">
+    <li><b>왜 DB 전용 NVMe를 따로?</b> 검색(Qdrant)·DB는 작은 읽기/쓰기가 많아 HDD에서는 느립니다. OS 디스크와 분리해 두었기 때문에 DB가 커져도 OS 디스크가 차서 노드 전체가 멈추는(DiskPressure) 일이 없습니다. 대신 두 NVMe(<code>/</code>, <code>/data/fast</code>)의 여유 공간을 각각 감시해야 합니다.</li>
+    <li><b>왜 임베딩·리랭커는 CPU?</b> GPU 1장은 LLM 전용(ADR-009/010). 그래서 대용량 문서 색인은 CPU 속도에 묶입니다(그림 7 참고).</li>
+  </ul>
+</section>
+
+<section id="pods">
+  <h2>4. Kubernetes Pod 아키텍처 <small>무엇이 어디에, 얼마나</small></h2>
+  <p class="lead">한 개의 Helm chart(<code>deploy/helm/rag-platform</code>, release <code>rag-platform</code>)가 네임스페이스 4개(rag-app · rag-ai · rag-data · rag-ingestion)에 나눠 배포합니다. vLLM 하나만 PGX에 뜨고 나머지는 모두 P3에 뜹니다.</p>
+  <figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 1040" width="1220" height="1040" role="img" aria-label="Kubernetes Pod 배치 — 네임스페이스·리소스·포트"><title>Kubernetes Pod 배치 — 네임스페이스·리소스·포트</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f3-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f3-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f3-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f3-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f3-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f3-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f3-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f3-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f3-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f3-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f3-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f3-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f3-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1220" height="1040" fill="#ffffff" stroke="none"/><rect x="10" y="40" width="810" height="990" rx="16" class="node" /><text x="26" y="28" class="h" text-anchor="start" >P3 · rke2-master-01 (amd64) — 앱·AI(CPU)·데이터</text><rect x="840" y="40" width="370" height="990" rx="16" class="node" /><text x="856" y="28" class="h" text-anchor="start" >PGX · pgx (arm64, GPU)</text><rect x="25" y="60" width="780" height="76" rx="10" class="ns" /><rect x="32.0" y="53.0" width="164.2" height="19.0" rx="4" class="lbg"/><text x="37" y="66" class="alb" text-anchor="start" >kube-system  (RKE2 내장)</text><rect x="38" y="84" width="152" height="34" rx="6" class="infra" /><text x="114.0" y="105.2" class="sm" text-anchor="middle" >ingress-nginx :80/:443</text><rect x="198" y="84" width="150" height="34" rx="6" class="infra" /><text x="273.0" y="105.2" class="sm" text-anchor="middle" >kube-apiserver :6443</text><rect x="356" y="84" width="76" height="34" rx="6" class="infra" /><text x="394.0" y="105.2" class="sm" text-anchor="middle" >etcd</text><rect x="440" y="84" width="96" height="34" rx="6" class="infra" /><text x="488.0" y="105.2" class="sm" text-anchor="middle" >coredns</text><rect x="544" y="84" width="108" height="34" rx="6" class="infra" /><text x="598.0" y="105.2" class="sm" text-anchor="middle" >canal (CNI)</text><rect x="660" y="84" width="128" height="34" rx="6" class="infra" /><text x="724.0" y="105.2" class="sm" text-anchor="middle" >metrics-server</text><rect x="25" y="152" width="780" height="262" rx="10" class="ns" /><rect x="32.0" y="145.0" width="165.4" height="19.0" rx="4" class="lbg"/><text x="37" y="158" class="alb" text-anchor="start" >rag-app  — 화면·API·워커</text><rect x="38" y="174" width="182" height="96" rx="8" class="web" /><text x="50" y="195.5" class="t" text-anchor="start" >chat-web</text><text x="50" y="212.7" class="m" text-anchor="start" >:3000 · Next.js</text><text x="50" y="228.7" class="sm" text-anchor="start" >CPU 100m / 500m</text><text x="50" y="244.7" class="sm" text-anchor="start" >MEM 256Mi / 512Mi</text><text x="50" y="260.7" class="sm" text-anchor="start" >사용자 채팅 화면</text><rect x="230" y="174" width="182" height="96" rx="8" class="api" /><text x="242" y="195.5" class="t" text-anchor="start" >chat-gateway</text><text x="242" y="212.7" class="m" text-anchor="start" >:8001 · REST + /ws</text><text x="242" y="228.7" class="sm" text-anchor="start" >CPU 250m / 1</text><text x="242" y="244.7" class="sm" text-anchor="start" >MEM 512Mi / 1Gi</text><text x="242" y="260.7" class="sm" text-anchor="start" >로그인·질문·실시간</text><rect x="422" y="174" width="182" height="96" rx="8" class="web" /><text x="434" y="195.5" class="t" text-anchor="start" >admin-web</text><text x="434" y="212.7" class="m" text-anchor="start" >:8080 · nginx</text><text x="434" y="228.7" class="sm" text-anchor="start" >CPU 50m / 500m</text><text x="434" y="244.7" class="sm" text-anchor="start" >MEM 64Mi / 256Mi</text><text x="434" y="260.7" class="sm" text-anchor="start" >관리자 화면</text><rect x="614" y="174" width="176" height="96" rx="8" class="api" /><text x="626" y="195.5" class="t" text-anchor="start" >admin-api</text><text x="626" y="212.7" class="m" text-anchor="start" >:8003 · REST</text><text x="626" y="228.7" class="sm" text-anchor="start" >CPU 500m / 2</text><text x="626" y="244.7" class="sm" text-anchor="start" >MEM 1Gi / 2Gi</text><text x="626" y="260.7" class="sm" text-anchor="start" >문서·채널·색인 Job</text><rect x="38" y="290" width="182" height="96" rx="8" class="api" /><text x="50" y="311.5" class="t" text-anchor="start" >rag-api</text><text x="50" y="328.7" class="m" text-anchor="start" >:8002 · REST</text><text x="50" y="344.7" class="sm" text-anchor="start" >CPU 500m / 2</text><text x="50" y="360.7" class="sm" text-anchor="start" >MEM 1Gi / 3Gi</text><text x="50" y="376.7" class="sm" text-anchor="start" >동기 RAG (평가용)</text><rect x="236" y="296" width="182" height="96" rx="8" class="work" /><rect x="230" y="290" width="182" height="96" rx="8" class="work" /><text x="242" y="311.5" class="t" text-anchor="start" >rag-worker ×2</text><text x="242" y="328.7" class="m" text-anchor="start" >rq worker rag-chat</text><text x="242" y="344.7" class="sm" text-anchor="start" >CPU 500m / 2 (각)</text><text x="242" y="360.7" class="sm" text-anchor="start" >MEM 1Gi / 3Gi (각)</text><text x="242" y="376.7" class="sm" text-anchor="start" >RAG 파이프라인</text><rect x="422" y="290" width="368" height="96" rx="8" class="note" /><text x="434" y="318.2" class="alb" text-anchor="start" >NetworkPolicy (rag-* 네임스페이스 공통)</text><text x="434" y="334.2" class="sm" text-anchor="start" >기본 전부 차단(default-deny) → 플랫폼 NS 끼리만 허용</text><text x="434" y="350.2" class="sm" text-anchor="start" >Ingress → chat-web·chat-gateway·admin-web·admin-api 만</text><text x="434" y="366.2" class="sm" text-anchor="start" >admin-api → kube-apiserver:6443 (색인 Job 생성)</text><rect x="25" y="430" width="780" height="140" rx="10" class="ns" /><rect x="32.0" y="423.0" width="205.1" height="19.0" rx="4" class="lbg"/><text x="37" y="436" class="alb" text-anchor="start" >rag-ai  — CPU 모델 서빙 (amd64)</text><rect x="38" y="452" width="250" height="96" rx="8" class="ai" /><text x="50" y="473.5" class="t" text-anchor="start" >embedding-api</text><text x="50" y="490.7" class="m" text-anchor="start" >:8004 · KURE-v1 (1024차원)</text><text x="50" y="506.7" class="sm" text-anchor="start" >CPU 2 / 6</text><text x="50" y="522.7" class="sm" text-anchor="start" >MEM 4Gi / 8Gi</text><text x="50" y="538.7" class="sm" text-anchor="start" >max_length 2048</text><rect x="300" y="452" width="250" height="96" rx="8" class="ai" /><text x="312" y="473.5" class="t" text-anchor="start" >reranker-api</text><text x="312" y="490.7" class="m" text-anchor="start" >:8005 · bge-reranker-v2-m3</text><text x="312" y="506.7" class="sm" text-anchor="start" >CPU 4 / 8</text><text x="312" y="522.7" class="sm" text-anchor="start" >MEM 6Gi / 12Gi</text><text x="312" y="538.7" class="sm" text-anchor="start" >max_length 512</text><rect x="562" y="452" width="228" height="96" rx="8" class="lane" /><text x="574" y="480.2" class="alb" text-anchor="start" >모델 파일</text><text x="574" y="496.2" class="m" text-anchor="start" >hostPath</text><text x="574" y="512.2" class="m" text-anchor="start" >/data/bulk/models</text><text x="574" y="528.2" class="sm" text-anchor="start" >(HDD, 읽기 전용)</text><rect x="25" y="586" width="780" height="190" rx="10" class="ns" /><rect x="32.0" y="579.0" width="236.0" height="19.0" rx="4" class="lbg"/><text x="37" y="592" class="alb" text-anchor="start" >rag-data  — 상태 저장 (StatefulSet)</text><rect x="38" y="608" width="245" height="96" rx="8" class="data" /><text x="50" y="637.5" class="t" text-anchor="start" >postgresql-0</text><text x="50" y="654.7" class="m" text-anchor="start" >:5432 · PostgreSQL 16</text><text x="50" y="670.7" class="sm" text-anchor="start" >CPU 1 (요청)</text><text x="50" y="686.7" class="sm" text-anchor="start" >MEM 2Gi (요청)</text><rect x="38" y="714" width="245" height="46" rx="6" class="lane" /><text x="160.5" y="733.2" class="sm" text-anchor="middle" >PVC 20Gi · local-fast</text><text x="160.5" y="749.2" class="m" text-anchor="middle" >→ NVMe 512GB /data/fast</text><path d="M160,704 L160,711" class="ar-g" marker-end="url(#f3-a-g)"/><rect x="293" y="608" width="245" height="96" rx="8" class="data" /><text x="305" y="637.5" class="t" text-anchor="start" >qdrant-0</text><text x="305" y="654.7" class="m" text-anchor="start" >:6333 · Qdrant 1.12</text><text x="305" y="670.7" class="sm" text-anchor="start" >CPU 2 (요청)</text><text x="305" y="686.7" class="sm" text-anchor="start" >MEM 8Gi (요청)</text><rect x="293" y="714" width="245" height="46" rx="6" class="lane" /><text x="415.5" y="733.2" class="sm" text-anchor="middle" >PVC 50Gi · local-fast</text><text x="415.5" y="749.2" class="m" text-anchor="middle" >→ NVMe 512GB /data/fast</text><path d="M415,704 L415,711" class="ar-g" marker-end="url(#f3-a-g)"/><rect x="548" y="608" width="245" height="96" rx="8" class="data" /><text x="560" y="637.5" class="t" text-anchor="start" >redis-0</text><text x="560" y="654.7" class="m" text-anchor="start" >:6379 · Redis 7</text><text x="560" y="670.7" class="sm" text-anchor="start" >CPU 500m (요청)</text><text x="560" y="686.7" class="sm" text-anchor="start" >MEM 1Gi (요청)</text><rect x="548" y="714" width="245" height="46" rx="6" class="lane" /><text x="670.5" y="733.2" class="sm" text-anchor="middle" >PVC 10Gi · local-fast</text><text x="670.5" y="749.2" class="m" text-anchor="middle" >→ NVMe 512GB /data/fast</text><path d="M670,704 L670,711" class="ar-g" marker-end="url(#f3-a-g)"/><rect x="25" y="792" width="780" height="118" rx="10" class="ns" /><rect x="32.0" y="785.0" width="286.1" height="19.0" rx="4" class="lbg"/><text x="37" y="798" class="alb" text-anchor="start" >rag-ingestion  — 문서 색인 (필요할 때만 생성)</text><rect x="38" y="814" width="300" height="82" rx="8" class="work" stroke-dasharray="6 4"/><text x="50" y="844.5" class="t" text-anchor="start" >index-job-xxxxx</text><text x="50" y="861.7" class="m" text-anchor="start" >parser-indexer · K8s Job</text><text x="50" y="877.7" class="sm" text-anchor="start" >CPU 250m / 2 · MEM 512Mi / 8Gi</text><rect x="350" y="814" width="440" height="82" rx="8" class="note" /><text x="362" y="843.2" class="sm" text-anchor="start" >업로드하면 admin-api 가 K8s API 로 Job 을 만든다</text><text x="362" y="859.2" class="sm" text-anchor="start" >동시에 1개만 색인 (INDEX_MAX_PARALLEL=1), 나머지는 대기</text><text x="362" y="875.2" class="sm" text-anchor="start" >문서 원본 hostPath /data/bulk/documents · 완료 1시간 뒤 자동 삭제</text><rect x="25" y="926" width="780" height="90" rx="10" class="ns" /><rect x="32.0" y="919.0" width="196.7" height="19.0" rx="4" class="lbg"/><text x="37" y="932" class="alb" text-anchor="start" >기타 — 스토리지·GPU·레지스트리</text><rect x="38" y="954" width="240" height="40" rx="6" class="infra" /><text x="158.0" y="978.2" class="sm" text-anchor="middle" >local-path-provisioner (fast·bulk)</text><rect x="288" y="954" width="240" height="40" rx="6" class="infra" /><text x="408.0" y="978.2" class="sm" text-anchor="middle" >gpu-operator (NFD·device-plugin·DCGM)</text><rect x="538" y="954" width="252" height="40" rx="6" class="off" /><text x="664.0" y="978.2" class="sm" text-anchor="middle" >registry:2 :5000 (Docker, K8s 밖)</text><rect x="855" y="60" width="340" height="76" rx="10" class="ns" /><rect x="862.0" y="53.0" width="86.6" height="19.0" rx="4" class="lbg"/><text x="867" y="66" class="alb" text-anchor="start" >kube-system</text><rect x="868" y="84" width="150" height="34" rx="6" class="infra" /><text x="943.0" y="105.2" class="sm" text-anchor="middle" >ingress-nginx :80/:443</text><rect x="1028" y="84" width="150" height="34" rx="6" class="infra" /><text x="1103.0" y="105.2" class="sm" text-anchor="middle" >canal (CNI)</text><rect x="855" y="152" width="340" height="418" rx="10" class="ns" /><rect x="862.0" y="145.0" width="135.3" height="19.0" rx="4" class="lbg"/><text x="867" y="158" class="alb" text-anchor="start" >rag-ai  — LLM (GPU)</text><rect x="870" y="176" width="310" height="280" rx="8" class="gpu" /><text x="882" y="245.5" class="tl" text-anchor="start" >vllm-llm-0</text><text x="882" y="263.2" class="m" text-anchor="start" >:8000 · Service vllm-service</text><text x="882" y="280.3" class="s" text-anchor="start" >OpenAI 호환 API (vLLM)</text><text x="882" y="297.8" class="s" text-anchor="start" >모델 Qwen3.8-27B-FP8</text><text x="882" y="314.2" class="m" text-anchor="start" >served: internal-rag-llm</text><text x="882" y="331.3" class="s" text-anchor="start" >GPU 1장 (GB10) · 사용률 상한 0.90</text><text x="882" y="348.8" class="s" text-anchor="start" >CPU 8 · MEM 32Gi (요청)</text><text x="882" y="366.3" class="s" text-anchor="start" >컨텍스트 16,384 토큰 · 동시 8건</text><text x="882" y="383.8" class="s" text-anchor="start" >/dev/shm 8Gi (메모리)</text><text x="882" y="400.2" class="m" text-anchor="start" >hostPath /home/&lt;user&gt;/models</text><rect x="870" y="470" width="310" height="86" rx="8" class="note" /><text x="882" y="493.2" class="alb" text-anchor="start" >배치 규칙</text><text x="882" y="509.2" class="sm" text-anchor="start" >nodeSelector ragplatform.io/tier=llm</text><text x="882" y="525.2" class="sm" text-anchor="start" >toleration dedicated=llm</text><text x="882" y="541.2" class="sm" text-anchor="start" >→ PGX 에만 뜨고, 다른 Pod 은 PGX 에 못 뜬다</text><rect x="855" y="586" width="340" height="190" rx="10" class="ns" /><rect x="862.0" y="579.0" width="93.5" height="19.0" rx="4" class="lbg"/><text x="867" y="592" class="alb" text-anchor="start" >gpu-operator</text><rect x="868" y="612" width="150" height="34" rx="6" class="infra" /><text x="943.0" y="633.2" class="sm" text-anchor="middle" >nvidia-device-plugin</text><rect x="1028" y="612" width="150" height="34" rx="6" class="infra" /><text x="1103.0" y="633.2" class="sm" text-anchor="middle" >container-toolkit</text><rect x="868" y="660" width="150" height="34" rx="6" class="infra" /><text x="943.0" y="681.2" class="sm" text-anchor="middle" >dcgm-exporter</text><rect x="1028" y="660" width="150" height="34" rx="6" class="infra" /><text x="1103.0" y="681.2" class="sm" text-anchor="middle" >gpu-feature-discovery</text><rect x="868" y="708" width="150" height="34" rx="6" class="infra" /><text x="943.0" y="729.2" class="sm" text-anchor="middle" >node-feature-discovery</text><rect x="1028" y="708" width="150" height="34" rx="6" class="infra" /><text x="1103.0" y="729.2" class="sm" text-anchor="middle" >operator-validator</text><rect x="855" y="792" width="340" height="224" rx="10" class="lane" /><text x="870" y="818" class="lbl" text-anchor="start" >범례</text><rect x="872" y="834" width="26" height="20" rx="4" class="web" /><text x="906" y="849" class="sm" text-anchor="start" >화면 (프런트엔드)</text><rect x="1032" y="834" width="26" height="20" rx="4" class="api" /><text x="1066" y="849" class="sm" text-anchor="start" >API 서버</text><rect x="872" y="868" width="26" height="20" rx="4" class="work" /><text x="906" y="883" class="sm" text-anchor="start" >백그라운드 작업</text><rect x="1032" y="868" width="26" height="20" rx="4" class="ai" /><text x="1066" y="883" class="sm" text-anchor="start" >AI 모델 (CPU)</text><rect x="872" y="902" width="26" height="20" rx="4" class="gpu" /><text x="906" y="917" class="sm" text-anchor="start" >AI 모델 (GPU)</text><rect x="1032" y="902" width="26" height="20" rx="4" class="data" /><text x="1066" y="917" class="sm" text-anchor="start" >데이터 저장</text><rect x="872" y="936" width="26" height="20" rx="4" class="note" /><text x="906" y="951" class="sm" text-anchor="start" >규칙·설명</text><text x="870" y="990" class="sm" text-anchor="start" >CPU/MEM 표기: 요청(request) / 상한(limit)</text><text x="870" y="1006" class="sm" text-anchor="start" >점선 상자: 필요할 때만 생기는 Pod</text></svg><figcaption>그림 4. 노드·네임스페이스별 Pod, 포트, CPU·메모리(요청/상한), 볼륨. <a href="architecture/03-k8s-pods.png">PNG</a> · <a href="architecture/03-k8s-pods.svg">SVG</a></figcaption></figure>
+  <div class="tw"><table>
+    <tr><th>네임스페이스</th><th>워크로드</th><th>종류 · 개수</th><th>Service</th><th>저장소</th></tr>
+    <tr><td>rag-app</td><td>chat-web · chat-gateway · admin-web · admin-api · rag-api</td><td>Deployment ×1</td><td>:3000 · :8001 · :8080 · :8003 · :8002</td><td>admin-api: 문서 hostPath(RW), Secret 파일 마운트</td></tr>
+    <tr><td>rag-app</td><td>rag-worker</td><td>Deployment ×2</td><td>—</td><td>—</td></tr>
+    <tr><td>rag-ai</td><td>embedding-api · reranker-api</td><td>Deployment ×1</td><td>:8004 · :8005</td><td>모델 hostPath <code>/data/bulk/models</code>(RO)</td></tr>
+    <tr><td>rag-ai</td><td>vllm-llm-0 (PGX)</td><td>Deployment ×1, GPU 1</td><td>vllm-service :8000</td><td>모델 hostPath(RO), <code>/dev/shm</code> 8Gi</td></tr>
+    <tr><td>rag-data</td><td>postgresql · qdrant · redis</td><td>StatefulSet ×1</td><td>:5432 · :6333 · :6379</td><td>PVC 20/50/10Gi (local-fast)</td></tr>
+    <tr><td>rag-ingestion</td><td>index-job-* (parser-indexer)</td><td>Job, 업로드마다</td><td>—</td><td>문서 hostPath(RO), 모델 hostPath</td></tr>
+  </table></div>
+  <ul class="compact">
+    <li>모든 컨테이너는 비루트(uid 10001)로 실행하고, Secret(JWT 키·비밀번호 pepper·피드백 서명키)은 필요한 Pod에 필요한 키만 파일로 마운트합니다.</li>
+    <li>DB 마이그레이션은 <code>helm upgrade</code> 때 Alembic hook Job(<code>rag-db-migrate</code>)이 수행합니다.</li>
+  </ul>
+</section>
+
+<section id="software">
+  <h2>5. 소프트웨어 아키텍처 <small>계층과 구성요소</small></h2>
+  <p class="lead">브라우저 요청은 ingress-nginx를 거쳐 화면(정적)과 API로 나뉩니다. 오래 걸리는 RAG 처리는 API가 직접 하지 않고 큐(Redis)에 넣어 worker가 처리합니다 — 질문 접수는 1초 안에, 답변은 그 뒤 스트리밍으로.</p>
+  <figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 960" width="1220" height="960" role="img" aria-label="소프트웨어 아키텍처 — 계층별 구성요소와 호출 관계"><title>소프트웨어 아키텍처 — 계층별 구성요소와 호출 관계</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f4-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f4-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f4-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f4-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f4-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f4-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f4-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f4-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f4-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f4-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f4-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f4-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f4-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f4-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1220" height="960" fill="#ffffff" stroke="none"/><rect x="10" y="18" width="112" height="62" rx="8" class="lane" /><text x="66.0" y="53.7" class="lbl" text-anchor="middle" >클라이언트</text><rect x="10" y="104" width="112" height="70" rx="8" class="lane" /><text x="66.0" y="143.7" class="lbl" text-anchor="middle" >진입</text><rect x="10" y="200" width="112" height="84" rx="8" class="lane" /><text x="66.0" y="246.7" class="lbl" text-anchor="middle" >화면</text><rect x="10" y="318" width="112" height="100" rx="8" class="lane" /><text x="66.0" y="372.7" class="lbl" text-anchor="middle" >API</text><rect x="10" y="452" width="112" height="100" rx="8" class="lane" /><text x="66.0" y="506.7" class="lbl" text-anchor="middle" >비동기 처리</text><rect x="10" y="586" width="112" height="100" rx="8" class="lane" /><text x="66.0" y="640.7" class="lbl" text-anchor="middle" >AI 모델</text><rect x="10" y="720" width="112" height="100" rx="8" class="lane" /><text x="66.0" y="774.7" class="lbl" text-anchor="middle" >데이터</text><rect x="10" y="856" width="112" height="84" rx="8" class="lane" /><text x="66.0" y="902.7" class="lbl" text-anchor="middle" >공유 라이브러리</text><rect x="205" y="18" width="300" height="62" rx="10" class="user" /><text x="355.0" y="46.5" class="t" text-anchor="middle" >사용자 브라우저</text><text x="355.0" y="63.7" class="m" text-anchor="middle" >https://chat.rag.lab.local</text><rect x="800" y="18" width="300" height="62" rx="10" class="user" /><text x="950.0" y="46.5" class="t" text-anchor="middle" >관리자 브라우저</text><text x="950.0" y="63.7" class="m" text-anchor="middle" >https://rag.lab.local</text><rect x="140" y="102" width="1070" height="74" rx="10" class="infra" /><text x="675.0" y="128.5" class="t" text-anchor="middle" >ingress-nginx (RKE2 내장, TLS 종료)</text><text x="675.0" y="145.7" class="m" text-anchor="middle" >chat.rag.lab.local : / → chat-web · /api/v1, /ws → chat-gateway (업로드 1MB)</text><text x="675.0" y="161.7" class="m" text-anchor="middle" >rag.lab.local : / → admin-web · /api → admin-api (업로드 110MB)</text><path d="M355,80 L355,101" class="ar" marker-end="url(#f4-a)"/><path d="M950,80 L950,101" class="ar" marker-end="url(#f4-a)"/><rect x="260" y="200" width="300" height="84" rx="10" class="web" /><text x="410.0" y="230.7" class="t" text-anchor="middle" >chat-web</text><text x="410.0" y="249.1" class="s" text-anchor="middle" >Next.js 15 · React 19 · zustand</text><text x="410.0" y="265.4" class="sm" text-anchor="middle" >socket.io-client · 비밀번호 prehash(PBKDF2)</text><rect x="800" y="200" width="300" height="84" rx="10" class="web" /><text x="950.0" y="230.7" class="t" text-anchor="middle" >admin-web</text><text x="950.0" y="249.1" class="s" text-anchor="middle" >React 18 · Vite · antd</text><text x="950.0" y="265.4" class="sm" text-anchor="middle" >React Query · nginx 정적 서빙</text><path d="M355,174 L355,197" class="ar" marker-end="url(#f4-a)"/><path d="M950,174 L950,197" class="ar" marker-end="url(#f4-a)"/><rect x="140" y="318" width="360" height="100" rx="10" class="api" /><text x="320.0" y="348.7" class="t" text-anchor="middle" >chat-gateway</text><text x="320.0" y="367.1" class="s" text-anchor="middle" >FastAPI REST + python-socketio (/ws)</text><text x="320.0" y="383.4" class="sm" text-anchor="middle" >로그인(JWT·scrypt+pepper) · 채널 · 질문 · 피드백</text><text x="320.0" y="399.4" class="sm" text-anchor="middle" >채널 멤버만 접근 (비멤버 = 404)</text><rect x="520" y="318" width="220" height="100" rx="10" class="api" /><text x="630.0" y="348.7" class="t" text-anchor="middle" >rag-api</text><text x="630.0" y="367.1" class="s" text-anchor="middle" >FastAPI · 동기 RAG</text><text x="630.0" y="383.4" class="sm" text-anchor="middle" >평가 도구·내부 점검용</text><text x="630.0" y="399.4" class="sm" text-anchor="middle" >(채팅 경로는 worker)</text><rect x="760" y="318" width="450" height="100" rx="10" class="api" /><text x="985.0" y="348.7" class="t" text-anchor="middle" >admin-api</text><text x="985.0" y="367.1" class="s" text-anchor="middle" >FastAPI · 문서·ACL·채널·사용자·설정·감사 로그</text><text x="985.0" y="383.4" class="sm" text-anchor="middle" >색인 Job 생성(K8s API) · 원본 미리보기 · Alembic 마이그레이션</text><text x="985.0" y="399.4" class="sm" text-anchor="middle" >역할: SYS_ADMIN · DOC_ADMIN · QUALITY_EVALUATOR · AUDITOR</text><path d="M150,174 L150,315" class="ar-b" marker-end="url(#f4-a-b)"/><rect x="151.0" y="237.0" width="94.5" height="19.0" rx="4" class="lbg"/><text x="156" y="250" class="al" text-anchor="start" >/api/v1 · /ws</text><path d="M1180,174 L1180,315" class="ar-b" marker-end="url(#f4-a-b)"/><rect x="1141.2" y="237.0" width="37.8" height="19.0" rx="4" class="lbg"/><text x="1174" y="250" class="al" text-anchor="end" >/api</text><rect x="140" y="452" width="440" height="100" rx="10" class="work" /><text x="360.0" y="482.7" class="t" text-anchor="middle" >rag-worker ×2  (RQ worker)</text><text x="360.0" y="501.1" class="s" text-anchor="middle" >임베딩 → 검색(채널 필터) → 재정렬 → LLM 스트리밍</text><text x="360.0" y="517.4" class="sm" text-anchor="middle" >claim_job 으로 중복 실행 방지 · 동시 8건</text><text x="360.0" y="533.4" class="sm" text-anchor="middle" >토큰을 socket.io 로 직접 발행 (Redis 경유)</text><rect x="760" y="452" width="450" height="100" rx="10" class="work" /><text x="985.0" y="482.7" class="t" text-anchor="middle" >parser-indexer  (K8s Job)</text><text x="985.0" y="501.1" class="s" text-anchor="middle" >파싱(PyMuPDF·pdfplumber) → 청크 → 임베딩</text><text x="985.0" y="517.4" class="sm" text-anchor="middle" >→ Qdrant 저장 → 검증 → 새 버전 활성화</text><text x="985.0" y="533.4" class="sm" text-anchor="middle" >동시 1개 · 진행률을 index_jobs 에 기록</text><rect x="140" y="586" width="300" height="100" rx="10" class="ai" /><text x="290.0" y="616.7" class="t" text-anchor="middle" >embedding-api</text><text x="290.0" y="635.0" class="s" text-anchor="middle" >KURE-v1 (bge-m3 한국어 미세조정)</text><text x="290.0" y="651.4" class="sm" text-anchor="middle" >1024차원 · CPU · 최대 2048 토큰</text><text x="290.0" y="667.4" class="m" text-anchor="middle" >사용: worker · indexer</text><rect x="460" y="586" width="280" height="100" rx="10" class="ai" /><text x="600.0" y="616.7" class="t" text-anchor="middle" >reranker-api</text><text x="600.0" y="635.0" class="s" text-anchor="middle" >bge-reranker-v2-m3</text><text x="600.0" y="651.4" class="sm" text-anchor="middle" >후보 12개 재정렬 · CPU · 512 토큰</text><text x="600.0" y="667.4" class="m" text-anchor="middle" >사용: worker</text><rect x="760" y="586" width="450" height="100" rx="10" class="gpu" /><text x="985.0" y="608.7" class="t" text-anchor="middle" >vLLM  (PGX · GB10 GPU)</text><text x="985.0" y="627.0" class="s" text-anchor="middle" >OpenAI 호환 /v1/chat/completions · stream</text><text x="985.0" y="643.4" class="sm" text-anchor="middle" >Qwen3.8-27B-FP8 · served name internal-rag-llm</text><text x="985.0" y="659.4" class="sm" text-anchor="middle" >컨텍스트 16K · 동시 8건 · reasoning-parser qwen3</text><text x="985.0" y="675.4" class="m" text-anchor="middle" >사용: worker · rag-api</text><rect x="140" y="720" width="250" height="100" rx="10" class="data" /><text x="265.0" y="751.5" class="t" text-anchor="middle" >PostgreSQL 16</text><text x="265.0" y="768.7" class="sm" text-anchor="middle" >사용자·채널·멤버·대화(Post)</text><text x="265.0" y="784.7" class="sm" text-anchor="middle" >문서 메타·버전·ACL·색인 Job</text><text x="265.0" y="800.7" class="m" text-anchor="middle" >사용: gateway·worker·admin</text><rect x="410" y="720" width="230" height="100" rx="10" class="data" /><text x="525.0" y="751.5" class="t" text-anchor="middle" >Redis 7</text><text x="525.0" y="768.7" class="sm" text-anchor="middle" >RQ 작업 큐 (rag-chat)</text><text x="525.0" y="784.7" class="sm" text-anchor="middle" >socket.io pub/sub · rate limit</text><text x="525.0" y="800.7" class="m" text-anchor="middle" >사용: gateway · worker</text><rect x="660" y="720" width="270" height="100" rx="10" class="data" /><text x="795.0" y="751.5" class="t" text-anchor="middle" >Qdrant 1.12</text><text x="795.0" y="768.7" class="sm" text-anchor="middle" >rag_chunks_v1 (1024차원)</text><text x="795.0" y="784.7" class="sm" text-anchor="middle" >payload: 채널 ACL · is_active</text><text x="795.0" y="800.7" class="m" text-anchor="middle" >사용: worker·indexer·admin</text><rect x="950" y="720" width="260" height="100" rx="10" class="data" /><text x="1080.0" y="751.5" class="t" text-anchor="middle" >문서 원본 파일</text><text x="1080.0" y="768.7" class="m" text-anchor="middle" >/data/bulk/documents</text><text x="1080.0" y="784.7" class="sm" text-anchor="middle" >hostPath (P3 HDD)</text><text x="1080.0" y="800.7" class="m" text-anchor="middle" >사용: admin(쓰기)·indexer</text><rect x="140" y="856" width="1070" height="84" rx="10" class="lane" /><text x="675.0" y="895.5" class="t" text-anchor="middle" >libs/* (uv workspace — 서비스 간 공유는 여기로만)</text><text x="675.0" y="912.7" class="m" text-anchor="middle" >rag_schemas (계약 SSOT)  ·  rag_common (JWT·비밀번호·재시도)  ·  rag_observability (structlog·Prometheus·마스킹)  ·  chat_adapter (답변 렌더·피드백 토큰·스트림)</text><path d="M250,552 L250,583" class="ar-v" marker-end="url(#f4-a-v)"/><path d="M520,552 L520,583" class="ar-v" marker-end="url(#f4-a-v)"/><path d="M580,530 C700,530 790,545 790,583" class="ar-v" marker-end="url(#f4-a-v)"/><rect x="642.6" y="511.0" width="58.8" height="19.0" rx="4" class="lbg"/><text x="672" y="524" class="al" text-anchor="middle" >LLM 호출</text><path d="M985,418 L985,449" class="ar-t" marker-end="url(#f4-a-t)"/><rect x="986.0" y="427.0" width="58.8" height="19.0" rx="4" class="lbg"/><text x="991" y="440" class="al" text-anchor="start" >Job 생성</text></svg><figcaption>그림 5. 계층별 구성. 상자 아래 "사용:" 줄은 그 구성요소를 호출하는 서비스. <a href="architecture/04-software.png">PNG</a> · <a href="architecture/04-software.svg">SVG</a></figcaption></figure>
+  <div class="tw"><table>
+    <tr><th>구분</th><th>기술</th></tr>
+    <tr><td>백엔드</td><td>Python 3.12 · FastAPI · python-socketio · SQLAlchemy 2 + Alembic · RQ · structlog · Prometheus client (uv workspace 모노레포)</td></tr>
+    <tr><td>프런트엔드</td><td>chat-web: Next.js 15 · React 19 · TanStack Query · zustand / admin-web: React 18 · Vite · antd</td></tr>
+    <tr><td>AI</td><td>vLLM (OpenAI 호환) · Qwen3.8-27B-FP8 · KURE-v1 임베딩 · bge-reranker-v2-m3 · FlagEmbedding</td></tr>
+    <tr><td>데이터</td><td>PostgreSQL 16 · Redis 7 · Qdrant 1.12</td></tr>
+    <tr><td>인프라</td><td>RKE2 v1.34 · containerd · Canal(CNI) · ingress-nginx · local-path-provisioner · NVIDIA GPU Operator · Helm</td></tr>
+  </table></div>
+  <h3>설계 원칙 (요약)</h3>
+  <ul class="compact">
+    <li><b>폐쇄망</b>: 실행 중 외부 네트워크 호출 없음 — 모델·패키지·폰트 모두 미리 반입, 로컬 경로에서만 로딩.</li>
+    <li><b>계약 한 곳</b>: 서비스 간 데이터 형식은 <code>libs/schemas</code>(rag_schemas)에서만 정의. 앱끼리 직접 import 금지.</li>
+    <li><b>보안 기본값</b>: 비밀번호 원문은 서버로 오지 않음(브라우저에서 PBKDF2 prehash). Secret 파일이 없으면 기동은 하되 로그인·피드백을 거부(fail-closed).</li>
+    <li><b>중복 방지</b>: worker는 <code>claim_job</code>(QUEUED→RUNNING 원자 전이)에 성공한 작업만 처리 — 같은 답변이 두 번 쓰이지 않음.</li>
+  </ul>
+</section>
+
+<section id="sequence">
+  <h2>6. 질문 한 건의 처리 순서</h2>
+  <p class="lead">사용자가 [전송]을 누른 순간부터 답변이 확정될 때까지의 흐름입니다. ①~④가 "접수", ⑤~⑯이 "백그라운드 처리"입니다.</p>
+  <figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 960" width="1240" height="960" role="img" aria-label="질문 한 건이 처리되는 순서"><title>질문 한 건이 처리되는 순서</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f5-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f5-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f5-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f5-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f5-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f5-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f5-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f5-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f5-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f5-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f5-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f5-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f5-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f5-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1240" height="960" fill="#ffffff" stroke="none"/><rect x="18" y="16" width="124" height="56" rx="8" class="user" /><text x="80.0" y="41.5" class="t" text-anchor="middle" >브라우저</text><text x="80.0" y="58.7" class="m" text-anchor="middle" >chat-web</text><line x1="80" y1="72" x2="80" y2="850" class="life"/><rect x="153" y="16" width="124" height="56" rx="8" class="api" /><text x="215.0" y="49.5" class="t" text-anchor="middle" >chat-gateway</text><line x1="215" y1="72" x2="215" y2="850" class="life"/><rect x="288" y="16" width="124" height="56" rx="8" class="data" /><text x="350.0" y="49.5" class="t" text-anchor="middle" >PostgreSQL</text><line x1="350" y1="72" x2="350" y2="850" class="life"/><rect x="423" y="16" width="124" height="56" rx="8" class="data" /><text x="485.0" y="41.5" class="t" text-anchor="middle" >Redis</text><text x="485.0" y="58.7" class="m" text-anchor="middle" >큐·pub/sub</text><line x1="485" y1="72" x2="485" y2="850" class="life"/><rect x="558" y="16" width="124" height="56" rx="8" class="work" /><text x="620.0" y="49.5" class="t" text-anchor="middle" >rag-worker</text><line x1="620" y1="72" x2="620" y2="850" class="life"/><rect x="693" y="16" width="124" height="56" rx="8" class="ai" /><text x="755.0" y="49.5" class="t" text-anchor="middle" >embedding-api</text><line x1="755" y1="72" x2="755" y2="850" class="life"/><rect x="828" y="16" width="124" height="56" rx="8" class="data" /><text x="890.0" y="49.5" class="t" text-anchor="middle" >Qdrant</text><line x1="890" y1="72" x2="890" y2="850" class="life"/><rect x="963" y="16" width="124" height="56" rx="8" class="ai" /><text x="1025.0" y="49.5" class="t" text-anchor="middle" >reranker-api</text><line x1="1025" y1="72" x2="1025" y2="850" class="life"/><rect x="1098" y="16" width="124" height="56" rx="8" class="gpu" /><text x="1160.0" y="41.5" class="t" text-anchor="middle" >vLLM</text><text x="1160.0" y="58.7" class="m" text-anchor="middle" >PGX GPU</text><line x1="1160" y1="72" x2="1160" y2="850" class="life"/><rect x="613" y="290" width="14" height="480" rx="3" class="work" /><path d="M80,120 L211,120" class="ar-b" marker-end="url(#f5-a-b)"/><rect x="83.0" y="99.0" width="246.9" height="19.0" rx="4" class="lbg"/><text x="88" y="112" class="al" text-anchor="start" >① 질문 전송  POST /api/v1/posts (JWT)</text><path d="M215,166 L346,166" class="ar-t" marker-end="url(#f5-a-t)"/><rect x="218.0" y="145.0" width="244.6" height="19.0" rx="4" class="lbg"/><text x="223" y="158" class="al" text-anchor="start" >② 질문·답변 자리·작업 저장 (1 트랜잭션)</text><path d="M215,212 L481,212" class="ar-t" marker-end="url(#f5-a-t)"/><rect x="274.7" y="191.0" width="150.6" height="19.0" rx="4" class="lbg"/><text x="350.0" y="204" class="al" text-anchor="middle" >③ 요청 보관 + RQ 큐 등록</text><path d="M215,258 L84,258" class="ar-t dash" marker-end="url(#f5-a-t)"/><rect x="83.0" y="237.0" width="238.0" height="19.0" rx="4" class="lbg"/><text x="88" y="250" class="al" text-anchor="start" >④ 201 응답 + post.created (1초 이내)</text><path d="M485,304 L616,304" class="ar-v dash" marker-end="url(#f5-a-v)"/><rect x="513.5" y="283.0" width="77.9" height="19.0" rx="4" class="lbg"/><text x="552.5" y="296" class="al" text-anchor="middle" >⑤ 작업 꺼냄</text><path d="M612,350 L354,350" class="ar-v" marker-end="url(#f5-a-v)"/><rect x="331.2" y="329.0" width="279.8" height="19.0" rx="4" class="lbg"/><text x="606" y="342" class="al" text-anchor="end" >⑥ claim_job: QUEUED → RUNNING (중복 방지)</text><path d="M628,396 L751,396" class="ar-v" marker-end="url(#f5-a-v)"/><rect x="627.0" y="375.0" width="146.6" height="19.0" rx="4" class="lbg"/><text x="632" y="388" class="al" text-anchor="start" >⑦ 질문 → 벡터 (query)</text><path d="M628,442 L886,442" class="ar-v" marker-end="url(#f5-a-v)"/><rect x="627.0" y="421.0" width="202.6" height="19.0" rx="4" class="lbg"/><text x="632" y="434" class="al" text-anchor="start" >⑧ 벡터 검색 상위 12개 + 채널 필터</text><path d="M628,488 L1021,488" class="ar-v" marker-end="url(#f5-a-v)"/><rect x="627.0" y="467.0" width="269.6" height="19.0" rx="4" class="lbg"/><text x="632" y="480" class="al" text-anchor="start" >⑨ 관련도 재정렬 (45초 넘으면 검색 순서 사용)</text><path d="M628,534 L1156,534" class="ar-v" marker-end="url(#f5-a-v)"/><rect x="627.0" y="513.0" width="230.3" height="19.0" rx="4" class="lbg"/><text x="632" y="526" class="al" text-anchor="start" >⑩ 근거를 넣어 답변 요청  stream=True</text><path d="M1160,580 L632,580" class="ar-r dash" marker-end="url(#f5-a-r)"/><rect x="627.0" y="559.0" width="169.8" height="19.0" rx="4" class="lbg"/><text x="632" y="572" class="al" text-anchor="start" >⑪ 토큰이 생성되는 대로 전송</text><path d="M612,626 L489,626" class="ar-v" marker-end="url(#f5-a-v)"/><rect x="445.7" y="605.0" width="165.3" height="19.0" rx="4" class="lbg"/><text x="606" y="618" class="al" text-anchor="end" >⑫ llm.stream.delta 발행</text><path d="M485,672 L219,672" class="ar-o dash" marker-end="url(#f5-a-o)"/><rect x="245.0" y="651.0" width="210.0" height="19.0" rx="4" class="lbg"/><text x="350.0" y="664" class="al" text-anchor="middle" >⑬ Redis pub/sub → 모든 gateway</text><path d="M215,718 L84,718" class="ar-o" marker-end="url(#f5-a-o)"/><rect x="83.0" y="697.0" width="231.5" height="19.0" rx="4" class="lbg"/><text x="88" y="710" class="al" text-anchor="start" >⑭ 채널 방(room) 멤버 화면에 글자 표시</text><path d="M612,764 L354,764" class="ar-v" marker-end="url(#f5-a-v)"/><rect x="383.6" y="743.0" width="227.4" height="19.0" rx="4" class="lbg"/><text x="606" y="756" class="al" text-anchor="end" >⑮ 최종 답변 + 근거 표 저장, 작업 DONE</text><path d="M612,810 L84,810" class="ar-o dash" marker-end="url(#f5-a-o)"/><rect x="128.5" y="789.0" width="443.0" height="19.0" rx="4" class="lbg"/><text x="350.0" y="802" class="al" text-anchor="middle" >⑯ post.updated + llm.stream.end → 화면 확정 (Redis → gateway 경유)</text><rect x="640" y="846" width="570" height="82" rx="8" class="note" /><text x="652" y="867.2" class="alb" text-anchor="start" >체감 시간 (랩 기준)</text><text x="652" y="883.2" class="sm" text-anchor="start" >① ~ ④ 접수: 1초 이내 · ⑦ ~ ⑨ 검색·재정렬: 수 초 (CPU)</text><text x="652" y="899.2" class="sm" text-anchor="start" >⑩ ~ ⑭ 답변 생성: 답변 길이에 따라 수십 초 — 그동안 글자가 계속 나타남</text><text x="652" y="915.2" class="sm" text-anchor="start" >⑫ 토큰은 50ms 또는 64자 단위로 묶어 발행 (화면 부하 감소)</text></svg><figcaption>그림 6. 시퀀스 다이어그램 — 세로선은 각 구성요소, 가로 화살표는 호출(점선은 응답·전달). <a href="architecture/05-question-sequence.png">PNG</a> · <a href="architecture/05-question-sequence.svg">SVG</a></figcaption></figure>
+  <ul class="compact">
+    <li>gateway가 여러 개여도 Redis pub/sub으로 모든 gateway에 이벤트가 전달되므로, 어느 gateway에 접속했든 같은 채널 화면에 글자가 나타납니다.</li>
+    <li>리랭커가 느리면(45초 초과) 벡터 검색 순서로 대체해 답변을 계속합니다(로그 <code>worker.rerank_fallback</code>).</li>
+    <li>답변의 최종 원본은 PostgreSQL의 Bot Post입니다. 스트리밍 글자는 화면 표시용(유실돼도 최종 저장본으로 확정).</li>
+  </ul>
+</section>
+
+<section id="indexing">
+  <h2>7. 문서 색인 파이프라인</h2>
+  <p class="lead">문서를 올린 뒤 검색에 쓰이기까지의 과정입니다. 무거운 작업이라 서비스와 분리된 일회성 K8s Job으로 실행하고, 한 번에 하나씩 처리합니다.</p>
+  <figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 640" width="1220" height="640" role="img" aria-label="문서 한 건이 검색 가능해지기까지 (색인 파이프라인)"><title>문서 한 건이 검색 가능해지기까지 (색인 파이프라인)</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f6-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f6-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f6-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f6-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f6-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f6-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f6-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f6-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f6-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f6-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f6-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f6-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f6-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f6-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1220" height="640" fill="#ffffff" stroke="none"/><rect x="20" y="30" width="200" height="84" rx="10" class="web" /><text x="120.0" y="60.7" class="t" text-anchor="middle" >admin-web</text><text x="120.0" y="79.0" class="s" text-anchor="middle" >문서 업로드</text><text x="120.0" y="95.4" class="sm" text-anchor="middle" >최대 10개 · 합계 100MB</text><rect x="290" y="30" width="290" height="84" rx="10" class="api" /><text x="435.0" y="61.5" class="t" text-anchor="middle" >admin-api</text><text x="435.0" y="78.7" class="sm" text-anchor="middle" >확장자·크기·중복(sha256) 검사</text><text x="435.0" y="94.7" class="sm" text-anchor="middle" >POST /documents · /documents/batch</text><rect x="650" y="30" width="240" height="84" rx="10" class="infra" /><text x="770.0" y="69.5" class="t" text-anchor="middle" >kube-apiserver</text><text x="770.0" y="86.7" class="sm" text-anchor="middle" >Job 생성 (ServiceAccount·RBAC)</text><rect x="960" y="30" width="240" height="84" rx="10" class="note" /><text x="972" y="60.2" class="alb" text-anchor="start" >rag-ingestion 네임스페이스</text><text x="972" y="76.2" class="sm" text-anchor="start" >index-job-xxxxx Pod 기동</text><text x="972" y="92.2" class="sm" text-anchor="start" >parser-indexer 이미지</text><path d="M220,72 L287,72" class="ar-b" marker-end="url(#f6-a-b)"/><path d="M580,72 L647,72" class="ar-t" marker-end="url(#f6-a-t)"/><path d="M890,72 L957,72" class="ar" marker-end="url(#f6-a)"/><rect x="200" y="160" width="230" height="70" rx="10" class="data" /><text x="315.0" y="192.5" class="t" text-anchor="middle" >원본 파일 저장</text><text x="315.0" y="209.7" class="m" text-anchor="middle" >/data/bulk/documents</text><rect x="450" y="160" width="340" height="70" rx="10" class="data" /><text x="620.0" y="192.5" class="t" text-anchor="middle" >PostgreSQL</text><text x="620.0" y="209.7" class="sm" text-anchor="middle" >documents · versions · 채널 ACL · index_jobs(PENDING)</text><path d="M370,114 L330,157" class="ar-t" marker-end="url(#f6-a-t)"/><path d="M500,114 L560,157" class="ar-t" marker-end="url(#f6-a-t)"/><rect x="20" y="270" width="1180" height="270" rx="14" class="node" /><text x="38" y="298" class="lbl" text-anchor="start" >index-job Pod (parser-indexer) — 단계와 진행률 (index_jobs.stage / progress)</text><path d="M1080,114 L1080,267" class="ar" marker-end="url(#f6-a)"/><rect x="40" y="316" width="172" height="120" rx="10" class="infra" /><text x="126.0" y="357.5" class="t" text-anchor="middle" >① 순서 대기</text><text x="126.0" y="374.7" class="m" text-anchor="middle" >WAITING · 0%</text><text x="126.0" y="390.7" class="sm" text-anchor="middle" >동시 색인 1개</text><text x="126.0" y="406.7" class="sm" text-anchor="middle" >앞 작업 끝나면 시작</text><rect x="234" y="316" width="172" height="120" rx="10" class="work" /><text x="320.0" y="357.5" class="t" text-anchor="middle" >② 파싱</text><text x="320.0" y="374.7" class="m" text-anchor="middle" >PARSING · 5%</text><text x="320.0" y="390.7" class="sm" text-anchor="middle" >본문·표 추출</text><text x="320.0" y="406.7" class="sm" text-anchor="middle" >PyMuPDF + pdfplumber</text><path d="M212,376 L231,376" class="ar" marker-end="url(#f6-a)"/><rect x="428" y="316" width="172" height="120" rx="10" class="work" /><text x="514.0" y="357.5" class="t" text-anchor="middle" >③ 조각내기</text><text x="514.0" y="374.7" class="m" text-anchor="middle" >CHUNKING · 25%</text><text x="514.0" y="390.7" class="sm" text-anchor="middle" >≈800 토큰 단위</text><text x="514.0" y="406.7" class="sm" text-anchor="middle" >문단·표 경계 유지</text><path d="M406,376 L425,376" class="ar" marker-end="url(#f6-a)"/><rect x="622" y="316" width="172" height="120" rx="10" class="ai" /><text x="708.0" y="357.5" class="t" text-anchor="middle" >④ 임베딩</text><text x="708.0" y="374.7" class="m" text-anchor="middle" >EMBEDDING · 45→70%</text><text x="708.0" y="390.7" class="sm" text-anchor="middle" >8개씩 묶어 벡터화</text><text x="708.0" y="406.7" class="sm" text-anchor="middle" >가장 오래 걸림 (CPU)</text><path d="M600,376 L619,376" class="ar" marker-end="url(#f6-a)"/><rect x="816" y="316" width="172" height="120" rx="10" class="data" /><text x="902.0" y="357.5" class="t" text-anchor="middle" >⑤ 저장</text><text x="902.0" y="374.7" class="m" text-anchor="middle" >UPSERTING · 70%</text><text x="902.0" y="390.7" class="sm" text-anchor="middle" >벡터 + 채널 ACL</text><text x="902.0" y="406.7" class="sm" text-anchor="middle" >payload 와 함께</text><path d="M794,376 L813,376" class="ar" marker-end="url(#f6-a)"/><rect x="1010" y="316" width="172" height="120" rx="10" class="data" /><text x="1096.0" y="357.5" class="t" text-anchor="middle" >⑥ 검증·활성화</text><text x="1096.0" y="374.7" class="m" text-anchor="middle" >VALIDATING · 85→100%</text><text x="1096.0" y="390.7" class="sm" text-anchor="middle" >개수 확인 후</text><text x="1096.0" y="406.7" class="sm" text-anchor="middle" >새 버전 공개</text><path d="M988,376 L1007,376" class="ar" marker-end="url(#f6-a)"/><rect x="244" y="476" width="152" height="40" rx="6" class="data" /><text x="320.0" y="500.2" class="sm" text-anchor="middle" >원본 파일 읽기</text><path d="M320.0,473 L320.0,439" class="ar dash" marker-end="url(#f6-a)"/><rect x="632" y="476" width="152" height="40" rx="6" class="ai" /><text x="708.0" y="500.2" class="sm" text-anchor="middle" >embedding-api</text><path d="M708.0,473 L708.0,439" class="ar dash" marker-end="url(#f6-a)"/><rect x="826" y="476" width="152" height="40" rx="6" class="data" /><text x="902.0" y="500.2" class="sm" text-anchor="middle" >Qdrant</text><path d="M902.0,473 L902.0,439" class="ar dash" marker-end="url(#f6-a)"/><rect x="1020" y="476" width="152" height="40" rx="6" class="data" /><text x="1096.0" y="500.2" class="sm" text-anchor="middle" >Qdrant · PostgreSQL</text><path d="M1096.0,473 L1096.0,439" class="ar dash" marker-end="url(#f6-a)"/><rect x="20" y="560" width="1180" height="66" rx="8" class="note" /><text x="32" y="589.2" class="alb" text-anchor="start" >참고 (랩 실측 2026-10-11)</text><text x="32" y="605.2" class="sm" text-anchor="start" >표가 많은 345쪽 PDF → 1,398 조각, 전체 ≈ 85분 중 임베딩이 ≈ 83분.  진행률은 admin-web &#x27;색인 작업&#x27; 화면에서 실시간으로 확인 (임베딩 단계는 10초마다 갱신).  실패하면 단계와 오류가 index_jobs 에 남고 [재시도] 가능.</text></svg><figcaption>그림 7. 업로드 → Job 생성 → 6단계 처리. <a href="architecture/06-indexing-pipeline.png">PNG</a> · <a href="architecture/06-indexing-pipeline.svg">SVG</a></figcaption></figure>
+  <ul class="compact">
+    <li>같은 내용(sha256)의 문서는 중복으로 거부되고, 기존 문서에 채널만 추가하도록 안내합니다.</li>
+    <li>재색인하면 새 버전을 만든 뒤 검증이 끝나야 이전 버전을 내립니다 — 색인 중에도 기존 답변은 계속 동작합니다.</li>
+    <li>스캔(이미지) PDF는 OCR이 꺼져 있어 색인되지 않습니다. 일부 쪽만 이미지면 그 쪽만 빠집니다.</li>
+  </ul>
+</section>
+
+<section id="deploy">
+  <h2>8. 빌드·배포 흐름</h2>
+  <figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 330" width="1220" height="330" role="img" aria-label="소스 변경이 랩에 반영되는 흐름 (scripts/redeploy_lab.sh)"><title>소스 변경이 랩에 반영되는 흐름 (scripts/redeploy_lab.sh)</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f8-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f8-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f8-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f8-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f8-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f8-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f8-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f8-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f8-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f8-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f8-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f8-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f8-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f8-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1220" height="330" fill="#ffffff" stroke="none"/><rect x="10" y="14" width="1200" height="200" rx="14" class="lane" /><text x="28" y="42" class="lbl" text-anchor="start" >scripts/redeploy_lab.sh — P3 에서 한 번에 실행</text><rect x="28" y="66" width="210" height="120" rx="10" class="user" /><text x="133.0" y="115.5" class="t" text-anchor="middle" >① 소스 커밋</text><text x="133.0" y="132.7" class="m" text-anchor="middle" >git commit</text><text x="133.0" y="148.7" class="sm" text-anchor="middle" >태그 = 커밋 해시</text><rect x="268" y="66" width="210" height="120" rx="10" class="work" /><text x="373.0" y="115.5" class="t" text-anchor="middle" >② 이미지 빌드</text><text x="373.0" y="132.7" class="m" text-anchor="middle" >make build-images</text><text x="373.0" y="148.7" class="sm" text-anchor="middle" >Python 6 + 웹 2 (amd64)</text><path d="M238,126 L265,126" class="ar" marker-end="url(#f8-a)"/><rect x="508" y="66" width="210" height="120" rx="10" class="data" /><text x="613.0" y="115.5" class="t" text-anchor="middle" >③ 레지스트리 push</text><text x="613.0" y="132.7" class="m" text-anchor="middle" >registry.local:5000</text><text x="613.0" y="148.7" class="sm" text-anchor="middle" >P3 HDD 에 저장</text><path d="M478,126 L505,126" class="ar" marker-end="url(#f8-a)"/><rect x="748" y="66" width="210" height="120" rx="10" class="api" /><text x="853.0" y="115.5" class="t" text-anchor="middle" >④ helm upgrade</text><text x="853.0" y="132.7" class="m" text-anchor="middle" >values → poc → lab</text><text x="853.0" y="148.7" class="sm" text-anchor="middle" >release rag-platform</text><path d="M718,126 L745,126" class="ar" marker-end="url(#f8-a)"/><rect x="988" y="66" width="210" height="120" rx="10" class="infra" /><text x="1093.0" y="115.5" class="t" text-anchor="middle" >⑤ Pod 교체</text><text x="1093.0" y="132.7" class="m" text-anchor="middle" >새 이미지 pull</text><text x="1093.0" y="148.7" class="sm" text-anchor="middle" >DB 마이그레이션 Job</text><path d="M958,126 L985,126" class="ar" marker-end="url(#f8-a)"/><rect x="10" y="236" width="1200" height="80" rx="8" class="note" /><text x="22" y="264.2" class="alb" text-anchor="start" >예외 — vLLM 이미지 (arm64)</text><text x="22" y="280.2" class="sm" text-anchor="start" >PGX 용 vLLM 이미지(registry.local:5000/ai/vllm-arm64)는 이 스크립트로 빌드하지 않고 별도로 미러링한다.  모델 교체는 values-lab 의 vllm.modelDir 값 하나로 한다.</text><text x="22" y="296.2" class="sm" text-anchor="start" >폐쇄망이라 빌드·실행 중 인터넷에서 아무것도 받지 않는다 (모델·패키지 모두 미리 반입).</text></svg><figcaption>그림 8. 소스 변경 → 랩 반영. <a href="architecture/08-deploy-flow.png">PNG</a> · <a href="architecture/08-deploy-flow.svg">SVG</a></figcaption></figure>
+</section>
+
+<section id="reference">
+  <h2>9. 포트·주소·용어 정리</h2>
+  <h3>접속 주소</h3>
+  <div class="tw"><table>
+    <tr><th>주소</th><th>경로</th><th>대상</th><th>비고</th></tr>
+    <tr><td><code>https://chat.rag.lab.local</code></td><td><code>/</code></td><td>chat-web :3000</td><td>사용자 채팅 (HTTPS 필수 — 브라우저 암호화 API 사용)</td></tr>
+    <tr><td></td><td><code>/api/v1</code>, <code>/ws</code></td><td>chat-gateway :8001</td><td>REST · socket.io(websocket 전용) · 업로드 상한 1MB</td></tr>
+    <tr><td><code>https://rag.lab.local</code></td><td><code>/</code></td><td>admin-web :8080</td><td>관리자 콘솔</td></tr>
+    <tr><td></td><td><code>/api</code></td><td>admin-api :8003</td><td>업로드 상한 110MB (파일 합계 100MB는 API가 강제)</td></tr>
+  </table></div>
+  <h3>클러스터 내부 주소</h3>
+  <div class="tw"><table>
+    <tr><th>Service</th><th>주소</th><th>호출하는 쪽</th></tr>
+    <tr><td>vLLM</td><td><code>http://vllm-service.rag-ai:8000/v1</code></td><td>rag-worker, rag-api</td></tr>
+    <tr><td>embedding-api</td><td><code>http://embedding-api.rag-ai:8004</code></td><td>rag-worker, rag-api, index-job</td></tr>
+    <tr><td>reranker-api</td><td><code>http://reranker-api.rag-ai:8005</code></td><td>rag-worker, rag-api</td></tr>
+    <tr><td>PostgreSQL</td><td><code>postgresql.rag-data:5432</code></td><td>chat-gateway, rag-worker, rag-api, admin-api, index-job</td></tr>
+    <tr><td>Redis</td><td><code>redis://redis.rag-data:6379/0</code></td><td>chat-gateway, rag-worker</td></tr>
+    <tr><td>Qdrant</td><td><code>http://qdrant.rag-data:6333</code></td><td>rag-worker, rag-api, admin-api, index-job</td></tr>
+    <tr><td>레지스트리</td><td><code>registry.local:5000</code> (P3 Docker, K8s 밖)</td><td>양쪽 노드 containerd</td></tr>
+  </table></div>
+  <h3>용어</h3>
+  <div class="tw"><table>
+    <tr><th>용어</th><th>뜻</th></tr>
+    <tr><td>노드 / Pod</td><td>노드 = K8s에 참여한 서버 한 대(P3, PGX). Pod = 컨테이너가 실제로 실행되는 최소 단위.</td></tr>
+    <tr><td>네임스페이스</td><td>Pod들을 용도별로 묶는 폴더. 여기서는 rag-app/ai/data/ingestion.</td></tr>
+    <tr><td>Service</td><td>Pod가 바뀌어도 변하지 않는 내부 주소(예: <code>qdrant.rag-data:6333</code>).</td></tr>
+    <tr><td>Ingress</td><td>밖에서 들어오는 HTTPS를 주소·경로에 따라 알맞은 Service로 보내는 관문.</td></tr>
+    <tr><td>PVC · hostPath</td><td>Pod가 쓰는 디스크. PVC는 K8s가 관리하는 볼륨, hostPath는 노드의 폴더를 그대로 연결.</td></tr>
+    <tr><td>Job</td><td>한 번 실행하고 끝나는 Pod(문서 색인).</td></tr>
+    <tr><td>taint / toleration</td><td>노드에 "이 표식을 견디는 Pod만 와라"라는 표시. PGX는 vLLM만 받는다.</td></tr>
+    <tr><td>임베딩 · 벡터</td><td>문장의 뜻을 숫자 목록(여기서는 1,024개)으로 바꾼 것. 뜻이 비슷하면 숫자도 가깝다.</td></tr>
+    <tr><td>청크</td><td>문서를 검색하기 좋은 크기(약 800토큰)로 자른 조각.</td></tr>
+    <tr><td>리랭커</td><td>검색으로 고른 후보를 질문과 함께 다시 읽어 관련도 순으로 재정렬하는 모델.</td></tr>
+    <tr><td>LLM · vLLM</td><td>LLM = 문장을 만드는 대형 언어 모델(Qwen3.8 27B). vLLM = 이를 GPU에서 빠르게 서빙하는 엔진.</td></tr>
+    <tr><td>RQ · pub/sub</td><td>RQ = Redis 기반 작업 큐. pub/sub = Redis로 이벤트를 여러 수신자에게 뿌리는 방식.</td></tr>
+    <tr><td>토큰</td><td>모델이 글을 세는 단위. 한글은 대략 1.9자 ≈ 1토큰.</td></tr>
+  </table></div>
+</section>
+
+<footer>
+  생성: <code>uv run --with cairosvg python docs/manual/architecture/build_diagrams.py</code> — 그림 원본(SVG)과 PNG는 <code>docs/manual/architecture/</code>.
+  관련 문서: <code>docs/TDD.md</code>(설계 SSOT) · <code>rke2_two_node_test_guide.md</code>(랩 구축) · <code>docs/manual/operator-manual.md</code>.
+</footer>
+</div>
+</body>
+</html>

@@ -16,6 +16,14 @@ rag-schemas = { workspace = true }
 rag-common = { workspace = true }
 rag-observability = { workspace = true }
 chat-adapter = { workspace = true }
+# embedding/reranker 는 CPU 서빙(ADR-010) — PyPI 기본 torch 는 CUDA 빌드라 nvidia-*·triton(≈4.5GB)이
+# 이미지에 딸려 온다. CPU 전용 인덱스에 고정해 이미지를 줄인다(폐쇄망은 같은 이름의 인덱스를 미러로 제공).
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true  # torch 처럼 명시한 패키지만 이 인덱스에서 받는다
 
 [dependency-groups]
 # Dev tooling shared across every member.

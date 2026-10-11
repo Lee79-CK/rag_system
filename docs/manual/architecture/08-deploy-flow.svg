@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 330" width="1220" height="330" role="img" aria-label="소스 변경이 랩에 반영되는 흐름 (scripts/redeploy_lab.sh)"><title>소스 변경이 랩에 반영되는 흐름 (scripts/redeploy_lab.sh)</title><style>
+text{font-family:'Noto Sans CJK KR','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;fill:#1d2330}
+.h{font-size:19px;font-weight:700}
+.t{font-size:15px;font-weight:700}
+.tl{font-size:16.5px;font-weight:700}
+.s{font-size:12.5px;fill:#3f4757}
+.sm{font-size:11.5px;fill:#4a5263}
+.m{font-size:11.5px;fill:#55607a;font-family:'Noto Sans Mono CJK KR','D2Coding',Consolas,'DejaVu Sans Mono',monospace}
+.lbl{font-size:13px;font-weight:700;fill:#334155}
+.al{font-size:12px;fill:#334155}
+.alb{font-size:12px;font-weight:700;fill:#334155}
+rect{stroke-width:1.5}
+.lane{fill:#f7f8fb;stroke:#d5dae3}
+.user{fill:#eef0f3;stroke:#8a93a3}
+.web{fill:#e7f0ff;stroke:#3b78e7}
+.api{fill:#e2f5f1;stroke:#14967f}
+.work{fill:#f1eaff;stroke:#7c4ddb}
+.ai{fill:#fff2e5;stroke:#e07a1f}
+.gpu{fill:#ffeaea;stroke:#d64545}
+.data{fill:#e9f6e6;stroke:#3d9a3a}
+.infra{fill:#f3f5f9;stroke:#64748b}
+.node{fill:#fbfcfe;stroke:#334155;stroke-width:2.2}
+.note{fill:#fffbe6;stroke:#c9a227}
+.ns{fill:none;stroke:#94a3b8;stroke-dasharray:6 4}
+.dash{stroke-dasharray:6 4}
+.off{fill:#f5f5f5;stroke:#b0b0b0;stroke-dasharray:5 4}
+.lbg{fill:#ffffff;fill-opacity:0.94;stroke:none}
+.ar{fill:none;stroke:#475569;stroke-width:1.6}
+.ar-b{fill:none;stroke:#3b78e7;stroke-width:1.8}
+.ar-o{fill:none;stroke:#e07a1f;stroke-width:1.8}
+.ar-g{fill:none;stroke:#3d9a3a;stroke-width:1.8}
+.ar-v{fill:none;stroke:#7c4ddb;stroke-width:1.8}
+.ar-r{fill:none;stroke:#d64545;stroke-width:1.8}
+.ar-t{fill:none;stroke:#14967f;stroke-width:1.8}
+.life{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 4}
+.bus{stroke:#334155;stroke-width:5}
+</style><defs><marker id="f8-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker><marker id="f8-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#475569"/></marker><marker id="f8-a-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3b78e7"/></marker><marker id="f8-s-b" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3b78e7"/></marker><marker id="f8-a-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e07a1f"/></marker><marker id="f8-s-o" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#e07a1f"/></marker><marker id="f8-a-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3d9a3a"/></marker><marker id="f8-s-g" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#3d9a3a"/></marker><marker id="f8-a-v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c4ddb"/></marker><marker id="f8-s-v" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#7c4ddb"/></marker><marker id="f8-a-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d64545"/></marker><marker id="f8-s-r" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#d64545"/></marker><marker id="f8-a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#14967f"/></marker><marker id="f8-s-t" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#14967f"/></marker></defs><rect x="0" y="0" width="1220" height="330" fill="#ffffff" stroke="none"/><rect x="10" y="14" width="1200" height="200" rx="14" class="lane" /><text x="28" y="42" class="lbl" text-anchor="start" >scripts/redeploy_lab.sh — P3 에서 한 번에 실행</text><rect x="28" y="66" width="210" height="120" rx="10" class="user" /><text x="133.0" y="115.5" class="t" text-anchor="middle" >① 소스 커밋</text><text x="133.0" y="132.7" class="m" text-anchor="middle" >git commit</text><text x="133.0" y="148.7" class="sm" text-anchor="middle" >태그 = 커밋 해시</text><rect x="268" y="66" width="210" height="120" rx="10" class="work" /><text x="373.0" y="115.5" class="t" text-anchor="middle" >② 이미지 빌드</text><text x="373.0" y="132.7" class="m" text-anchor="middle" >make build-images</text><text x="373.0" y="148.7" class="sm" text-anchor="middle" >Python 6 + 웹 2 (amd64)</text><path d="M238,126 L265,126" class="ar" marker-end="url(#f8-a)"/><rect x="508" y="66" width="210" height="120" rx="10" class="data" /><text x="613.0" y="115.5" class="t" text-anchor="middle" >③ 레지스트리 push</text><text x="613.0" y="132.7" class="m" text-anchor="middle" >registry.local:5000</text><text x="613.0" y="148.7" class="sm" text-anchor="middle" >P3 HDD 에 저장</text><path d="M478,126 L505,126" class="ar" marker-end="url(#f8-a)"/><rect x="748" y="66" width="210" height="120" rx="10" class="api" /><text x="853.0" y="115.5" class="t" text-anchor="middle" >④ helm upgrade</text><text x="853.0" y="132.7" class="m" text-anchor="middle" >values → poc → lab</text><text x="853.0" y="148.7" class="sm" text-anchor="middle" >release rag-platform</text><path d="M718,126 L745,126" class="ar" marker-end="url(#f8-a)"/><rect x="988" y="66" width="210" height="120" rx="10" class="infra" /><text x="1093.0" y="115.5" class="t" text-anchor="middle" >⑤ Pod 교체</text><text x="1093.0" y="132.7" class="m" text-anchor="middle" >새 이미지 pull</text><text x="1093.0" y="148.7" class="sm" text-anchor="middle" >DB 마이그레이션 Job</text><path d="M958,126 L985,126" class="ar" marker-end="url(#f8-a)"/><rect x="10" y="236" width="1200" height="80" rx="8" class="note" /><text x="22" y="264.2" class="alb" text-anchor="start" >예외 — vLLM 이미지 (arm64)</text><text x="22" y="280.2" class="sm" text-anchor="start" >PGX 용 vLLM 이미지(registry.local:5000/ai/vllm-arm64)는 이 스크립트로 빌드하지 않고 별도로 미러링한다.  모델 교체는 values-lab 의 vllm.modelDir 값 하나로 한다.</text><text x="22" y="296.2" class="sm" text-anchor="start" >폐쇄망이라 빌드·실행 중 인터넷에서 아무것도 받지 않는다 (모델·패키지 모두 미리 반입).</text></svg>
