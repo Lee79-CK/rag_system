@@ -3,7 +3,7 @@
 > 문서 ID: GUIDE-LOCAL-TEST-001 (v2.0 — Web Chat 전환: Mattermost 제거)
 > 기준: TDD-RAG-CHATBOT-POC-001 + **현행 구현 기준** — 전 백엔드 Python 3.12 (uv workspace), 사용자 UI `apps/chat-web`(Next.js 15, npm)
 > 변경(v2.0): 사용자 접점이 Mattermost 에서 **Web Chat(`apps/chat-web` + `apps/chat-gateway`)** 으로 바뀌었습니다. Mattermost Outgoing/Incoming Webhook 을 curl 로 모사하던 절차는 전부 **브라우저 기반 E2E** 로 대체됩니다. (Mattermost 는 v2.0 에서 제거 — 관련 Secret/토큰/mock 서버 불필요)
-> 이월(v1.2 → v2.0): **v1.2(2026-09-10 코드 리뷰) 반영분** — 앱별 Containerfile·`make build-images`, Alembic migration hook Job(`migration.enabled`), K8s 색인 트리거(`INDEX_JOB_TRIGGER=none|k8s`, 업로드 `start_indexing`), NS 라벨(`rag-platform=true`), `samples/` 샘플 문서, `make test-integration` 대상 정정 등 — 이 v2.0 에 이월되었습니다(상세: `docs/code-review-2026-09-10.md`). 리뷰 중 Mattermost 전용 항목(mock 서버·Webhook Secret·서명 스크립트)은 v2.0 에서 폐기되었습니다.
+> 이월(v1.2 → v2.0): **v1.2(2026-09-10 코드 리뷰) 반영분** — 앱별 Containerfile·`make build-images`, Alembic migration hook Job(`migration.enabled`), K8s 색인 트리거(`INDEX_JOB_TRIGGER=none|k8s`, 업로드 `start_indexing`), NS 라벨(`rag-platform=true`), `samples/` 샘플 문서, `make test-integration` 대상 정정 등 — 이 v2.0 에 이월되었습니다(상세: `docs/TDD.md` 변경 이력 v2.0.1). 리뷰 중 Mattermost 전용 항목(mock 서버·Webhook Secret·서명 스크립트)은 v2.0 에서 폐기되었습니다.
 > 정정(v1.1, 유지): TDD 초기 문서는 admin-api를 Java 21 Spring Boot로 기술하지만, **구현된 `apps/admin-api` 는 Python(FastAPI + SQLAlchemy + Alembic)** 입니다. JDK/Gradle은 필요 없습니다.
 > 대상 환경: **i7 13세대 / RAM 64GB / SSD 1.5TB / RTX 4060 8GB / Windows 11 / Docker Desktop**
 

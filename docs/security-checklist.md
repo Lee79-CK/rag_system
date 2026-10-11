@@ -66,7 +66,7 @@ Mattermost 전용 항목(Outgoing Token 비교, Incoming Webhook URL Secret, 소
 
 ## 완료 상태
 - 위 A~D 전 항목 구현. `make test`(183 passed; Docker 없으면 182 passed, 1 skipped) · `make test-isolation` green · `helm lint` clean(values / +poc / +poc+lab).
-- 2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md`, v1.x Mattermost 기준) 수정 중 v2.0 에 유효한 것은 이월·유지: Secret fail-closed(#19), 마스킹 값 패턴·프로세서 순서(#20), securityContext 위치/vLLM 예외(#25), NetworkPolicy NS 라벨·Ingress Controller 선택자·apiserver egress(#26), 색인 트리거 RBAC(#28), `postgres_password` SecretStr(#29), RQ job 멱등성(#31). 이번 병합 복구에서 Secret 볼륨 `defaultMode 0400`(비루트 읽기 불가) → `0440` + `secretMount.keys` 최소 투영(#30)으로 수정.
+- 2026-09-10 코드 리뷰(v1.x Mattermost 기준) 수정 중 v2.0 에 유효한 것은 이월·유지: Secret fail-closed(#19), 마스킹 값 패턴·프로세서 순서(#20), securityContext 위치/vLLM 예외(#25), NetworkPolicy NS 라벨·Ingress Controller 선택자·apiserver egress(#26), 색인 트리거 RBAC(#28), `postgres_password` SecretStr(#29), RQ job 멱등성(#31). 이번 병합 복구에서 Secret 볼륨 `defaultMode 0400`(비루트 읽기 불가) → `0440` + `secretMount.keys` 최소 투영(#30)으로 수정.
 - 잔여 보안 과제: rate limit 원자화(리뷰 M-3, `gateway/services/rate_limit.py`), async 핸들러 내 동기 I/O(리뷰 H-8, chat-gateway SqlChatStore·admin 업로드), admin-api `X-Auth-User` 는 **인증 프록시 뒤에서만** 노출(DEC-003 — admin host 앞 인증 프록시 필수).
 - v2.0 에서 해소: 리뷰 H-10(피드백 호출자 검증) — 토큰이 `bot_post_id` 에 바인딩되고 사용자는 JWT 로 식별(#16·#17). bridge 전용 리뷰 항목은 Mattermost 제거와 함께 폐기.
 - 폐기(v2.0): Outgoing Token 상수시간 비교, Incoming Webhook URL Secret(`secret_ref`)·Secret Rotation API(`.../channels/{id}/secret`)·연결 테스트, 소스 CIDR 제한, Webhook payload hash 저장 — Mattermost 연동과 함께 제거.

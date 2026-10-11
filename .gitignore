@@ -23,6 +23,8 @@ secrets/
 # Local data / models
 /data/
 /models/
+# 공공 PDF 원문 — 재배포 권리 불명확, 리포에 포함하지 않음 (rke2 가이드 §5.1.2)
+/docs/pdf/
 
 # Node
 node_modules/

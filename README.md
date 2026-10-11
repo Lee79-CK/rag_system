@@ -688,4 +688,9 @@ make perf-soak            # 5~10 동시, 2시간 — 메모리 누수 확인
 
 ## 라이선스 / 반입 고지
 
-본 저장소가 사용하는 오픈소스(vLLM, Qdrant, FastAPI, FlagEmbedding, PyMuPDF 등)와 모델(Qwen/EXAONE/BGE 계열)은 폐쇄망 반입 시 라이선스 검토·해시 검증·SBOM 등록을 완료해야 합니다 (PRD §21, NFR-SEC-012). 반입 절차는 `docs/supply-chain.md` 참조.
+본 저장소의 소스 코드와 문서는 [MIT License](LICENSE)로 배포됩니다.
+
+의존 오픈소스와 모델에는 각자의 라이선스가 적용되며, 이 저장소의 MIT 라이선스가 그것을 바꾸지 않습니다.
+- **PyMuPDF(AGPL-3.0)**: parser-indexer 가 PDF 파싱에 사용합니다. parser-indexer 이미지를 외부에 배포하거나 네트워크 서비스로 제공하면 AGPL-3.0 의무가 적용될 수 있으니, 그런 경우 Artifex 상용 라이선스를 받거나 PyMuPDF 의존을 걷어내고 pdfplumber(MIT)로 대체하는 것을 검토하세요(현재 `pdf_parser.py` 는 `PDF_TEXT_ENGINE` 값과 무관하게 PyMuPDF 를 import 합니다). 이 저장소의 소스 코드 자체를 공개·재사용하는 데는 영향이 없습니다.
+- 그 밖의 오픈소스(vLLM, Qdrant, FastAPI, FlagEmbedding 등)와 모델(Qwen/EXAONE/BGE·KURE 계열)도 폐쇄망 반입 시 라이선스 검토·해시 검증·SBOM 등록을 완료해야 합니다 (PRD §21, NFR-SEC-012).
+- `docs/pdf/` 의 한글 공공 PDF 는 재배포 권리가 불명확해 저장소에 포함하지 않습니다 (rke2 가이드 §5.1.2).

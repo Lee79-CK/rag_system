@@ -15,7 +15,7 @@
 | v1.1 | 2026-07-11 | 답변 피드백(👍/👎) 기능 추가 — Interactive Message Actions 기반. §4.5, §5(message_feedback), §7.1.4, §7.2.5, §7.5, §7.8, §12, §13, §15(M6/M8), §16(DEC-018 확정), §18 갱신 |
 | v1.2 | 2026-07-11 | Python 3.11 → **3.12** 전환. §3.1(스택/툴링 버전), §3.4(cp312 휠 반입·sdist 빌드 금지 정책), §7.7(OCR 격리 fallback), §15(M1 DoD), §16(결정 근거) 갱신 |
 | v2.0 | 2026-09-28 | **Mattermost 완전 제거 → Web Chat 전환.** 사용자 UI = `apps/chat-web`(aiops_chatbot Next.js UI 이식, 원본 무수정), 백엔드 = `apps/chat-gateway`(FastAPI REST + python-socketio `/ws`, NestJS 미이식), 공유 lib `libs/chat-adapter`(`libs/mattermost-adapter` 대체). 답변 **토큰 스트리밍**(`llm.stream.delta`, ADR-001 개정), **prehash 로그인**(PBKDF2 prehash → 서버 scrypt+pepper, HS256 JWT access + HttpOnly refresh 쿠키 rotation), Channel 격리 키 = `chat_channels.id`(UUID) + 채널 멤버십, 피드백 토큰 = `HMAC(message_id:bot_post_id)`, Alembic `0003_webchat`(데이터 보존 — **업그레이드 후 전 문서 재색인 필요**), 요구사항 ID `FR-MM-*` → `FR-WEB-*`. 전 절(§1~§18) 갱신, §19(기존 결함 수정 기록) 신설. 검증: 159 passed · ruff/helm lint clean · admin-web/chat-web build OK |
-| v2.0.1 | 2026-09-29 | **병합 복구** — 2026-09-10 코드 리뷰(`docs/code-review-2026-09-10.md`, v1.x 기준) 수정 중 v2.0 에 유효한 것을 이월: Containerfile 8종 + `make build-images/push-images/helm-lint/helm-template`, admin-api 색인 트리거(`index_trigger.py`, 업로드 `start_indexing`), worker `claim_job` 멱등 가드, RQ `job_timeout`, chat-gateway Secret fail-closed(503 `AUTH_NOT_CONFIGURED`), 마스킹 값 패턴, `postgres_password` SecretStr, 단일 Helm chart(rbac/migration-job/namespaces, `secretMount.keys`, `networkPolicy.ingressController/exposedServices/apiServer`). §2, §7.1, §7.2.1, §7.5, §10~§14, §17, §19 갱신. 검증: 183 passed(Docker 없으면 182 passed, 1 skipped) · ruff clean · helm lint 3프로파일 clean |
+| v2.0.1 | 2026-09-29 | **병합 복구** — 2026-09-10 코드 리뷰(v1.x 기준) 수정 중 v2.0 에 유효한 것을 이월: Containerfile 8종 + `make build-images/push-images/helm-lint/helm-template`, admin-api 색인 트리거(`index_trigger.py`, 업로드 `start_indexing`), worker `claim_job` 멱등 가드, RQ `job_timeout`, chat-gateway Secret fail-closed(503 `AUTH_NOT_CONFIGURED`), 마스킹 값 패턴, `postgres_password` SecretStr, 단일 Helm chart(rbac/migration-job/namespaces, `secretMount.keys`, `networkPolicy.ingressController/exposedServices/apiServer`). §2, §7.1, §7.2.1, §7.5, §10~§14, §17, §19 갱신. 검증: 183 passed(Docker 없으면 182 passed, 1 skipped) · ruff clean · helm lint 3프로파일 clean |
 
 ---
 
@@ -2036,7 +2036,7 @@ Web Chat 전환 과정에서 발견·수정한 기존(v1.x) 결함. 회귀 방�
 | 4 | admin-api 문서 업로드가 `allowed_channel_ids`를 무시 | seed 외에는 `document_channel_acl` 기록 경로가 없어 신규 문서가 어떤 채널에서도 검색되지 않음 | 업로드 시 채널 존재 검증 후 ACL 기록 (§7.5) |
 | 5 | engineio는 허용 Origin 목록 지정 시 same-origin을 자동 허용하지 않음 | 운영 Ingress(동일 출처)에서 WebSocket 전면 거부 위험 | `origin_checker` — same-origin(Host/X-Forwarded-Host) + 명시 목록 허용 (§7.1.2) |
 
-**2026-09-10 코드 리뷰 이월분 + 2026-09-29 병합 복구** — 리뷰(`docs/code-review-2026-09-10.md`, v1.x Mattermost 기준) 수정 중 v2.0 에 유효한 것을 재적용했다. bridge 전용 항목은 Mattermost 제거와 함께 폐기. ID 는 리뷰 리포트 기준.
+**2026-09-10 코드 리뷰 이월분 + 2026-09-29 병합 복구** — 리뷰(v1.x Mattermost 기준) 수정 중 v2.0 에 유효한 것을 재적용했다. bridge 전용 항목은 Mattermost 제거와 함께 폐기. ID 는 리뷰 리포트 기준(리포트 원문은 리포에서 제거 — 이 절이 이월 내역의 기록).
 
 | # | 결함 (리뷰 ID) | 영향 | 수정 |
 |---|---|---|---|

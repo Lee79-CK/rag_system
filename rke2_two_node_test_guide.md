@@ -3,7 +3,7 @@
 > 문서 ID: GUIDE-LOCAL-K8S-TEST-001 (v2.0 — Web Chat 전환: Mattermost 제거 / v1.1 — P3 디스크 2개 구성 반영)
 > 기준: TDD-RAG-CHATBOT-POC-001 + **현행 구현 기준** — 전 백엔드 Python 3.12 (uv workspace), 사용자 UI `apps/chat-web`(Next.js standalone), Helm chart `deploy/helm/rag-platform`
 > 변경(v2.0): 사용자 접점이 Mattermost 에서 **Web Chat(chat-web + chat-gateway)** 으로 바뀌었습니다. Mattermost 서버/Outgoing Webhook 설정, mock-mattermost, `rag-bridge-secrets` 는 더 이상 필요 없고, 대신 **`rag-chat-secrets` + Ingress(TLS)** 를 준비합니다. (Mattermost 는 v2.0 에서 제거)
-> 이월(v1.2 — 2026-09-10 코드 리뷰, `docs/code-review-2026-09-10.md`): **Containerfile(8종) · Alembic hook Job(`rag-db-migrate`) · admin-api RBAC/K8s 색인 트리거(`INDEX_JOB_TRIGGER=k8s`) · Namespace 라벨(`rag-platform=true`) · 배포 후 검증(§4.3)** 반영분이 v2.0 에 이월되었습니다. v1.2 의 Mattermost 전용 절차는 제외했습니다.
+> 이월(v1.2 — 2026-09-10 코드 리뷰, 상세는 `docs/TDD.md` 변경 이력 v2.0.1): **Containerfile(8종) · Alembic hook Job(`rag-db-migrate`) · admin-api RBAC/K8s 색인 트리거(`INDEX_JOB_TRIGGER=k8s`) · Namespace 라벨(`rag-platform=true`) · 배포 후 검증(§4.3)** 반영분이 v2.0 에 이월되었습니다. v1.2 의 Mattermost 전용 절차는 제외했습니다.
 > 변경(v2.1): 한글 PDF(`docs/pdf/*` 공공 가이드라인 5종) 기준으로 **임베딩 모델을 KURE-v1 로, PDF 파서를 PyMuPDF + 페이지 단위 pdfplumber 대체 + 한글 정규화로** 갱신했습니다 — 선정 근거·재색인 절차는 §5.1.2. 임베딩 입력이 FlagEmbedding 기본 512 토큰에서 잘리던 문제도 수정(`EMBEDDING_MAX_LENGTH=2048`).
 > 변경(v2.2): LLM 모델을 PGX 의 **`/home/cheolkyulee/models/<모델 디렉터리>`** 에서 로딩하도록 바꾸고(현재 `Qwen3.8-27B-FP8`), **모델 교체를 `vllm.modelDir` 값 하나로** 할 수 있게 했습니다(chart 가 `--model=/models/<modelDir>` 를 생성) — §2.1.1.
 > 정정(v1.1): TDD v1.3 문서는 admin-api를 Java 21 Spring Boot로 기술하지만, **구현된 `apps/admin-api` 는 Python(FastAPI + SQLAlchemy + Alembic)** 입니다. 이 가이드는 구현을 따릅니다.
@@ -815,6 +815,8 @@ uv run --package parser-indexer python scripts/inspect_pdf.py docs/pdf/*.pdf --s
 
 `docs/pdf/` 의 AI 기본법 가이드라인 5종(총 470쪽)을 실제로 파싱해 결함을 찾고, 그에 맞춰 파서와 임베딩 모델을 정했습니다. **5종 모두 텍스트 레이어가 있는 디지털 PDF**(스캔본 아님)라 OCR 없이 색인됩니다.
 
+> PDF 원문은 리포에 포함하지 않습니다(재배포 권리 불명확, `.gitignore` 대상). 과학기술정보통신부·KISDI 가 공개한 AI 기본법 가이드라인을 직접 받아 아래 파일명으로 `docs/pdf/` 에 두세요 — `1._260126_AI_clearness_ensure_guideline.pdf`, `2._260122_AI_safety_ensure_guideline.pdf`, `3._260429_AI_judge_guideline.pdf`, `4._260122_AI_business_responsibility_guideline-1.pdf`, `5._260122_AI_evaluation_guideline.pdf` (평가셋 `tests/evaluation/dataset-ko-pdf` 가 이 파일명을 기대).
+
 **① 문서별 진단 (PyMuPDF 기존 파서 기준)**
 
 | 문서 | 생성기 | 쪽 | 발견된 결함 | v2.1 조치 |
@@ -1098,7 +1100,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 - **vLLM 2-replica 모사**: 단일 GPU 에서 MPS/시간분할은 비권장 — HA(NFR-HA-002)는 순차 재기동 테스트로 대체.
 - **이미지 전용 쪽 OCR**(§5.1.2): 흐름도·도표 안 한글(문서 3 의 분야별 판단 흐름도 등)을 검색하려면 `stats.image_only_pages` 쪽만 골라 OCR 하는 경로가 필요합니다. 후보는 PaddleOCR PP-OCRv5 한국어 인식 모델(또는 그 ONNX 변환을 쓰는 RapidOCR) — 모델 파일 반입·로컬 경로 로딩, TDD §7.7 의 격리 `ocr-worker` 설계를 따릅니다.
 - **디스크 1개 추가 시**: `/data/bulk` 에서 **레지스트리를 분리**(`/data/registry`)하는 것이 효과가 가장 큼. 색인 Job 의 문서 읽기와 이미지 push/pull IO 경합이 사라집니다.
-- **PoC 이관 전 코드 과제**(`docs/code-review-2026-09-10.md` 잔여): Settings→파이프라인 연동, async 핸들러 내 동기 I/O 제거(chat-gateway `SqlChatStore`, admin 업로드), rate limit 원자화, 문서 삭제 시 Qdrant 비활성화, mock 엔진 silent fallback 차단, 100문항 평가셋·LLM-judge, `CHAT_MAX_CONCURRENCY` 강제, admin-api `/index-jobs` 조회 API.
+- **PoC 이관 전 코드 과제**(2026-09-10 코드 리뷰 잔여, CLAUDE.md "알려진 미구현"과 동일): Settings 테이블→rag-api 연동, 문서 삭제 시 원본 파일·Vector 물리 삭제(검색 제외는 구현됨), async 핸들러 내 동기 I/O 제거(chat-gateway `SqlChatStore`, admin 업로드), rate limit 원자화, mock 엔진 silent fallback 차단, `CHAT_MAX_CONCURRENCY` 강제, 100문항 평가셋·LLM-judge, Circuit Breaker. (`/index-jobs` 조회 API·문서 비활성화 시 Qdrant 검색 제외는 구현 완료)
 
 ---
 
