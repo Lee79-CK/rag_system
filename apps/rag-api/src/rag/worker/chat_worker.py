@@ -130,11 +130,20 @@ async def process_chat_job(
     deps.store.add_user_message(conversation_id, request.post_id, request.message)
 
     # 5~12. 파이프라인 (LLM 토큰 스트리밍 → llm.stream.delta)
+    # `/` 직접 대화(FR-CHAT-014)는 enqueue 이후 채널 설정이 꺼졌으면 RAG 로 처리한다 (방어)
+    direct = request.direct and binding.direct_llm_enabled
+    if direct:
+        log.info("worker.direct_llm", job_id=job_id, channel_id=request.channel_id)
     stream = deps.delivery.open_stream(request)
     try:
-        output = await deps.pipeline.run(
-            question=request.message, binding=binding, history=history, on_delta=stream.push
-        )
+        if direct:
+            output = await deps.pipeline.run_direct(
+                question=request.message, history=history, on_delta=stream.push
+            )
+        else:
+            output = await deps.pipeline.run(
+                question=request.message, binding=binding, history=history, on_delta=stream.push
+            )
         await stream.flush()
     except Exception as exc:  # noqa: BLE001 — 파이프라인 실패 시 오류 안내 (FR-CHAT-009)
         log.error("worker.pipeline_failed", job_id=job_id, error=_error_text(exc))
@@ -164,6 +173,7 @@ async def process_chat_job(
         answer=output.answer,
         citations=output.citations,
         insufficient_evidence=output.insufficient_evidence,
+        direct=direct,
         usage=output.usage,
     )
 

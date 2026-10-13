@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     bot_post_id: str  # 스트리밍 대상 Bot Post (placeholder, chat_posts.id)
     message: str  # Trigger word 제거 완료된 순수 질문
     trace_id: str
+    direct: bool = False  # `/` 접두어 — RAG(검색) 없이 LLM 직접 대화 (FR-CHAT-014)
 
 
 class ChatJobStatus(StrEnum):
@@ -44,6 +45,8 @@ class Citation(BaseModel):
     excerpt: str  # 근거 요약 (최대 200자)
     score: float
     chunk_id: str
+    # 답변 본문의 근거 번호([n]) — 프롬프트의 [근거 문서] 번호와 같다. 인용된 문서만 남기므로 1..N 이 비연속일 수 있다.
+    ref: int | None = None
 
 
 class RagCompletion(BaseModel):
@@ -51,4 +54,5 @@ class RagCompletion(BaseModel):
     answer: str
     citations: list[Citation] = Field(default_factory=list)
     insufficient_evidence: bool = False
+    direct: bool = False  # LLM 직접 대화 답변 (근거 문서 없음, FR-CHAT-014)
     usage: dict = Field(default_factory=dict)  # prompt_tokens, completion_tokens, stage latencies

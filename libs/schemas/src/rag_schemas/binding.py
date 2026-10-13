@@ -37,6 +37,7 @@ class ChannelBinding(BaseModel):
     mention_user: bool = True
     ack_message_enabled: bool = True
     feedback_enabled: bool = True  # v1.1 — Channel별 피드백 on/off
+    direct_llm_enabled: bool = False  # v2.1 — `/` 접두어 LLM 직접 대화(RAG 미경유) 허용
 
 
 def scope_key(binding: ChannelBinding, root_id: str | None, post_id: str) -> str:

@@ -332,3 +332,81 @@ async def test_missing_signing_key_attaches_no_feedback_token(binding):
     await process_chat_job(deps, "job-6", _request())
     assert store.jobs["job-6"] == "COMPLETED"
     assert "feedback_token" not in posts.updates[0]["props"]
+
+
+# ---------------------------------------------------------------- FR-CHAT-014 LLM 직접 대화
+class _MustNotCall:
+    """직접 대화에서 호출되면 안 되는 검색 계층 (embed/search/rerank)."""
+
+    async def embed(self, *a, **k):
+        raise AssertionError("embedding called in direct mode")
+
+    async def search(self, *a, **k):
+        raise AssertionError("qdrant search called in direct mode")
+
+    async def rerank(self, *a, **k):
+        raise AssertionError("rerank called in direct mode")
+
+
+class _CapturingLLM(FakeLLM):
+    def __init__(self):
+        super().__init__()
+        self.messages = None
+
+    async def stream(self, messages, *, max_tokens, temperature):
+        self.messages = messages
+        async for ev in super().stream(messages, max_tokens=max_tokens, temperature=temperature):
+            yield ev
+
+
+def _direct_deps(binding, llm):
+    deps, store, posts, spy = _deps(binding, llm)
+    blocked = _MustNotCall()
+    deps.pipeline = RagPipeline(
+        embedding=blocked,
+        retrieval=blocked,
+        reranker=blocked,
+        llm=llm,
+        token_counter=HeuristicTokenCounter(),
+        config=PipelineConfig(),
+    )
+    return deps, store, posts, spy
+
+
+async def test_fr_chat_014_direct_skips_retrieval_and_streams(binding):
+    binding.direct_llm_enabled = True
+    llm = _CapturingLLM()
+    deps, store, posts, spy = _direct_deps(binding, llm)
+    # 같은 conversation(채널 컨텍스트)의 이전 RAG 대화 — 직접 대화도 이력을 공유한다
+    store.messages["channel-001"] = [("user", "장애 등급은?"), ("assistant", "1~4등급입니다. [1]")]
+
+    completion = await process_chat_job(
+        deps, "job-d", _request(message="이걸 영어로 번역해줘", direct=True)
+    )
+
+    assert completion.direct is True and completion.citations == []
+    assert completion.insufficient_evidence is False and completion.usage["direct"] == 1
+    assert store.jobs["job-d"] == "COMPLETED"
+    # 네이티브 chat 형식: system → 이력(user/assistant) → 질문
+    assert [m["role"] for m in llm.messages] == ["system", "user", "assistant", "user"]
+    assert "사내 문서를 검색하지 않습니다" in llm.messages[0]["content"]
+    assert llm.messages[-1]["content"] == "이걸 영어로 번역해줘"
+    deltas = [e for e in spy.events if e[0] == "llm.stream.delta"]
+    assert "".join(e[1]["delta"] for e in deltas) == "".join(ANSWER_TOKENS)
+    # Bot Post: 근거 표 없이 직접 대화 안내 + props.direct + 피드백 토큰 유지
+    upd = posts.updates[0]
+    assert [b["block_id"] for b in upd["blocks"]] == ["direct"]
+    assert upd["props"]["direct"] is True and "feedback_token" in upd["props"]
+    assert store.citations == []
+
+
+async def test_fr_chat_014_direct_request_on_disabled_channel_uses_rag(binding):
+    """enqueue 이후 채널 설정이 꺼졌으면 직접 대화가 아니라 RAG 로 처리한다."""
+    llm = FakeLLM()
+    deps, _, posts, _ = _deps(binding, llm)  # binding.direct_llm_enabled 기본 False
+
+    completion = await process_chat_job(deps, "job-r", _request(direct=True))
+
+    assert completion.direct is False
+    assert completion.citations and posts.updates[0]["blocks"][0]["type"] == "table"
+    assert posts.updates[0]["props"]["direct"] is False

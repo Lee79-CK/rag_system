@@ -57,6 +57,13 @@ def test_render_answer_mentions_and_citation_table():
     TypeAdapter(list[Block]).validate_python(blocks)
 
 
+def test_fr_chat_003_citation_table_number_matches_answer_ref():
+    """인용된 문서만 남아 번호가 비연속이어도 표의 # 는 본문 [n] 과 같다."""
+    c = _completion().citations[0].model_copy(update={"ref": 5})
+    _, blocks = render_answer(_completion(citations=[c]), user_name="hong", mention=False)
+    assert blocks[0]["rows"][0]["n"] == "5"
+
+
 def test_render_answer_insufficient_evidence_context_block():
     message, blocks = render_answer(
         _completion(citations=[], insufficient_evidence=True), user_name="hong", mention=False
@@ -127,3 +134,12 @@ def test_mapper_hides_internal_props():
     )
     assert "message_id" not in dto.props
     assert dto.props["feedback_token"] == "t"
+
+
+def test_fr_chat_014_direct_answer_has_note_and_no_table():
+    from chat_adapter.render import DIRECT_NOTE
+
+    completion = RagCompletion(message_id="m", answer="Hello", direct=True)
+    message, blocks = render_answer(completion, user_name="kim", mention=False)
+    assert message == "Hello"
+    assert blocks == [{"type": "context", "block_id": "direct", "text": DIRECT_NOTE}]

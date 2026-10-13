@@ -28,12 +28,12 @@
 | `lib/ws.ts` | same-origin 기본, `transports: ['websocket']` 전용 (다중 replica sticky 불필요) |
 | `lib/stores/*` | AuthUser 를 gateway 계약(role `user|admin`)으로, localStorage 키 `aiops.*` → `rag.*` |
 | `lib/query/hooks.ts` | DTO 를 gateway 계약에 맞춤, AIOps 전용 훅 제거 |
-| `components/chat/PostItem.tsx` | 리액션/핀/이벤트·승인 카드 제거, Bot 상태(접수·스트리밍·오류), 피드백 value=`feedback_token`(HMAC) |
-| `components/chat/Composer.tsx` | 슬래시 커맨드/멘션/메일/Action Tier 제거 → Binding(모드·trigger) 안내, THREAD 모드면 전송 후 스레드 자동 오픈 |
+| `components/chat/PostItem.tsx` | 리액션/핀/이벤트·승인 카드 제거, Bot 상태(접수·스트리밍·오류), 피드백 value=`feedback_token`(HMAC). 호버 [답글] 은 Bot 답변에만 표시(CHANNEL 모드에서 질문의 답글 스레드에는 답변이 없음) — "답글 N개" 요약은 유지. `props.direct`(`/` LLM 직접 대화) 답변은 배지 `BOT · LLM` |
+| `components/chat/Composer.tsx` | 슬래시 커맨드/멘션/메일/Action Tier 제거 → Binding(모드·trigger) 안내, THREAD 모드면 전송 후 스레드 자동 오픈. `direct_llm_enabled` 채널은 "/ 로 시작하면 LLM 직접 대화" 안내(`/` 는 gateway 가 판정하는 RAG 미경유 접두어 — 이식 원본의 슬래시 커맨드와 무관) |
 | `components/chat/ChannelHeader.tsx` | 고객사/환경/Skill/MCP → RAG Binding 상태 |
 | `components/shell/{Rail,ChannelSidebar}.tsx` | Threads/Events/관리/알림/DM/채널 브라우저 제거, 채널 필터(⌘K) |
 | `components/thread/ThreadPanel.tsx` | 인시던트 상태/담당/심각도/요약/메일 제거 |
-| `components/blocks/BlockRenderer.tsx` | event_card / approval_card / tool_trace 제거. TableView: `maxWidth 640` 제거(메시지 폭 전체), 열 폭 규칙 — right 열 내용 폭·중간 열 14rem 상한+줄바꿈·마지막 열(발췌) 확장(최소 12rem, 그 이하 가로 스크롤) |
+| `components/blocks/BlockRenderer.tsx` | event_card / approval_card / tool_trace 제거. TableView: `maxWidth 640` 제거(메시지 폭 전체), 열 폭 규칙 — right 열 내용 폭·중간 열 14rem 상한+줄바꿈·마지막 열(발췌) 확장(최소 12rem, 그 이하 가로 스크롤). 근거 문서 표(`block_id: citations`)는 기본 접힘 — "근거 문서 보기 (N건)" / "근거 문서 접기" 버튼 |
 | `app/(app)/profile/page.tsx` | 비밀번호 변경만 (세션/외부계정/프로필 편집 제거) |
 | `app/login/page.tsx` | RAG 브랜딩, 외부 IdP 버튼 제거, 임시 비밀번호면 `/profile` 로 이동 |
 

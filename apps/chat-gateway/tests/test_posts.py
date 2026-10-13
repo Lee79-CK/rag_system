@@ -182,3 +182,59 @@ def test_secret_never_in_logs(harness, caplog):
     for secret in ("test-jwt-secret", "test-pepper", "test-signing-key"):
         assert secret not in joined
     assert harness.token(harness.alice) not in joined
+
+
+# ---------------------------------------------------------------- FR-CHAT-014 LLM 직접 대화
+async def _stored_request(harness, idx: int = 0) -> ChatRequest:
+    raw = await harness.redis.get(f"chat:req:{harness.store.jobs[idx]['id']}")
+    return ChatRequest.model_validate_json(raw)
+
+
+async def test_fr_chat_014_slash_prefix_is_direct_and_stripped(harness):
+    harness.store.bindings[harness.channel.id] = binding_for(
+        harness.channel, direct_llm_enabled=True
+    )
+    assert harness.post("/  파이썬 리스트 역순 정렬").status_code == 201
+    req = await _stored_request(harness)
+    assert req.direct is True and req.message == "파이썬 리스트 역순 정렬"
+    bot_post = harness.store.posts[harness.store.jobs[0]["bot_post_id"]]
+    assert bot_post.props["direct"] is True and bot_post.props["ack"] is False
+
+
+async def test_fr_chat_014_disabled_channel_keeps_slash_as_rag_question(harness):
+    harness.post("/etc/hosts 설정 위치")  # 기본 binding: direct_llm_enabled=False
+    req = await _stored_request(harness)
+    assert req.direct is False and req.message == "/etc/hosts 설정 위치"
+    bot_post = harness.store.posts[harness.store.jobs[0]["bot_post_id"]]
+    assert "direct" not in bot_post.props
+
+
+async def test_fr_chat_014_trigger_word_channel_slash_triggers_without_trigger_word(harness):
+    harness.store.bindings[harness.channel.id] = binding_for(
+        harness.channel, mode=ChannelMode.TRIGGER_WORD, trigger_word="!rag", direct_llm_enabled=True
+    )
+    harness.post("/번역해줘 hello")
+    harness.post("!rag /요약해줘")
+    harness.post("그냥 잡담")  # 트리거 없음
+    assert len(harness.store.jobs) == 2
+    assert [(r.direct, r.message) for r in [await _stored_request(harness, i) for i in (0, 1)]] == [
+        (True, "번역해줘 hello"),
+        (True, "요약해줘"),
+    ]
+
+
+def test_fr_chat_014_slash_only_is_not_a_question(harness):
+    harness.store.bindings[harness.channel.id] = binding_for(
+        harness.channel, direct_llm_enabled=True
+    )
+    assert harness.post("/").status_code == 201
+    assert harness.enqueuer.calls == []
+
+
+def test_fr_chat_014_channel_detail_exposes_direct_flag(harness):
+    harness.store.bindings[harness.channel.id] = binding_for(
+        harness.channel, direct_llm_enabled=True
+    )
+    resp = harness.client.get(f"/api/v1/channels/{harness.channel.id}", headers=harness.auth())
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["binding"]["direct_llm_enabled"] is True

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 
@@ -40,10 +41,13 @@ class ChatCompletionRequest(BaseModel):
 
 
 def _mock_answer(messages: list[ChatMessage]) -> str:
-    """근거 문서가 프롬프트에 있으면 [1] 인용을 포함한 고정 한국어 답변을 만든다."""
+    """근거 문서가 프롬프트에 있으면 그 번호를 모두 인용한 고정 한국어 답변을 만든다.
+
+    rag-api 는 답변이 인용한 번호의 문서만 근거 표에 남기므로, 로컬 E2E 에서도 검색 결과가 표에 보이게 한다.
+    """
     user = next((m.content for m in reversed(messages) if m.role == "user"), "")
-    has_evidence = "[근거 문서]" in user
-    cite = " [1]" if has_evidence else ""
+    nums = re.findall(r"^\[(\d+)\] ", user, flags=re.MULTILINE) if "[근거 문서]" in user else []
+    cite = f" [{', '.join(nums)}]" if nums else ""
     return f"(mock) 요청하신 내용에 대한 답변입니다.{cite} 실제 배포에서는 vLLM이 생성합니다."
 
 

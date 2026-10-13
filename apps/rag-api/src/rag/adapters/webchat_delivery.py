@@ -95,6 +95,7 @@ class WebChatDelivery:
             "chat_job_id": chat_job_id,
             "citations_count": len(completion.citations),
             "insufficient_evidence": completion.insufficient_evidence,
+            "direct": completion.direct,  # chat-web 배지 BOT · LLM (FR-CHAT-014)
         }
         if binding.feedback_enabled and completion.message_id and self._d.signing_key:
             props["feedback_token"] = feedback_token(

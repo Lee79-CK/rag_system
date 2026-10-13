@@ -204,6 +204,19 @@ export function Channels() {
         ),
     },
     {
+      title: 'LLM 직접(/)',
+      key: 'direct',
+      render: (_, r) =>
+        r.binding ? (
+          <StatusBadge
+            kind={r.binding.direct_llm_enabled ? 'success' : 'neutral'}
+            label={r.binding.direct_llm_enabled ? 'on' : 'off'}
+          />
+        ) : (
+          '-'
+        ),
+    },
+    {
       title: 'RAG 응답',
       key: 'enabled',
       align: 'center',
@@ -393,6 +406,7 @@ function BindingWizard({
       mention_user: values.mention_user,
       ack_message_enabled: values.ack_message_enabled,
       feedback_enabled: values.feedback_enabled,
+      direct_llm_enabled: values.direct_llm_enabled,
     };
     try {
       if (channel && (values.display_name !== channel.display_name || values.purpose !== channel.purpose || values.type !== channel.type)) {
@@ -463,6 +477,7 @@ function BindingWizard({
           mention_user: binding?.mention_user ?? true,
           ack_message_enabled: binding?.ack_message_enabled ?? true,
           feedback_enabled: binding?.feedback_enabled ?? true,
+          direct_llm_enabled: binding?.direct_llm_enabled ?? false,
         }}
       >
         {/* Step 1 — 채널 정보 */}
@@ -513,6 +528,14 @@ function BindingWizard({
             <Switch />
           </Form.Item>
           <Form.Item label="피드백 수집(feedback)" name="feedback_enabled" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            label="LLM 직접 대화(/ 접두어)"
+            name="direct_llm_enabled"
+            valuePropName="checked"
+            tooltip="'/' 로 시작하는 메시지는 사내 문서 검색 없이 LLM 이 직접 답합니다. 답변에 문서 근거가 없다는 안내가 붙습니다."
+          >
             <Switch />
           </Form.Item>
         </div>

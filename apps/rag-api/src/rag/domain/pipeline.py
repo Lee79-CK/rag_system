@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ from dataclasses import dataclass, field
 from rag_schemas import ChannelBinding, Citation
 
 from rag.domain import guardrail
-from rag.domain.citation import build_citations
+from rag.domain.citation import build_citations, referenced_indices
 from rag.domain.context import BudgetConfig, assemble_context
 from rag.domain.ports import (
     EmbeddingPort,
@@ -23,7 +24,13 @@ from rag.domain.ports import (
     RetrievedChunk,
     ScoredChunk,
 )
-from rag.domain.prompt import INSUFFICIENT_EVIDENCE_TEXT, SYSTEM_PROMPT, build_messages
+from rag.domain.prompt import (
+    DIRECT_SYSTEM_PROMPT,
+    INSUFFICIENT_EVIDENCE_TEXT,
+    SYSTEM_PROMPT,
+    build_direct_messages,
+    build_messages,
+)
 from rag.domain.retrieval import build_filter
 
 DeltaCallback = Callable[[str], Awaitable[None]]
@@ -152,6 +159,55 @@ class RagPipeline:
         messages = build_messages(
             question=question, chunks=assembled.selected_chunks, history=assembled.history
         )
+        answer = await self._generate(messages, on_delta, usage)
+
+        # 12. Citation 생성 — 답변이 인용한 근거 번호의 chunk 만. 인용이 없으면 근거 문서 표를 내지 않고,
+        #     "근거를 찾지 못했다"는 답변이면 근거 부족으로 표시한다(가드레일 (d), 답변 본문은 유지).
+        refs = referenced_indices(answer, len(assembled.selected_chunks))
+        usage["citation_refs"] = len(refs)
+        insufficient = not refs and guardrail.is_no_evidence_answer(answer)
+        if insufficient:
+            usage["llm_insufficient"] = 1
+        citations = build_citations(assembled.selected_chunks, refs)
+
+        return PipelineOutput(
+            answer=answer,
+            citations=citations,
+            insufficient_evidence=insufficient,
+            usage=usage,
+            selected_chunks=assembled.selected_chunks,
+        )
+
+    async def run_direct(
+        self,
+        *,
+        question: str,
+        history: list[tuple[str, str]] | None = None,
+        on_delta: DeltaCallback | None = None,
+    ) -> PipelineOutput:
+        """LLM 직접 대화 (FR-CHAT-014) — Embedding·Qdrant·Rerank·가드레일 없이 LLM 만 호출한다.
+
+        검색을 하지 않으므로 Channel 격리(build_filter) 대상이 아니다. 이력은 같은 Token Budget 으로
+        오래된 turn 부터 절삭하되, 근거 문서가 없으니 history 상한을 남은 budget 전체로 둔다.
+        """
+        usage: dict[str, float | int] = {"direct": 1}
+        assembled = assemble_context(
+            counter=self._counter,
+            system_prompt=DIRECT_SYSTEM_PROMPT,
+            question=question,
+            history=history or [],
+            reranked=[],
+            config=dataclasses.replace(self._cfg.budget, history_ratio=1.0),
+        )
+        usage["context_tokens"] = assembled.used_tokens
+        messages = build_direct_messages(question=question, history=assembled.history)
+        answer = await self._generate(messages, on_delta, usage)
+        return PipelineOutput(answer=answer, citations=[], insufficient_evidence=False, usage=usage)
+
+    async def _generate(
+        self, messages: list[dict[str, str]], on_delta: DeltaCallback | None, usage: dict
+    ) -> str:
+        """10-11. vLLM 생성 — on_delta 가 있으면 스트리밍하며 토큰 조각마다 콜백한다."""
         t = time.perf_counter()
         if on_delta is None:
             result = await self._llm.complete(
@@ -177,17 +233,7 @@ class RagPipeline:
                     usage.update(event.usage)
             answer = "".join(parts)
         usage["llm_ms"] = _ms(t)
-
-        # 12. Citation 생성
-        citations = build_citations(assembled.selected_chunks)
-
-        return PipelineOutput(
-            answer=answer,
-            citations=citations,
-            insufficient_evidence=False,
-            usage=usage,
-            selected_chunks=assembled.selected_chunks,
-        )
+        return answer
 
 
 def _ms(start: float) -> int:

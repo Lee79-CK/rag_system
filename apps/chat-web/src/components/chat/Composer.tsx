@@ -22,6 +22,7 @@ export function Composer({ channel, rootId, placeholder }: { channel: ChannelDet
   const binding = channel.binding;
   const botOn = !!binding?.enabled && !!channel.me.permissions.use_bot;
   const trigger = binding?.mode === 'TRIGGER_WORD' ? binding.trigger_word ?? '!rag' : null;
+  const directOn = botOn && !!binding?.direct_llm_enabled;
 
   const send = async () => {
     const body = text.trim();
@@ -30,7 +31,7 @@ export function Composer({ channel, rootId, placeholder }: { channel: ChannelDet
       const created = await create.mutateAsync({ channel_id: channel.id, root_id: rootId, message: body, client_id: crypto.randomUUID() });
       setText('');
       // THREAD 컨텍스트 채널: 답변이 질문 스레드로 스트리밍되므로 스레드를 바로 연다
-      const triggered = botOn && (!trigger || body.startsWith(trigger));
+      const triggered = botOn && (!trigger || body.startsWith(trigger) || (directOn && body.startsWith('/')));
       if (!rootId && triggered && binding?.conversation_mode === 'THREAD') router.push(`/ch/${channel.name}/thread/${created.id}`);
     } catch (e) {
       flash(e instanceof ApiError ? e.message : '전송 실패');
@@ -51,6 +52,7 @@ export function Composer({ channel, rootId, placeholder }: { channel: ChannelDet
         ? `답글은 이어서 질문 · 새 질문은 ${trigger} 로 시작`
         : `${trigger} 로 시작하는 메시지에 RAG 가 답합니다`
       : '모든 메시지에 RAG 가 사내 문서 근거로 답합니다';
+  const fullHint = directOn ? `${hint} · / 로 시작하면 LLM 직접 대화(문서 검색 없음)` : hint;
   const defaultPlaceholder = rootId
     ? '스레드에 답글 · 컨텍스트는 이 스레드에만 유지됩니다'
     : trigger
@@ -78,8 +80,8 @@ export function Composer({ channel, rootId, placeholder }: { channel: ChannelDet
               {trigger}
             </button>
           )}
-          <span className="ml-auto text-[11px] text-muted whitespace-nowrap truncate" title={hint}>
-            {hint}
+          <span className="ml-auto text-[11px] text-muted whitespace-nowrap truncate" title={fullHint}>
+            {fullHint}
           </span>
           <button type="button" onClick={send} disabled={!canPost || !text.trim() || create.isPending} className="h-[30px] px-3.5 rounded-lg text-[12px] font-semibold text-white disabled:opacity-50" style={{ background: 'var(--lav3)' }}>
             보내기

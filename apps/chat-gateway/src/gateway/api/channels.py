@@ -92,6 +92,7 @@ async def channel_detail(id_or_name: str, user: CurrentUser, store: Store) -> Ch
             mode=binding.mode.value,
             trigger_word=binding.trigger_word,
             conversation_mode=binding.conversation_mode.value,
+            direct_llm_enabled=binding.direct_llm_enabled,
         )
         if binding
         else None,

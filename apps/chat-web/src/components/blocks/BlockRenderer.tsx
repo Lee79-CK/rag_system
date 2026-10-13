@@ -1,6 +1,7 @@
 'use client';
 
 import clsx from 'clsx';
+import { useState } from 'react';
 import { Button } from '@/components/ui/primitives';
 import type { EffectivePermissions } from '@/lib/query/hooks';
 import { useWidgetAction } from '@/lib/query/hooks';
@@ -54,7 +55,7 @@ function BlockView({ block, ctx }: { block: Block; ctx: BlockCtx }) {
         </pre>
       );
     case 'table':
-      return <TableView block={block} />;
+      return block.block_id === 'citations' ? <CollapsibleCitations block={block} /> : <TableView block={block} />;
     case 'actions':
       return <ActionsView block={block} ctx={ctx} />;
     default:
@@ -118,6 +119,19 @@ function TableView({ block }: { block: TableBlockT }) {
           {block.source && <span className="ml-auto">출처: {block.source}</span>}
         </div>
       )}
+    </div>
+  );
+}
+
+// 근거 문서 표(render.py `citations`)는 기본 접힘 — 답변 아래가 길어지지 않게 버튼으로 펼치고 접는다.
+function CollapsibleCitations({ block }: { block: TableBlockT }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex flex-col gap-2">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="btn self-start !h-6 !px-2 !text-[11px] !rounded-[10px] !text-muted !font-medium">
+        {open ? '▾ 근거 문서 접기' : `▸ 근거 문서 보기 (${block.rows.length}건)`}
+      </button>
+      {open && <TableView block={block} />}
     </div>
   );
 }

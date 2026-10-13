@@ -105,6 +105,16 @@ class InMemoryQdrant:
         return True
 
 
+def _cite_all(messages) -> str:
+    """프롬프트의 [근거 문서] 번호를 모두 인용한 답변 — pipeline 은 인용한 번호의 문서만 Citation 으로 남기므로,
+    검색된 문서 전체를 citations 로 검증하는 격리 테스트가 그대로 성립하게 한다."""
+    import re
+
+    user = messages[-1]["content"] if messages else ""
+    nums = re.findall(r"^\[(\d+)\] ", user, flags=re.MULTILINE)
+    return f"답변입니다. [{', '.join(nums)}]" if nums else "답변입니다."
+
+
 class CapturingLLM:
     """LLM 요청 payload를 캡처해 다른 Channel 문자열 유입 여부를 검사한다 (CH-002/003)."""
 
@@ -113,12 +123,12 @@ class CapturingLLM:
 
     async def complete(self, messages, *, max_tokens, temperature):
         self.messages = messages
-        return LLMResult(text="답변입니다. [1]", usage={})
+        return LLMResult(text=_cite_all(messages), usage={})
 
     async def stream(self, messages, *, max_tokens, temperature):
         """Worker 운영 경로(스트리밍) — 동일하게 payload 를 캡처한다."""
         self.messages = messages
-        yield LLMStreamEvent(delta="답변입니다. [1]")
+        yield LLMStreamEvent(delta=_cite_all(messages))
 
 
 class FakeEmbedding:

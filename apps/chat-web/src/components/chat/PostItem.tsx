@@ -55,13 +55,14 @@ export function PostItem({ post, me, onOpenThread, activeThread, inThread, compa
       <div className="min-w-0">
         <div className="flex items-baseline gap-2 flex-wrap">
           <span className="font-bold text-[13px]">{name}</span>
-          {isBot && <Badge tone="muted" className="!text-[9px]">BOT · RAG</Badge>}
+          {isBot && <Badge tone="muted" className="!text-[9px]">{props.direct ? 'BOT · LLM' : 'BOT · RAG'}</Badge>}
           <span className="mono text-[11px] text-muted">{fmtTime(post.created_at)}</span>
           {post.edit_at && <span className="text-[10px] text-muted">(편집됨)</span>}
           {streaming && <span className="dot" style={{ background: 'var(--lav3)', animation: 'pulseDot 1s infinite' }} title="응답 생성 중" />}
           {/* hover actions */}
           <span className="ml-auto opacity-0 group-hover:opacity-100 flex gap-1 relative">
-            {!inThread && onOpenThread && <button type="button" className="btn !h-6 !px-2 !text-[11px]" onClick={() => onOpenThread(post.id)}>답글</button>}
+            {/* 답글은 Bot 답변에만 — CHANNEL 모드에서 답변은 질문 스레드가 아닌 채널 본문에 달리므로 질문의 답글 스레드는 비어 있다 */}
+            {!inThread && isBot && onOpenThread && <button type="button" className="btn !h-6 !px-2 !text-[11px]" onClick={() => onOpenThread(post.id)}>답글</button>}
             <button type="button" className="btn !h-6 !px-2 !text-[11px]" onClick={() => setMenu((v) => !v)}>⋯</button>
             <Dropdown open={menu} onClose={() => setMenu(false)}>
               <MenuItem onClick={() => { navigator.clipboard?.writeText(`${location.origin}/ch/${location.pathname.split('/')[2]}/thread/${post.root_id ?? post.id}#${post.id}`); flash('링크 복사됨'); setMenu(false); }}>링크 복사</MenuItem>

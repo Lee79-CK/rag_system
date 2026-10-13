@@ -182,6 +182,7 @@ class ChannelBindingBrief(BaseModel):
     mode: Literal["DEDICATED_CHANNEL", "TRIGGER_WORD"]
     trigger_word: str | None = None
     conversation_mode: Literal["CHANNEL", "THREAD", "STATELESS"]
+    direct_llm_enabled: bool = False  # `/` 접두어 LLM 직접 대화 허용 (FR-CHAT-014)
 
 
 class ChannelDetail(BaseModel):

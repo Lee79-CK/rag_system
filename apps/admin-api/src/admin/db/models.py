@@ -194,6 +194,8 @@ class ChannelBindingRow(Base):
     ack_message_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # v1.1 (Alembic rev.2): Channel별 피드백 on/off.
     feedback_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # v2.1 (Alembic 0004): `/` 접두어 LLM 직접 대화(RAG 미경유) 허용.
+    direct_llm_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime.datetime] = _now_col(nullable=False)
     updated_at: Mapped[datetime.datetime] = _now_col(nullable=False, onupdate=func.now())
 

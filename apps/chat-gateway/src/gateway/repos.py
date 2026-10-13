@@ -189,6 +189,7 @@ def _binding_from_row(row: Any) -> ChannelBinding:
         mention_user=row["mention_user"],
         ack_message_enabled=row["ack_message_enabled"],
         feedback_enabled=row["feedback_enabled"],
+        direct_llm_enabled=row["direct_llm_enabled"],
     )
 
 
@@ -457,7 +458,7 @@ class SqlChatStore:
             """
             SELECT b.id, c.id AS channel_id, c.name AS channel_name, b.mode, b.trigger_word,
                    b.enabled, b.history_turns, b.mention_user, b.ack_message_enabled,
-                   b.feedback_enabled, ks.filter_json, ks.conversation_mode
+                   b.feedback_enabled, b.direct_llm_enabled, ks.filter_json, ks.conversation_mode
             FROM channel_bindings b
             JOIN chat_channels c ON c.id = b.channel_ref
             LEFT JOIN knowledge_scopes ks ON ks.id = b.knowledge_scope_id

@@ -211,7 +211,7 @@ uv run --package admin-api \
   alembic -c apps/admin-api/src/admin/db/migrations/alembic.ini upgrade head
 uv run --package admin-api \
   alembic -c apps/admin-api/src/admin/db/migrations/alembic.ini current
-# → 0003_webchat (head)
+# → 0004_direct_llm (head)
 
 # 시드 — 채널 2개(rag-cloud-ops / rag-hr) + Binding + 지식 범위 + 관리자(cklee/docadmin)
 make seed

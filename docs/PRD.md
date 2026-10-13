@@ -894,8 +894,8 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 | ----------- | ------------------------------------------------------------- | ----:| ------------------ |
 | FR-CHAT-001 | 사용자는 Web Chat Channel(또는 Thread)에서 한국어 자연어 질문을 입력할 수 있어야 한다.   | P0   | 질문 제출 및 답변 수신      |
 | FR-CHAT-002 | 답변에는 최소 1개 이상의 출처를 표시해야 한다.                                   | P0   | 문서명과 페이지/섹션 제공     |
-| FR-CHAT-003 | 출처는 Bot Post 의 근거 문서 `table` Block(#, 근거 문서, 위치 `p.N · section`, 발췌 ≤ 200자)으로 표시해야 한다. | P0   | Citation 형식 확인. `test_citation_excerpt_truncated_to_200` |
-| FR-CHAT-004 | 문서에서 근거를 찾지 못하면 추측하지 않고 정보 부족을 안내해야 한다.                       | P0   | 무근거 질문 평가 통과       |
+| FR-CHAT-003 | 출처는 Bot Post 의 근거 문서 `table` Block(#, 근거 문서, 위치 `p.N · section`, 발췌 ≤ 200자)으로 표시해야 한다. 표에는 **답변 본문이 인용한 번호([n])의 문서만** 표시하고 `#` 는 본문 번호와 같아야 하며, 인용이 없으면 표를 표시하지 않는다. | P0   | Citation 형식 확인. `test_citation_excerpt_truncated_to_200`, `test_fr_chat_003_*` |
+| FR-CHAT-004 | 문서에서 근거를 찾지 못하면 추측하지 않고 정보 부족을 안내해야 한다. 검색 점수는 통과했으나 LLM 이 근거 없이 "찾지 못했다"고 답한 경우도 근거 부족으로 처리하고 근거 문서 표를 표시하지 않는다. 단 사용자가 `/` 로 명시한 LLM 직접 대화(FR-CHAT-014)는 예외다. | P0   | 무근거 질문 평가 통과, `test_fr_chat_004_*` |
 | FR-CHAT-005 | 답변은 기본적으로 한국어로 제공해야 한다.                                       | P0   | 한국어 응답 비율 목표 충족    |
 | FR-CHAT-006 | 이전 대화 맥락은 현재 Channel 범위에서만 제한적으로 사용할 수 있어야 한다.                | P0   | 최근 N개 메시지 또는 요약 사용 |
 | FR-CHAT-007 | 관리자 설정에 따라 최대 입력/출력 Token을 제한해야 한다.                           | P0   | 초과 요청 차단/절단        |
@@ -905,6 +905,7 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 | FR-CHAT-011 | 답변 생성 중에는 접수 안내(ACK 설정 on: "질문을 접수했습니다. 근거 문서를 찾는 중…", off: "생각 중…")와 스트리밍 표시를 보여주고, 토큰 수신 시 본문을 실시간으로 확장해야 한다. | P0   | 스트리밍 점·접수 안내 표시 |
 | FR-CHAT-012 | 답변 하단에 👍 도움됨 / 👎 아쉬움 피드백 버튼과 누적 카운트를 표시해야 한다(피드백 on Channel 한정). | P1   | 클릭 후 카운트 갱신(`post.updated`) |
 | FR-CHAT-013 | `llm.stream.end` 또는 재연결 시 서버 조회로 최종 상태에 수렴해야 한다(DB 기준).               | P0   | 스트리밍 누락 시에도 최종 본문 일치 |
+| FR-CHAT-014 | 관리자가 채널별로 허용(`direct_llm_enabled`, 기본 off)하면 `/` 로 시작하는 질문은 사내 문서 검색 없이 LLM 이 직접 답해야 한다(`/` 제거, 대화 이력은 채널 설정 공유). 답변에는 근거 표 대신 "문서를 검색하지 않은 답변" 안내를 붙이고 Bot 배지를 `BOT · LLM` 으로 구분한다. 허용되지 않은 채널에서 `/` 질문은 기존 RAG 로 처리한다. | P1   | `test_fr_chat_014_*` |
 
 ### 15.5 검색 및 RAG
 
@@ -1146,7 +1147,7 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 2. 길이 검증(빈 메시지·`CHAT_MAX_POST_CHARS` 초과 400), `root_id` 가 답글이면 거부(답글의 답글 금지)
 3. `client_id` 중복 제거 — Redis `chat:client:{user}:{client_id}` NX(24h), 중복이면 기존 Post 반환(새 Job 없음). 2차 방어: `chat_posts(user_id, client_id)` UNIQUE
 4. Rate Limit `chat:rl:user:{id}` / `chat:rl:chan:{id}` — 초과 429
-5. 트리거 판정: Binding 없음/비활성 → 일반 게시만 / `DEDICATED_CHANNEL` → 모든 메시지 / `TRIGGER_WORD` → 접두어 메시지만(접두어 제거), 단 Bot 이 이미 답한 Thread 의 답글은 Trigger 없이 후속 질문
+5. 트리거 판정: Binding 없음/비활성 → 일반 게시만 / `DEDICATED_CHANNEL` → 모든 메시지 / `TRIGGER_WORD` → 접두어 메시지만(접두어 제거), 단 Bot 이 이미 답한 Thread 의 답글은 Trigger 없이 후속 질문 / `direct_llm_enabled` 채널의 `/` 메시지 → LLM 직접 대화(RAG 미경유, FR-CHAT-014)
 6. 답변 위치 결정: 질문이 Thread 답글이면 같은 Thread / `conversation_mode=THREAD` 면 질문을 root 로 Thread / 그 외 Channel 본문
 7. 단일 트랜잭션: 질문 Post + Bot placeholder Post(`props={streaming:true, ack:<ack_message_enabled>}`) + `chat_jobs(post_id, bot_post_id, QUEUED)`
 8. `post.created` ×2 emit → Redis `chat:req:{job_id}` 에 `ChatRequest`(TTL 24h) 저장 → RQ `Queue("rag-chat").enqueue("rag.worker.chat_worker.run_chat_job", job_id)` (payload 는 `job_id` 만)
@@ -1373,7 +1374,7 @@ v1.1 의 `/api/v1/mattermost/*`(Secret 등록·연결 테스트·Webhook Event �
 | `chat_channels`               | id(UUID), name(slug UNIQUE), display_name, type(public/private), purpose, created_at, archived_at | Web Chat Channel 기준정보(격리 키)    |
 | `chat_channel_members`        | channel_id, user_id (PK), role(member/channel_admin), last_viewed_at              | Channel 멤버십                     |
 | `chat_posts`                  | id, channel_id, root_id(self-FK), user_id, type(user/bot/system), message, blocks(JSONB), props(JSONB), client_id, created_at, edit_at, delete_at; UNIQUE(user_id, client_id) | 게시물(질문/Bot 답변, SSOT)          |
-| `channel_bindings`            | id, channel_ref(FK chat_channels), mode, trigger_word, enabled, knowledge_scope_id, history_turns, mention_user, ack_message_enabled, feedback_enabled | 챗봇 Channel 설정                |
+| `channel_bindings`            | id, channel_ref(FK chat_channels), mode, trigger_word, enabled, knowledge_scope_id, history_turns, mention_user, ack_message_enabled, feedback_enabled, direct_llm_enabled | 챗봇 Channel 설정                |
 | `knowledge_scopes`            | id, name, filter_json, conversation_mode                                          | Channel별 검색 범위               |
 | `documents`                   | id, title, category, status, active_version_id                                    | 문서                           |
 | `document_versions`           | id, document_id, version, hash, file_path, status                                 | 문서 버전                        |
@@ -1406,7 +1407,8 @@ v1.1 의 `/api/v1/mattermost/*`(Secret 등록·연결 테스트·Webhook Event �
   },
   "mention_user": true,
   "ack_message_enabled": true,
-  "feedback_enabled": true
+  "feedback_enabled": true,
+  "direct_llm_enabled": false
 }
 ```
 
@@ -1562,7 +1564,7 @@ chat-web 표시 규칙:
 | ------ | -------------------------------------------------------------------- |
 | 접수(ACK) | `props.ack=true`: "질문을 접수했습니다. 근거 문서를 찾는 중…" / false: "생각 중…"         |
 | 스트리밍   | `llm.stream.delta` 를 본문에 append, 스트리밍 점 표시                            |
-| 완료     | `post.updated` 로 최종 본문·근거 문서 표 반영, `llm.stream.end` 에 재조회로 DB 기준 수렴    |
+| 완료     | `post.updated` 로 최종 본문·근거 문서 표 반영(표는 기본 접힘, "근거 문서 보기 (N건)"/"근거 문서 접기" 버튼), `llm.stream.end` 에 재조회로 DB 기준 수렴 |
 | 오류     | `props.kind="error"` — coral 좌측선 오류 스타일                              |
 | 피드백    | 👍 도움됨 · 👎 아쉬움 버튼 + 누적 카운트                                          |
 

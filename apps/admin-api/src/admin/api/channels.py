@@ -54,6 +54,7 @@ class BindingCreate(BaseModel):
     mention_user: bool = True
     ack_message_enabled: bool = True
     feedback_enabled: bool = True
+    direct_llm_enabled: bool = False
 
 
 class BindingUpdate(BaseModel):
@@ -65,6 +66,7 @@ class BindingUpdate(BaseModel):
     mention_user: bool | None = None
     ack_message_enabled: bool | None = None
     feedback_enabled: bool | None = None
+    direct_llm_enabled: bool | None = None
 
 
 class MemberAdd(BaseModel):
@@ -97,6 +99,7 @@ def _binding_view(b: ChannelBindingRow) -> dict:
         "mention_user": b.mention_user,
         "ack_message_enabled": b.ack_message_enabled,
         "feedback_enabled": b.feedback_enabled,
+        "direct_llm_enabled": b.direct_llm_enabled,
     }
 
 

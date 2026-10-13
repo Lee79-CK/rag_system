@@ -12,6 +12,9 @@ ERROR_TEXT = "⚠️ 답변 생성 중 오류가 발생했습니다. 잠시 후 
 INSUFFICIENT_NOTE = (
     "문서 근거가 충분하지 않습니다. 질문을 구체화하거나 관련 문서 등록을 요청해 주세요."
 )
+DIRECT_NOTE = (
+    "📎 사내 문서를 검색하지 않고 LLM 이 직접 답변했습니다. 사내 정보는 정확하지 않을 수 있습니다."
+)
 _EXCERPT_MAX = 200
 
 
@@ -23,6 +26,7 @@ def render_answer(
     - 본문: (mention 시 `@user `) + LLM 답변. 스트리밍 누적 결과와 동일한 텍스트.
     - 근거 문서: `table` block (#, 문서, 위치, 발췌) — Mattermost 시절 "근거 문서" 목록 대체.
     - 근거 부족: `context` block 안내.
+    - LLM 직접 대화(`/`, FR-CHAT-014): 근거 표 없이 `context` block 안내.
     """
     message = f"@{user_name} {completion.answer}" if mention else completion.answer
     blocks: list[dict[str, Any]] = []
@@ -32,7 +36,9 @@ def render_answer(
             loc = " · ".join(x for x in (f"p.{c.page}" if c.page else "", c.section or "") if x)
             rows.append(
                 {
-                    "n": str(i),
+                    "n": str(
+                        c.ref or i
+                    ),  # 본문의 [n] 과 같은 번호 (인용된 문서만이라 비연속일 수 있음)
                     "doc": c.document_name,
                     "loc": loc or "-",
                     "excerpt": c.excerpt[:_EXCERPT_MAX],
@@ -54,6 +60,8 @@ def render_answer(
         )
     if completion.insufficient_evidence:
         blocks.append({"type": "context", "block_id": "insufficient", "text": INSUFFICIENT_NOTE})
+    if completion.direct:
+        blocks.append({"type": "context", "block_id": "direct", "text": DIRECT_NOTE})
     return message, blocks
 
 

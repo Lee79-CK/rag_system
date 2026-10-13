@@ -165,6 +165,17 @@
           "chunk_id": {
             "type": "string",
             "title": "Chunk Id"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
           }
         },
         "type": "object",
@@ -210,6 +221,11 @@
           "insufficient_evidence": {
             "type": "boolean",
             "title": "Insufficient Evidence",
+            "default": false
+          },
+          "direct": {
+            "type": "boolean",
+            "title": "Direct",
             "default": false
           },
           "usage": {

@@ -3051,6 +3051,11 @@
             "type": "boolean",
             "title": "Feedback Enabled",
             "default": true
+          },
+          "direct_llm_enabled": {
+            "type": "boolean",
+            "title": "Direct Llm Enabled",
+            "default": false
           }
         },
         "type": "object",
@@ -3149,6 +3154,17 @@
               }
             ],
             "title": "Feedback Enabled"
+          },
+          "direct_llm_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direct Llm Enabled"
           }
         },
         "type": "object",

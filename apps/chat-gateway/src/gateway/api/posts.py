@@ -123,7 +123,12 @@ async def create_post(
                 client_id=body.client_id,
                 bot=bot,
                 bot_root_id=trigger.bot_root_id,
-                bot_props={"streaming": True, "ack": binding.ack_message_enabled},
+                # 직접 대화는 문서 검색이 없으므로 "근거 문서를 찾는 중" 접수 안내 대신 "생각 중…"
+                bot_props={
+                    "streaming": True,
+                    "ack": binding.ack_message_enabled and not trigger.direct,
+                }
+                | ({"direct": True} if trigger.direct else {}),
             )
         else:
             result = None
@@ -166,6 +171,7 @@ async def create_post(
         bot_post_id=result.bot_post.id,
         message=trigger.question,
         trace_id=trace_id,
+        direct=trigger.direct,
     )
     try:
         await redis.set(

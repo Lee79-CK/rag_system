@@ -23,6 +23,8 @@ export interface BotProps {
   feedback?: Record<string, number>;
   citations_count?: number;
   insufficient_evidence?: boolean;
+  /** `/` 접두어 LLM 직접 대화 답변 (RAG 미경유) */
+  direct?: boolean;
 }
 export interface PostDto {
   id: string;
@@ -70,6 +72,8 @@ export interface ChannelBindingBrief {
   mode: 'DEDICATED_CHANNEL' | 'TRIGGER_WORD';
   trigger_word: string | null;
   conversation_mode: 'CHANNEL' | 'THREAD' | 'STATELESS';
+  /** `/` 접두어 LLM 직접 대화 허용 */
+  direct_llm_enabled?: boolean;
 }
 export interface ChannelDetail {
   id: string;

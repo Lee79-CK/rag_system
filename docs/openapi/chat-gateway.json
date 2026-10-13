@@ -662,6 +662,11 @@
               "STATELESS"
             ],
             "title": "Conversation Mode"
+          },
+          "direct_llm_enabled": {
+            "type": "boolean",
+            "title": "Direct Llm Enabled",
+            "default": false
           }
         },
         "type": "object",

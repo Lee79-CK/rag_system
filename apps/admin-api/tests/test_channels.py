@@ -64,6 +64,23 @@ def test_trigger_word_mode_requires_trigger(client, seed, auth):
     _create_binding(client, auth, channel_id, mode="TRIGGER_WORD", trigger_word="!rag")
 
 
+def test_fr_chat_014_binding_direct_llm_flag(client, seed, auth):
+    """`/` 직접 대화는 기본 꺼짐 — 관리자가 채널별로 켠다."""
+    seed({"sysadmin": ["SYS_ADMIN"]})
+    channel_id = _create_channel(client, auth)
+    binding_id = _create_binding(client, auth, channel_id)
+    got = client.get(f"/api/v1/chat/channels/{channel_id}", headers=auth("sysadmin"))
+    assert got.json()["data"]["bindings"][0]["direct_llm_enabled"] is False
+
+    upd = client.put(
+        f"/api/v1/chat/bindings/{binding_id}",
+        json={"direct_llm_enabled": True},
+        headers=auth("sysadmin"),
+    )
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["data"]["direct_llm_enabled"] is True
+
+
 def test_binding_enable_disable(client, seed, auth):
     seed({"sysadmin": ["SYS_ADMIN"]})
     channel_id = _create_channel(client, auth)

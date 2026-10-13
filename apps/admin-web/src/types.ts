@@ -196,6 +196,7 @@ export interface BindingView {
   mention_user: boolean;
   ack_message_enabled: boolean;
   feedback_enabled: boolean;
+  direct_llm_enabled: boolean;
 }
 
 export interface ChannelCreate {
@@ -214,6 +215,7 @@ export interface BindingCreate {
   mention_user: boolean;
   ack_message_enabled: boolean;
   feedback_enabled: boolean;
+  direct_llm_enabled: boolean;
 }
 
 export type BindingUpdate = Partial<BindingCreate>;

@@ -240,3 +240,115 @@ def test_fr_chat_009_worker_error_text_names_exception_and_url():
     assert text.startswith("ReadTimeout: ")
     assert "reranker-api.rag-ai:8005/internal/v1/rerank" in text
     assert _error_text(ValueError("bad")) == "ValueError: bad"
+
+
+# ---------------------------------------------------------------- 인용한 근거만 표시 (FR-CHAT-003 / FR-CHAT-004)
+def test_fr_chat_003_referenced_indices_formats():
+    from rag.domain.citation import referenced_indices
+
+    assert referenced_indices("A [2, 5] B", 8) == [2, 5]
+    assert referenced_indices("A [1][3] B [3]", 8) == [1, 3]
+    assert referenced_indices("범위 [1-3] · [6~10]", 8) == [1, 2, 3, 6, 7, 8]
+    # 연도·범위 밖 번호는 근거 번호가 아니다
+    assert referenced_indices("[2025]년 실적 [9] [0]", 8) == []
+    assert referenced_indices("번호 없는 답변", 8) == []
+
+
+def test_fr_chat_003_build_citations_keeps_only_cited_with_original_ref():
+    chunks = [
+        ScoredChunk(payload=_payload(i, f"본문{i}"), vector_score=0.9, rerank_score=0.9)
+        for i in range(1, 6)
+    ]
+    cites = build_citations(chunks, [2, 5])
+    assert [c.chunk_id for c in cites] == ["v1-00002", "v1-00005"]
+    assert [c.ref for c in cites] == [2, 5]  # 본문 [5] ↔ 표 #5
+    assert build_citations(chunks, []) == []
+    assert [c.ref for c in build_citations(chunks)] == [1, 2, 3, 4, 5]  # refs 생략 = 전체
+
+
+def test_fr_chat_004_no_evidence_answer_detection():
+    from rag.domain.guardrail import is_no_evidence_answer
+
+    assert is_no_evidence_answer("제공된 문서에서 관련 근거를 찾지 못했습니다.")
+    assert is_no_evidence_answer(
+        '@홍길동 제공된 문서에서 "생각보다 많군요"라는 표현에 대한 구체적인 근거나 맥락을 찾지 못했습니다.'
+    )
+    assert is_no_evidence_answer("해당 정보는 문서에 포함되어 있지 않습니다.")
+    assert not is_no_evidence_answer("2020년 콘텐츠산업 사업체 수는 99,551개입니다.")
+
+
+async def _run_with_answer(answer: str, n_chunks: int = 4):
+    from rag.domain.pipeline import PipelineConfig, RagPipeline
+    from rag.domain.ports import LLMStreamEvent
+
+    class Emb:
+        async def embed(self, texts):
+            return [[0.0] * 4 for _ in texts]
+
+    class Ret:
+        async def search(self, v, f, k):
+            return [RetrievedChunk(payload=_payload(i), score=0.9) for i in range(1, n_chunks + 1)]
+
+    class Rr:
+        async def rerank(self, q, docs, n):
+            return [(i, 0.9 - i * 0.01) for i in range(len(docs))]
+
+    class LLM:
+        async def complete(self, *a, **k):
+            raise AssertionError
+
+        async def stream(self, messages, *, max_tokens, temperature):
+            yield LLMStreamEvent(delta=answer)
+
+    async def on_delta(d: str) -> None:
+        pass
+
+    pipe = RagPipeline(
+        embedding=Emb(),
+        retrieval=Ret(),
+        reranker=Rr(),
+        llm=LLM(),
+        token_counter=HeuristicTokenCounter(),
+        config=PipelineConfig(),
+    )
+    return await pipe.run(question="q", binding=_binding(), on_delta=on_delta)
+
+
+async def test_fr_chat_003_pipeline_cites_only_referenced_chunks():
+    out = await _run_with_answer(
+        "연간 합계는 명시되어 있지 않습니다. 다만 분기별 매출은 다음과 같습니다 [2, 4]."
+    )
+    assert out.insufficient_evidence is False  # 번호를 인용한 부분 답변은 근거 부족이 아니다
+    assert [c.ref for c in out.citations] == [2, 4]
+    assert out.usage["citation_refs"] == 2
+
+
+async def test_fr_chat_004_pipeline_llm_no_evidence_answer_has_no_citations():
+    text = "제공된 문서에서 관련 근거를 찾지 못했습니다."
+    out = await _run_with_answer(text)
+    assert out.insufficient_evidence is True
+    assert out.citations == []
+    assert out.answer == text  # 스트리밍된 본문 그대로
+    assert out.usage["llm_insufficient"] == 1
+
+
+async def test_fr_chat_003_pipeline_uncited_answer_hides_table():
+    out = await _run_with_answer("일반적인 안내 문장입니다.")
+    assert out.insufficient_evidence is False
+    assert out.citations == []
+    assert out.usage["citation_refs"] == 0
+
+
+def test_fr_chat_014_direct_messages_native_roles():
+    from rag.domain.prompt import DIRECT_SYSTEM_PROMPT, build_direct_messages
+
+    msgs = build_direct_messages(
+        question="번역해줘",
+        history=[("user", "질문"), ("assistant", "답변 [1]"), ("system", "무시")],
+    )
+    assert msgs[0] == {"role": "system", "content": DIRECT_SYSTEM_PROMPT}
+    assert [(m["role"], m["content"]) for m in msgs[1:]] == [
+        ("user", "질문"),
+        ("assistant", "답변 [1]"),
+        ("user", "번역해줘"),
+    ]
