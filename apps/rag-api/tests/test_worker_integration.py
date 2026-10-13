@@ -389,7 +389,7 @@ async def test_fr_chat_014_direct_skips_retrieval_and_streams(binding):
     assert store.jobs["job-d"] == "COMPLETED"
     # 네이티브 chat 형식: system → 이력(user/assistant) → 질문
     assert [m["role"] for m in llm.messages] == ["system", "user", "assistant", "user"]
-    assert "사내 문서를 검색하지 않습니다" in llm.messages[0]["content"]
+    assert "사내 문서를 검색하지 않는 일반 대화 모드" in llm.messages[0]["content"]
     assert llm.messages[-1]["content"] == "이걸 영어로 번역해줘"
     deltas = [e for e in spy.events if e[0] == "llm.stream.delta"]
     assert "".join(e[1]["delta"] for e in deltas) == "".join(ANSWER_TOKENS)

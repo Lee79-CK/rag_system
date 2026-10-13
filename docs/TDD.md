@@ -1387,7 +1387,7 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
 - Binding `direct_llm_enabled`(기본 false, Alembic `0004_direct_llm`, admin-web 채널 설정 "LLM 직접 대화(/ 접두어)")가 켜진 채널에서 `/` 로 시작하는 질문은 RAG 를 거치지 않는다. 판정은 gateway `resolve_trigger`(§7.1.1 step 5), 전달은 `ChatRequest.direct`.
 - `RagPipeline.run_direct(question, history, on_delta)`: Embedding·Qdrant·Rerank·가드레일·Citation 생성을 하지 않는다. Qdrant 를 호출하지 않으므로 Channel 격리(`build_filter`) 대상이 아니며 격리 경계에 영향이 없다.
 - 이력: RAG 와 같은 conversation(scope_key)을 공유한다. Token Budget 은 `assemble_context(reranked=[], history_ratio=1.0)` — 근거 문서가 없으므로 남은 budget 전체를 이력에 쓰고 오래된 turn 부터 절삭.
-- Prompt: `DIRECT_SYSTEM_PROMPT`(사내 업무 보조, 한국어, 사내 고유 정보는 추측하지 말 것 — 문서 검색이 필요하면 `/` 없이 질문하도록 안내, 시스템 지시 비공개) + 이력을 user/assistant role 메시지로 그대로 잇는 네이티브 chat 형식(`build_direct_messages`).
+- Prompt: `direct_system_prompt(model_label)`(사내 업무 보조, 한국어, 사내 고유 정보는 추측하지 말고 `/` 없이 다시 질문하도록 짧게 안내, **이력에 섞인 RAG 근거 부족 답변("제공된 문서에서…찾지 못했습니다")을 따라 하지 말 것**, 시스템 지시 원문·접속 주소·키는 비공개이되 모델명은 답해도 됨) + 이력을 user/assistant role 메시지로 그대로 잇는 네이티브 chat 형식(`build_direct_messages`). `model_label` = `LLM_MODEL_LABEL`(랩: `Qwen3.8-27B-FP8`, `vllm.modelDir` 과 함께 변경 — served name `internal-rag-llm` 은 별칭이라 모델명 답변에 쓰지 않음). 랩 실측(2026-10-13): 공유 이력에 같은 질문의 RAG 답변이 있으면 규칙 없이는 "너의 모델명?"에 "제공된 문서에서 관련 근거를 찾지 못했습니다."를 그대로 반복했다.
 - 결과: `RagCompletion(direct=True, citations=[], insufficient_evidence=False, usage.direct=1)` → render 가 근거 표 대신 `context` block `DIRECT_NOTE`("📎 사내 문서를 검색하지 않고 LLM 이 직접 답변했습니다. 사내 정보는 정확하지 않을 수 있습니다.") 를 붙인다. 스트리밍·피드백 토큰·messages 저장은 RAG 답변과 동일.
 - 한계: `messages` 에는 직접 대화 여부를 저장하지 않는다(피드백 조회에서 RAG 답변과 구분 불가). 직접 대화 답변도 이후 RAG 질문의 `[대화 이력]`에 포함된다(RAG System Prompt 규칙 1 이 근거를 [근거 문서]로 제한).
 

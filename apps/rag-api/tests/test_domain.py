@@ -352,3 +352,13 @@ def test_fr_chat_014_direct_messages_native_roles():
         ("assistant", "답변 [1]"),
         ("user", "번역해줘"),
     ]
+
+
+def test_fr_chat_014_direct_prompt_model_label_and_history_guard():
+    from rag.domain.prompt import build_direct_messages, direct_system_prompt
+
+    assert "LLM 모델은" not in direct_system_prompt()
+    sp = build_direct_messages(question="모델명?", history=[], model_label="Qwen3.8-27B-FP8")[0]
+    assert "사용 중인 LLM 모델은 Qwen3.8-27B-FP8 입니다." in sp["content"]
+    # 공유 이력의 RAG 근거 부족 답변을 따라 하지 않도록 명시 (랩 실측 회귀)
+    assert "제공된 문서에서 관련 근거를 찾지 못했습니다." in sp["content"]

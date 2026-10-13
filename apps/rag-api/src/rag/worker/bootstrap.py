@@ -34,6 +34,7 @@ def build_pipeline(settings: Settings) -> RagPipeline:
         rerank_score_threshold=settings.rerank_score_threshold,
         max_output_tokens=settings.max_output_tokens,
         temperature=settings.llm_temperature,
+        model_label=settings.llm_model_label,
         budget=BudgetConfig(
             max_context_tokens=settings.max_context_tokens,
             max_output_tokens=settings.max_output_tokens,

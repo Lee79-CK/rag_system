@@ -127,6 +127,8 @@ appServices:
       - { name: LLM_SERVED_MODEL_NAME, value: "internal-rag-llm" }
       # Qwen3.8 은 thinking 기본 on → RAG 는 요청마다 chat_template_kwargs.enable_thinking=false (첫 토큰 지연 방지)
       - { name: LLM_ENABLE_THINKING,   value: "false" }
+      # `/` 직접 대화에서 "모델명" 질문에 답할 실제 모델명 — vllm.modelDir 을 바꾸면 함께 변경
+      - { name: LLM_MODEL_LABEL,       value: "Qwen3.8-27B-FP8" }
       # 동시 15 → GB10 대역폭 고려 8 (가이드 §7.2) ※ 코드가 아직 semaphore 로 강제하지 않음 — 실효 동시성은 rag-worker replica 수
       - { name: CHAT_MAX_CONCURRENCY,  value: "8" }
       # CPU reranker 지연 억제 (P3 실측, 8 CPU): 30개×730자 ≈ 40s → 30s timeout 초과로 답변 실패.

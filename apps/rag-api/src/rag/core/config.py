@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     reranker_api_url: str = "http://localhost:8005"
     vllm_api_url: str = "http://localhost:8010/v1"
     llm_served_model_name: str = "internal-rag-llm"
+    # 사용자에게 알려 줄 실제 모델명 (served name 은 교체해도 유지되는 별칭이라 다르다). `/` 직접 대화 프롬프트용
+    llm_model_label: str = ""
 
     # Retrieval / generation
     vector_top_k: int = 30

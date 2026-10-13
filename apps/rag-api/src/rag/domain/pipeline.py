@@ -25,11 +25,11 @@ from rag.domain.ports import (
     ScoredChunk,
 )
 from rag.domain.prompt import (
-    DIRECT_SYSTEM_PROMPT,
     INSUFFICIENT_EVIDENCE_TEXT,
     SYSTEM_PROMPT,
     build_direct_messages,
     build_messages,
+    direct_system_prompt,
 )
 from rag.domain.retrieval import build_filter
 
@@ -44,6 +44,7 @@ class PipelineConfig:
     rerank_score_threshold: float = 0.0
     max_output_tokens: int = 1024
     temperature: float = 0.2
+    model_label: str = ""  # LLM_MODEL_LABEL — 직접 대화에서 모델명 질문 답변용 (FR-CHAT-014)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
 
 
@@ -193,14 +194,16 @@ class RagPipeline:
         usage: dict[str, float | int] = {"direct": 1}
         assembled = assemble_context(
             counter=self._counter,
-            system_prompt=DIRECT_SYSTEM_PROMPT,
+            system_prompt=direct_system_prompt(self._cfg.model_label),
             question=question,
             history=history or [],
             reranked=[],
             config=dataclasses.replace(self._cfg.budget, history_ratio=1.0),
         )
         usage["context_tokens"] = assembled.used_tokens
-        messages = build_direct_messages(question=question, history=assembled.history)
+        messages = build_direct_messages(
+            question=question, history=assembled.history, model_label=self._cfg.model_label
+        )
         answer = await self._generate(messages, on_delta, usage)
         return PipelineOutput(answer=answer, citations=[], insufficient_evidence=False, usage=usage)
 
