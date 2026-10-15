@@ -11,10 +11,11 @@ import os
 from pathlib import Path
 
 import httpx
+from rag_eval import case_result_from_completion
 
 from evaluation.dataset import load_dataset
 from evaluation.metrics import summarize
-from evaluation.models import CaseResult, EvalCase, RetrievedDoc
+from evaluation.models import CaseResult, EvalCase
 from evaluation.report import render_report
 
 
@@ -32,18 +33,7 @@ def run_case(client: httpx.Client, rag_url: str, case: EvalCase) -> CaseResult:
     except Exception as exc:  # noqa: BLE001 — 개별 실패는 리포트에 기록하고 계속
         return CaseResult(case=case, answer="", insufficient_evidence=False, error=str(exc)[:200])
 
-    citations = [
-        RetrievedDoc(document_name=c["document_name"], page=c.get("page"))
-        for c in data.get("citations", [])
-    ]
-    return CaseResult(
-        case=case,
-        answer=data.get("answer", ""),
-        insufficient_evidence=data.get("insufficient_evidence", False),
-        # 동기 엔드포인트는 사용된 citation만 반환 → retrieved 근사치로 사용 (§9 한계)
-        retrieved=citations,
-        citations=citations,
-    )
+    return case_result_from_completion(case, data)
 
 
 def main() -> None:

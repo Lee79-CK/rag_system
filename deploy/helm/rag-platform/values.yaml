@@ -166,6 +166,7 @@ appServices:
       - { name: INDEX_JOB_TRIGGER,     value: "none" }   # k8s 로 바꾸면 serviceAccounts/networkPolicy.apiServer 필요
       - { name: INDEX_JOB_NAMESPACE,   value: "rag-ingestion" }
       - { name: QDRANT_URL,            value: "http://qdrant.rag-data:6333" }   # 비활성화/삭제 → is_active=false
+      - { name: RAG_API_URL,           value: "http://rag-api.rag-app:8002" }   # 품질 평가 › 평가 실행 (FR-OPS-008)
   embedding-api:
     namespace: rag-ai
     replicas: 2

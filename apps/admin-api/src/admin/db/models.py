@@ -297,6 +297,94 @@ class MessageFeedbackRow(Base):
     message: Mapped[Message] = relationship(back_populates="feedback")
 
 
+class EvaluationCandidate(Base):
+    """👎 답변 → 평가셋 후보 (§13.3, Alembic 0005). 질문·답변은 승격 시점 스냅샷 — 원본 메시지가 지워져도 남는다."""
+
+    __tablename__ = "evaluation_candidates"
+    __table_args__ = (
+        UniqueConstraint("message_id", name="uq_eval_candidate_message"),
+        CheckConstraint(
+            "status IN ('PENDING', 'ACCEPTED', 'REJECTED')", name="ck_eval_candidate_status"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL")
+    )
+    channel_id: Mapped[str] = mapped_column(String(64), nullable=False)  # chat_channels.id
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    cited_documents: Mapped[list] = mapped_column(JsonB, nullable=False, default=list)
+    # 평가자가 채우는 정답(ground_truth) — §13.3
+    case_type: Mapped[str] = mapped_column(String(20), nullable=False, default="single_doc")
+    answer_gist: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    expected_documents: Mapped[list] = mapped_column(JsonB, nullable=False, default=list)
+    expected_pages: Mapped[list] = mapped_column(JsonB, nullable=False, default=list)
+    answerable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
+    note: Mapped[str | None] = mapped_column(Text)
+    promoted_by: Mapped[str] = mapped_column(String(100), nullable=False)  # admin_users.login_id
+    created_at: Mapped[datetime.datetime] = _now_col(nullable=False)
+    updated_at: Mapped[datetime.datetime] = _now_col(nullable=False, onupdate=func.now())
+
+
+class EvaluationRun(Base):
+    """포털 평가 실행 (FR-OPS-008, Alembic 0006). 채택 후보로 rag-api 동기 completions 를 호출해 지표를 낸다."""
+
+    __tablename__ = "evaluation_runs"
+    __table_args__ = (
+        CheckConstraint("status IN ('RUNNING', 'COMPLETED', 'FAILED')", name="ck_eval_run_status"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="RUNNING")
+    dataset: Mapped[str] = mapped_column(String(100), nullable=False, default="feedback-candidates")
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    done: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    metrics: Mapped[dict | None] = mapped_column(JsonB)  # rag_eval.MetricSummary
+    error: Mapped[str | None] = mapped_column(Text)
+    started_by: Mapped[str] = mapped_column(String(100), nullable=False)  # admin_users.login_id
+    created_at: Mapped[datetime.datetime] = _now_col(nullable=False)
+    # 진행 heartbeat — 문항마다 갱신. 오래 멈춘 RUNNING 은 조회 시 FAILED 로 정리한다.
+    updated_at: Mapped[datetime.datetime] = _now_col(nullable=False, onupdate=func.now())
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    results: Mapped[list[EvaluationRunResult]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="EvaluationRunResult.seq"
+    )
+
+
+class EvaluationRunResult(Base):
+    __tablename__ = "evaluation_run_results"
+
+    id: Mapped[uuid.UUID] = _pk()
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("evaluation_candidates.id", ondelete="SET NULL")
+    )
+    case_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    case_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    answerable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    insufficient_evidence: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    expected_documents: Mapped[list] = mapped_column(JsonB, nullable=False, default=list)
+    citations: Mapped[list] = mapped_column(JsonB, nullable=False, default=list)  # 문서 제목
+    retrieved: Mapped[list] = mapped_column(JsonB, nullable=False, default=list)  # 문서 제목
+    recall_at_10: Mapped[float | None] = mapped_column(Float)
+    citation_precision: Mapped[float | None] = mapped_column(Float)
+    no_answer_safe: Mapped[float | None] = mapped_column(Float)
+    answerable_answered: Mapped[float | None] = mapped_column(Float)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    run: Mapped[EvaluationRun] = relationship(back_populates="results")
+
+
 # ===== 문서 =====
 class Document(Base):
     __tablename__ = "documents"

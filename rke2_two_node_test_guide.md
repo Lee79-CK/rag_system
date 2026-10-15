@@ -536,7 +536,7 @@ kubectl -n rag-ai logs -f deploy/vllm-llm-0 | grep -i "loading\|ready\|error"
 
 `-o wide` 로 **배치 검증**: vLLM 만 pgx, 나머지 전부(chat-gateway·chat-web 포함) p3 에 스케줄되었는지 확인합니다.
 
-**DB 마이그레이션** — 스키마 소유자는 **admin-api 의 Alembic** 입니다 (`apps/admin-api/src/admin/db/migrations`, 리비전 `0001_initial` → `0002_feedback_enabled` → `0003_webchat` → `0004_direct_llm`). admin-api 는 기동 시 마이그레이션을 하지 않으며, 대신 `migration.enabled=true`(poc·lab 기본) 이면 Helm **post-install/post-upgrade hook Job `rag-db-migrate`** 가 `alembic upgrade head` 를 실행합니다.
+**DB 마이그레이션** — 스키마 소유자는 **admin-api 의 Alembic** 입니다 (`apps/admin-api/src/admin/db/migrations`, 리비전 `0001_initial` → `0002_feedback_enabled` → `0003_webchat` → `0004_direct_llm` → `0005_eval_candidates` → `0006_eval_runs`). admin-api 는 기동 시 마이그레이션을 하지 않으며, 대신 `migration.enabled=true`(poc·lab 기본) 이면 Helm **post-install/post-upgrade hook Job `rag-db-migrate`** 가 `alembic upgrade head` 를 실행합니다.
 
 - hook Job 은 `helm upgrade --install` 이 끝나기 전에 **완료되어야 하며**, 실패하면 helm 명령 자체가 실패합니다(§8). 성공하면 `hook-delete-policy: hook-succeeded` 로 삭제되므로 Job 이 남아 있지 않은 것이 정상입니다.
 - 적용 결과 확인 (Containerfile WORKDIR=`/app` 기준 절대 경로 = `migration.alembicIni`):
@@ -544,7 +544,7 @@ kubectl -n rag-ai logs -f deploy/vllm-llm-0 | grep -i "loading\|ready\|error"
 ```bash
 kubectl -n rag-app exec deploy/admin-api -- \
   alembic -c /app/apps/admin-api/src/admin/db/migrations/alembic.ini current
-# → 0004_direct_llm (head)
+# → 0006_eval_runs (head)
 ```
 
 - **fallback — `migration.enabled=false` 로 설치한 경우에만** 수동 실행합니다:
@@ -562,7 +562,7 @@ kubectl -n rag-app exec deploy/admin-api -- \
 # ① 마이그레이션 — hook Job 이 지웠으므로 admin-api Pod 에서 리비전 확인
 kubectl -n rag-app exec deploy/admin-api -- \
   alembic -c /app/apps/admin-api/src/admin/db/migrations/alembic.ini current
-# → 0004_direct_llm (head)
+# → 0006_eval_runs (head)
 
 # ② Secret 파일이 실제로 마운트되었는지 (secretMount.keys 에 나열한 키만 보여야 정상)
 kubectl -n rag-app exec deploy/chat-gateway -- ls -l /var/run/secrets/rag   # jwt-secret, password-pepper, feedback-signing-key (3)
@@ -1108,7 +1108,7 @@ uv run python scripts/measure_latency.py --n 30 --concurrency 4 --rag-url http:/
 - [ ] HDD `/data/bulk` · fast NVMe 512GB `/data/fast` 마운트(`findmnt`, 루트 FS 와 다른 디바이스), StorageClass `local-fast`/`local-bulk` Bound 테스트 통과(§1.4.3), nodePathMap 치환
 - [ ] **이미지 8종**(chat-gateway · rag-api · admin-api · embedding-api · reranker-api · parser-indexer · chat-web · admin-web) + vLLM arm64 + data 3종 + busybox 레지스트리 push, manifest arch 확인
 - [ ] **NS 4종 + `rag-platform=true` 라벨**, Secret 5개(`rag-chat-secrets`, `rag-chat-tls`(SAN 두 호스트), `rag-postgresql-secret`×3)
-- [ ] `helm upgrade --install` 성공(hook `rag-db-migrate` 포함), `alembic current` = `0004_direct_llm (head)`
+- [ ] `helm upgrade --install` 성공(hook `rag-db-migrate` 포함), `alembic current` = `0006_eval_runs (head)`
 - [ ] 배치 검증 — vLLM 만 pgx, 나머지(chat-gateway·chat-web 포함) p3 (`-o wide`), **Qwen3.8-27B 로딩 완료**(startupProbe 내, `/v1/models` → `internal-rag-llm`, annotation `ragplatform.io/llm-model=/models/Qwen3.8-27B-FP8`)
 - [ ] §4.3 ①~⑧: alembic head, Secret 파일 마운트(gateway 3 / worker 1 / admin-api 1, `startup.*_missing` 0), PVC 티어(DB=local-fast, documents=hostPath `/data/bulk/documents`), 문서 볼륨 쓰기, **실엔진 기동(`-mock` 없음)**, `/v1/models`, Ingress(rag-chat/rag-admin)·NetPol(`allow-ingress-to-*` 4 + `allow-admin-api-to-apiserver`), NVMe 70% 미만
 - [ ] seed + qdrant-init + seed-users(동일 pepper) 완료

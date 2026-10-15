@@ -979,10 +979,11 @@ Admin Web 은 RAG 관리 전용 Portal 이며 사용자 채팅은 Web Chat 이 �
 | FR-OPS-005 | GPU 사용률, VRAM, 온도, 전력을 관측해야 한다.                             | P0   | Grafana Dashboard                  |
 | FR-OPS-006 | RAG 단계별 지연시간을 관측해야 한다.                                      | P0   | Embedding/Search/Rerank/LLM Metric |
 | FR-OPS-007 | 질문 수신 결과(accepted/duplicate/rate_limited/…), ACK 지연, 로그인 결과, WebSocket 연결 수, 피드백 토큰 위조 및 Queue 적체를 관측해야 한다. | P0   | Alert 기준 정의                        |
-| FR-OPS-008 | 관리자용 품질 평가 결과를 조회할 수 있어야 한다.                                | P1   | 평가 Dashboard                       |
+| FR-OPS-008 | 관리자용 품질 평가 결과를 조회할 수 있어야 한다.                                | P1   | `품질 › 품질 평가 › 실행 결과` — 채택 평가셋 후보로 포털에서 평가 실행, 실행 이력·지표(목표 대비)·문항별 결과 조회. `test_fr_ops_008_*` |
 | FR-OPS-009 | Channel별 사용량, 질문 수, 성공률, 평균 응답시간을 조회할 수 있어야 한다.             | P1   | Channel 통계 제공                      |
 | FR-OPS-010 | 인증 Secret(JWT 키/Pepper/피드백 서명 키)과 사용자 비밀번호 해시는 Admin Web/API 에서 조회할 수 없어야 하며, 임시 비밀번호는 발급 응답에서 1회만 표시해야 한다. | P0   | Secret Masking/Rotation 확인         |
 | FR-OPS-011 | 시스템 관리자는 Admin Web 에서 대화 답변 실패·색인 실패·관리 API 오류를 한 화면에서 조회하고, 오류 시각 전후의 관련 서비스 로그를 kubectl 없이 확인할 수 있어야 한다. | P1   | `시스템 › 오류 로그`(SYS_ADMIN). 로그 대상은 서버 allowlist·비밀값 마스킹·열람 감사(`ERROR_LOG_VIEW`). `test_fr_ops_011_*` |
+| FR-OPS-012 | 품질 평가자는 👎 답변을 평가셋 후보로 승격(질문·답변·인용 문서 스냅샷)하고, Admin Web 에서 유형·정답 요지·기대 문서/쪽을 입력해 채택/제외한 뒤, 채택 문항을 평가 runner 데이터셋 YAML 로 내보낼 수 있어야 한다. | P1   | `품질 › 품질 평가`. `test_fr_ops_012_*` |
 
 ## 16. 비기능 요구사항
 

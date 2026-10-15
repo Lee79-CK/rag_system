@@ -21,6 +21,7 @@ dependencies = [
     "rag-schemas",
     "rag-common",
     "rag-observability",
+    "rag-eval",
 ]
 
 [dependency-groups]

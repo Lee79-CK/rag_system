@@ -116,3 +116,19 @@ def test_doc_match_uses_removesuffix_not_rstrip():
     assert _doc_match("guide_dp", ["guide_dp.pdf"]) is True
     assert _doc_match("guide_", ["guide_dp.pdf"]) is False
     assert _doc_match("장애대응매뉴얼", ["장애대응매뉴얼.pdf"]) is True
+
+
+def test_dataset_loads_list_file_exported_from_admin(tmp_path):
+    """RAG Admin 품질 평가 "내보내기" 파일(문항 list)도 같은 디렉터리에서 읽는다."""
+    (tmp_path / "q001.yaml").write_text(
+        "id: q001\ntype: single_doc\nquestion: a\nchannel_id: c1\n", encoding="utf-8"
+    )
+    (tmp_path / "feedback-candidates.yaml").write_text(
+        '- id: fb-1\n  type: table\n  question: "b"\n  channel_id: "c1"\n'
+        '  ground_truth:\n    answer_gist: "x"\n    documents: []\n    pages: [3]\n    answerable: true\n'
+        '- id: fb-2\n  type: no_answer\n  question: "c"\n  channel_id: "c1"\n',
+        encoding="utf-8",
+    )
+    cases = load_dataset(tmp_path)
+    assert [c.id for c in cases] == ["fb-1", "fb-2", "q001"]
+    assert cases[0].ground_truth.pages == [3]

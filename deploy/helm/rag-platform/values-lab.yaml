@@ -155,6 +155,7 @@ appServices:
       - { name: INDEX_JOB_TRIGGER,     value: "k8s" }        # 업로드/재색인 → parser-indexer Job 자동 생성
       - { name: INDEX_JOB_NAMESPACE,   value: "rag-ingestion" }
       - { name: QDRANT_URL,            value: "http://qdrant.rag-data:6333" }   # 비활성화/삭제 → is_active=false
+      - { name: RAG_API_URL,           value: "http://rag-api.rag-app:8002" }   # 품질 평가 › 평가 실행 (FR-OPS-008)
       - { name: POD_LOG_ACCESS,        value: "k8s" }    # 오류 로그 화면의 파드 로그 (podLogs.enabled Role)
       - { name: APP_ENV,   value: "lab" }
       - { name: LOG_LEVEL, value: "INFO" }

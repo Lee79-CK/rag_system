@@ -9,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from rag_schemas import RagCompletion
 
+from rag.domain.citation import build_citations
+
 router = APIRouter()
 
 
@@ -33,5 +35,6 @@ async def completions(body: RagCompletionRequest, request: Request) -> RagComple
         answer=output.answer,
         citations=output.citations,
         insufficient_evidence=output.insufficient_evidence,
+        retrieved=build_citations(output.selected_chunks),  # 평가 Recall@10 용 (인용 여부 무관)
         usage=output.usage,
     )

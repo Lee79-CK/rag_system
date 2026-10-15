@@ -268,27 +268,94 @@ export interface SettingView {
 }
 
 // ----- Evaluation (§13) -----
-export interface EvaluationDataset {
-  id: string;
-  name: string;
-  item_count?: number;
-  created_at?: string | null;
-}
-
-export interface EvaluationRun {
-  id: string;
-  dataset_id?: string;
-  status?: string;
-  recall_at_10?: number | null;
-  faithfulness?: number | null;
-  created_at?: string | null;
-}
+// ----- Evaluation candidates (§7.5, §13.3) -----
+export type CandidateStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED';
+/** tools/evaluation CaseType 과 동일 */
+export type EvalCaseType = 'single_doc' | 'multi_doc' | 'table' | 'definition' | 'no_answer' | 'ambiguous';
 
 export interface PromoteCandidateResult {
   candidate_id: string;
   message_id: string;
-  status: string;
+  status: CandidateStatus;
+  /** false = 이미 승격된 답변 (기존 후보 반환) */
+  created: boolean;
 }
+
+export interface EvaluationCandidate {
+  id: string;
+  message_id: string | null;
+  channel_id: string;
+  question: string;
+  answer: string;
+  cited_documents: string[];
+  case_type: EvalCaseType;
+  answer_gist: string;
+  expected_documents: string[];
+  expected_pages: number[];
+  answerable: boolean;
+  status: CandidateStatus;
+  note: string | null;
+  promoted_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export type EvaluationRunStatus = 'RUNNING' | 'COMPLETED' | 'FAILED';
+
+/** rag_eval.MetricSummary (0~1) */
+export interface EvaluationMetrics {
+  total: number;
+  recall_at_10: number;
+  citation_precision: number;
+  no_answer_safety: number;
+  answerable_answered: number;
+  by_type: Record<string, number>;
+  /** 지표별 적용 문항 수 (0 이면 해당 지표 없음 — 값 0.0 은 의미 없음) */
+  applicable?: Partial<Record<'recall_at_10' | 'citation_precision' | 'no_answer_safety' | 'answerable_answered', number>>;
+}
+
+export interface EvaluationRun {
+  id: string;
+  status: EvaluationRunStatus;
+  dataset: string;
+  total: number;
+  done: number;
+  metrics: EvaluationMetrics | null;
+  error: string | null;
+  started_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+}
+
+export interface EvaluationRunResult {
+  seq: number;
+  candidate_id: string | null;
+  case_id: string;
+  question: string;
+  case_type: EvalCaseType;
+  answerable: boolean;
+  answer: string;
+  insufficient_evidence: boolean;
+  expected_documents: string[];
+  citations: string[];
+  retrieved: string[];
+  /** 1.0 / 0.0, 해당 없음 null */
+  recall_at_10: number | null;
+  citation_precision: number | null;
+  no_answer_safe: number | null;
+  answerable_answered: number | null;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface EvaluationRunDetail extends EvaluationRun {
+  results: EvaluationRunResult[];
+}
+
+export type CandidateUpdate = Partial<
+  Pick<EvaluationCandidate, 'case_type' | 'answer_gist' | 'expected_documents' | 'expected_pages' | 'answerable' | 'status' | 'note'>
+>;
 
 // ----- Audit Logs (§7.5, FR-AUTH-005) -----
 /** GET /api/v1/audit-logs 행. method/path 는 미들웨어 기록("METHOD /path")일 때만, 핸들러 기록은 action 이름. */
@@ -334,7 +401,11 @@ export interface FeedbackCitation {
 export interface FeedbackMessage {
   message_id: string;
   conversation_id: string;
+  /** 질문 원문 (chat_jobs 로 연결, 없으면 null) */
+  question: string | null;
   content: string;
+  /** 평가셋 후보로 승격됐으면 그 상태 */
+  candidate_status: CandidateStatus | null;
   channel_id: string;
   value: FeedbackValue;
   created_at: string | null;

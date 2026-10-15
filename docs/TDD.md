@@ -15,7 +15,7 @@
 | v1.1 | 2026-07-11 | 답변 피드백(👍/👎) 기능 추가 — Interactive Message Actions 기반. §4.5, §5(message_feedback), §7.1.4, §7.2.5, §7.5, §7.8, §12, §13, §15(M6/M8), §16(DEC-018 확정), §18 갱신 |
 | v1.2 | 2026-07-11 | Python 3.11 → **3.12** 전환. §3.1(스택/툴링 버전), §3.4(cp312 휠 반입·sdist 빌드 금지 정책), §7.7(OCR 격리 fallback), §15(M1 DoD), §16(결정 근거) 갱신 |
 | v2.0 | 2026-09-28 | **Mattermost 완전 제거 → Web Chat 전환.** 사용자 UI = `apps/chat-web`(aiops_chatbot Next.js UI 이식, 원본 무수정), 백엔드 = `apps/chat-gateway`(FastAPI REST + python-socketio `/ws`, NestJS 미이식), 공유 lib `libs/chat-adapter`(`libs/mattermost-adapter` 대체). 답변 **토큰 스트리밍**(`llm.stream.delta`, ADR-001 개정), **prehash 로그인**(PBKDF2 prehash → 서버 scrypt+pepper, HS256 JWT access + HttpOnly refresh 쿠키 rotation), Channel 격리 키 = `chat_channels.id`(UUID) + 채널 멤버십, 피드백 토큰 = `HMAC(message_id:bot_post_id)`, Alembic `0003_webchat`(데이터 보존 — **업그레이드 후 전 문서 재색인 필요**), 요구사항 ID `FR-MM-*` → `FR-WEB-*`. 전 절(§1~§18) 갱신, §19(기존 결함 수정 기록) 신설. 검증: 159 passed · ruff/helm lint clean · admin-web/chat-web build OK |
-| v2.1 | 2026-10-13 | **`/` 접두어 LLM 직접 대화**(FR-CHAT-014): Binding `direct_llm_enabled`(Alembic `0004_direct_llm`), `ChatRequest.direct`·`RagCompletion.direct`, `RagPipeline.run_direct`. 근거 문서 표는 인용한 번호만(FR-CHAT-003/004 보강), chat-web 근거 표 기본 접힘. §4.3, §5, §7.1.1, §7.2.1, §7.2.5, §7.2.6 갱신 |
+| v2.1 | 2026-10-13 | **`/` 접두어 LLM 직접 대화**(FR-CHAT-014): Binding `direct_llm_enabled`(Alembic `0004_direct_llm`), `ChatRequest.direct`·`RagCompletion.direct`, `RagPipeline.run_direct`. 근거 문서 표는 인용한 번호만(FR-CHAT-003/004 보강), chat-web 근거 표 기본 접힘. **평가셋 후보 승격·검토·YAML 내보내기**(FR-OPS-012, Alembic `0005_eval_candidates`, admin-api `/api/v1/evaluation/candidates*` — 기존 datasets/runs 스텁 제거). **포털 평가 실행·결과 조회**(FR-OPS-008, Alembic `0006_eval_runs`, `/api/v1/evaluation/runs*`, admin-api `RAG_API_URL`), 공용 lib `libs/eval-core`(`rag_eval`), 동기 completions `retrieved`. §4.3, §5, §7.1.1, §7.2.1, §7.2.5, §7.2.6, §7.5, §13.3 갱신 |
 | v2.0.1 | 2026-09-29 | **병합 복구** — 2026-09-10 코드 리뷰(v1.x 기준) 수정 중 v2.0 에 유효한 것을 이월: Containerfile 8종 + `make build-images/push-images/helm-lint/helm-template`, admin-api 색인 트리거(`index_trigger.py`, 업로드 `start_indexing`), worker `claim_job` 멱등 가드, RQ `job_timeout`, chat-gateway Secret fail-closed(503 `AUTH_NOT_CONFIGURED`), 마스킹 값 패턴, `postgres_password` SecretStr, 단일 Helm chart(rbac/migration-job/namespaces, `secretMount.keys`, `networkPolicy.ingressController/exposedServices/apiServer`). §2, §7.1, §7.2.1, §7.5, §10~§14, §17, §19 갱신. 검증: 183 passed(Docker 없으면 182 passed, 1 skipped) · ruff clean · helm lint 3프로파일 clean |
 
 ---
@@ -193,7 +193,7 @@ rag-platform/
 │   │   │   │   └── audit.py        # 감사 로그 미들웨어
 │   │   │   ├── db/
 │   │   │   │   ├── models.py       # SQLAlchemy ORM (§5 DDL과 1:1)
-│   │   │   │   └── migrations/     # Alembic (0001_initial → 0002_feedback_enabled → 0003_webchat → 0004_direct_llm)
+│   │   │   │   └── migrations/     # Alembic (0001_initial → … → 0004_direct_llm → 0005_eval_candidates → 0006_eval_runs)
 │   │   │   └── services/
 │   │   │       ├── storage.py      # 문서 원본 저장 (NFS PVC, DOCUMENT_STORAGE_PATH)
 │   │   │       └── index_trigger.py # 색인 Job 트리거 none|k8s (§7.5)
@@ -259,6 +259,7 @@ rag-platform/
 │   │       ├── passwords.py        # prehash(PBKDF2) / scrypt+pepper — stdlib only (v2.0)
 │   │       └── jwt.py              # HS256 JWT — stdlib only (v2.0)
 │   ├── observability/              # structlog 설정, prometheus 공통 metric, secret masking
+│   ├── eval-core/                  # rag_eval — 평가 모델·지표·completions→CaseResult (tools/evaluation CLI·admin-api 포털 평가 공유, v2.1)
 │   └── chat-adapter/               # Web Chat 표현 계층 (gateway·worker 공유) — v2.0
 │       └── src/chat_adapter/
 │           ├── render.py           # render_answer(→ markdown + blocks), feedback_token/verify_feedback_token
@@ -684,7 +685,7 @@ def decode(token: str, secret: bytes, *, leeway: int = 5) -> dict: ...
 
 ## 5. 데이터베이스 설계 (PostgreSQL)
 
-PRD §18.1 Entity를 기준으로 확정한 DDL. 아래는 Alembic head(`0004_direct_llm`) 적용 후의 **최종 스키마**다 (`0001_initial` → `0002_feedback_enabled` → `0003_webchat` → `0004_direct_llm`).
+PRD §18.1 Entity를 기준으로 확정한 DDL. 아래는 Alembic head(`0006_eval_runs`) 적용 후의 **최종 스키마**다 (`0001_initial` → `0002_feedback_enabled` → `0003_webchat` → `0004_direct_llm` → `0005_eval_candidates` → `0006_eval_runs`).
 Naming: snake_case, PK는 `id UUID DEFAULT gen_random_uuid()`, 시각은 `timestamptz`.
 
 ```sql
@@ -865,6 +866,61 @@ CREATE TABLE message_feedback (
 );
 CREATE INDEX idx_feedback_channel ON message_feedback (channel_id, created_at DESC);
 CREATE INDEX idx_feedback_message ON message_feedback (message_id);
+
+-- 0005 (v2.1): 👎 답변 → 평가셋 후보 (§7.5). question/answer/cited_documents 는 승격 시점 스냅샷
+CREATE TABLE evaluation_candidates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
+    channel_id VARCHAR(64) NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    cited_documents JSONB NOT NULL DEFAULT '[]'::jsonb,
+    case_type VARCHAR(20) NOT NULL DEFAULT 'single_doc',   -- §13.3 type
+    answer_gist TEXT NOT NULL DEFAULT '',
+    expected_documents JSONB NOT NULL DEFAULT '[]'::jsonb,
+    expected_pages JSONB NOT NULL DEFAULT '[]'::jsonb,
+    answerable BOOLEAN NOT NULL DEFAULT true,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',        -- PENDING | ACCEPTED | REJECTED
+    note TEXT,
+    promoted_by VARCHAR(100) NOT NULL,                     -- admin_users.login_id
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_eval_candidate_message UNIQUE (message_id)
+);
+CREATE INDEX idx_eval_candidates_status ON evaluation_candidates (status, created_at DESC);
+
+-- 0006 (v2.1): 포털 평가 실행·결과 (FR-OPS-008)
+CREATE TABLE evaluation_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    status VARCHAR(20) NOT NULL DEFAULT 'RUNNING',          -- RUNNING | COMPLETED | FAILED
+    dataset VARCHAR(100) NOT NULL DEFAULT 'feedback-candidates',
+    total INT NOT NULL DEFAULT 0,
+    done INT NOT NULL DEFAULT 0,
+    metrics JSONB,                                          -- rag_eval.MetricSummary + applicable
+    error TEXT,
+    started_by VARCHAR(100) NOT NULL,                       -- admin_users.login_id
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),          -- 진행 heartbeat
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_eval_runs_created ON evaluation_runs (created_at DESC);
+CREATE UNIQUE INDEX uq_eval_runs_single_running ON evaluation_runs ((true)) WHERE status = 'RUNNING';
+CREATE TABLE evaluation_run_results (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID NOT NULL REFERENCES evaluation_runs(id) ON DELETE CASCADE,
+    seq INT NOT NULL,
+    candidate_id UUID REFERENCES evaluation_candidates(id) ON DELETE SET NULL,
+    case_id VARCHAR(40) NOT NULL, question TEXT NOT NULL, case_type VARCHAR(20) NOT NULL,
+    answerable BOOLEAN NOT NULL, answer TEXT NOT NULL DEFAULT '',
+    insufficient_evidence BOOLEAN NOT NULL DEFAULT false,
+    expected_documents JSONB NOT NULL DEFAULT '[]'::jsonb,
+    citations JSONB NOT NULL DEFAULT '[]'::jsonb,           -- 인용 문서 제목
+    retrieved JSONB NOT NULL DEFAULT '[]'::jsonb,           -- 검색(컨텍스트 선택) 문서 제목
+    recall_at_10 DOUBLE PRECISION, citation_precision DOUBLE PRECISION,
+    no_answer_safe DOUBLE PRECISION, answerable_answered DOUBLE PRECISION,   -- 1/0, 해당 없음 NULL
+    latency_ms INT, error TEXT
+);
+CREATE INDEX idx_eval_run_results_run ON evaluation_run_results (run_id, seq);
 
 -- ===== 문서 =====
 CREATE TABLE documents (
@@ -1478,7 +1534,18 @@ Bot Post 최종 `props` (`WebChatDelivery.deliver_answer`, jsonb merge — place
 | GET | `/api/v1/feedback/messages?value=DOWN` | 👎 답변 목록 — 질문/답변/Citation과 join하여 품질 개선 분석용 |
 | GET | `/api/v1/messages/{id}/feedback` | 특정 답변의 피드백 상세 |
 
-  - 👎 답변 목록은 Evaluation 화면과 연계: 품질 평가자가 👎 사례를 평가 데이터셋 후보(§13.3)로 승격하는 버튼 제공 (admin-web).
+  - 👎 답변 목록은 Evaluation 화면과 연계: 품질 평가자가 👎 사례를 평가 데이터셋 후보(§13.3)로 승격하는 버튼 제공 (admin-web). 목록 행에는 `question`(답변 Bot Post → `chat_jobs.bot_post_id` → 질문 Post 의 user message, 트리거어·`/` 제거본)과 `candidate_status`(승격 시 PENDING/ACCEPTED/REJECTED, 아니면 null)가 포함된다.
+- **평가셋 후보·평가 실행 (FR-OPS-012 · FR-OPS-008, Alembic `0005_eval_candidates` · `0006_eval_runs`)**: 접근 역할 SYS_ADMIN, QUALITY_EVALUATOR. 포털 실행은 채택 후보만 대상 — 리포지토리 데이터셋(`tests/evaluation/*`)은 CLI(`make evaluate`)로 평가한다.
+
+| Method | Endpoint | 설명 |
+|---|---|---|
+| POST | `/api/v1/evaluation/candidates` | `{message_id}` — assistant message 만(아니면 422 `NOT_AN_ANSWER`, 없으면 404). 질문·답변·인용 문서 제목을 **스냅샷**으로 저장하고 `expected_documents` 초기값 = 인용 문서. 201 `{candidate_id, message_id, status: PENDING, created: true}`, 이미 승격된 답변이면 200 기존 후보(`created: false`, 멱등 — `UNIQUE(message_id)`) |
+| GET | `/api/v1/evaluation/candidates?status=` | 후보 목록(최신순) |
+| PATCH | `/api/v1/evaluation/candidates/{id}` | `case_type`(§13.3 CaseType)·`answer_gist`·`expected_documents`·`expected_pages`·`answerable`·`status`·`note`. `answerable=true` 인데 `answer_gist` 가 비면 ACCEPTED 거부(422 `ANSWER_GIST_REQUIRED`) |
+| POST | `/api/v1/evaluation/runs` | **포털 평가 실행 (FR-OPS-008)**. ACCEPTED 후보 0건 422 `NO_ACCEPTED_CANDIDATES`, RUNNING 존재 시 409 `EVALUATION_RUNNING`(DB partial unique index 로 replica 간에도 1건). run 행(RUNNING)을 만들고 202 → `BackgroundTasks` 에서 `services/eval_runner.execute_run`: 채택 후보를 `rag_eval.EvalCase`(id `fb-<8자>`)로 바꿔 `RAG_API_URL`/internal/v1/rag/completions 를 **순차** 호출(read timeout `EVALUATION_TIMEOUT` 180s) → 문항별 지표(`rag_eval`, CLI 와 동일 계산)·검색/인용 문서·지연을 `evaluation_run_results` 에 저장, 문항마다 `done`·`updated_at`(heartbeat) 갱신. 문항 실패는 그 문항 `error` 로 남기고 계속. 완료 시 `metrics` = MetricSummary + `applicable`(지표별 적용 문항 수 — 0 이면 화면은 "해당 없음") |
+| GET | `/api/v1/evaluation/runs` | 실행 이력(최신순, `limit` ≤200). 조회 시 heartbeat 가 10분 넘게 멈춘 RUNNING 을 FAILED("중단됨")로 정리 — 기동 시 일괄 정리는 다른 replica 의 실행을 죽이므로 하지 않는다 |
+| GET | `/api/v1/evaluation/runs/{id}` | 실행 + 문항별 결과(`results[]`: 질문·유형·answerable·답변·근거 부족 여부·기대/검색/인용 문서·지표 4종(1/0/null)·latency_ms·error) |
+| GET | `/api/v1/evaluation/candidates/export` | ACCEPTED 후보 → §13.3 EvalCase **list** YAML(`feedback-candidates.yaml`, id `fb-<후보 id 앞 8자>`). runner `load_dataset` 는 파일 하나에 mapping(1문항) 또는 list(여러 문항)를 읽는다 |
 - 모든 mutating 요청은 `audit.py` 미들웨어가 audit_logs 기록 (FR-AUTH-005). 조회는 `GET /api/v1/audit-logs`(`admin/api/audit_logs.py`, SYS_ADMIN·AUDITOR): 행위자·Action/Path 부분 일치(대소문자 무시), Method(POST/PUT/PATCH/DELETE), 결과(OK/DENIED/ERROR), 기간, 최신순 `limit`(기본 500, 최대 2000, `meta.truncated`). 미들웨어 행(`METHOD /path`)은 `method`·`path`·`status_code` 로 풀고, 핸들러 명시 행(`DOCUMENT_ACL_UPDATE`, `ERROR_LOG_VIEW`)은 action·target·detail 그대로 반환. 조회 자체는 감사하지 않는다(행에 Secret 없음).
 
 ### 7.6 admin-web
@@ -1586,7 +1653,7 @@ env:
 | `POST /api/v1/posts`, `GET /api/v1/posts/{id}/thread`, `DELETE /api/v1/posts/{id}` | chat-gateway | 질문 수신 ACK ≤ 2s (§7.1.1) |
 | `POST /api/v1/actions` | chat-gateway | 피드백 버튼. JWT + 멤버십 + HMAC feedback_token, LLM/Queue 미호출 (§7.1.4) |
 | socket.io `/ws` (websocket 전용) | chat-gateway | 이벤트 §7.1.2 |
-| `POST /internal/v1/rag/completions` | rag-api | 동기 실행 버전(테스트/평가용). 운영 경로는 Queue |
+| `POST /internal/v1/rag/completions` | rag-api | 동기 실행 버전(테스트/평가용). 운영 경로는 Queue. 응답 `RagCompletion` 에 `retrieved`(컨텍스트로 선택된 검색 청크 전체, rerank 순)를 채운다 — `citations` 는 본문이 인용한 것만(FR-CHAT-003)이라 평가 Recall@10 은 `retrieved` 기준. 호출자: CLI runner, admin-api 포털 평가(§7.5) |
 | `POST /internal/v1/embeddings` | embedding-api | `{"texts": [...]}`, dim=1024 고정 응답 |
 | `POST /internal/v1/rerank` | reranker-api | 후보 ≤ 50 |
 | `/api/v1/documents/*`, `/api/v1/chat/*`(channels·bindings·members·users), `/api/v1/chat-jobs`, `/api/v1/settings`, `/api/v1/evaluation/*` | admin-api | §7.5 |
@@ -1816,6 +1883,8 @@ ground_truth:
   pages: [12]
   answerable: true
 ```
+
+파일 하나에 위 mapping(1문항) 또는 그 list(여러 문항 — RAG Admin 품질 평가 "채택 문항 YAML 내보내기" 형식, §7.5)를 둘 수 있다. 모델·지표·completions 응답 변환은 `libs/eval-core`(`rag_eval`)에 있고 CLI runner 와 admin-api 포털 평가 실행(§7.5)이 같은 계산을 쓴다. Recall@10 은 completions `retrieved`(§9) 기준(없는 구버전 rag-api 는 citations 로 근사).
 
 Runner는 Recall@10, Citation Precision, Faithfulness(LLM-judge 선택), 무근거 안전응답률을 산출하여 `evaluation_report.md` 생성.
 

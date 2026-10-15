@@ -19,7 +19,8 @@ import { QueryState, errorMessage } from '../components/QueryState';
 import { BarChart, type BarDatum } from '../components/BarChart';
 import { useFeedbackByChannel, useFeedbackMessages, useFeedbackSummary } from '../api/feedback';
 import { useChannels } from '../api/channels';
-import { usePromoteCandidate } from '../api/evaluation';
+import { CANDIDATE_STATUS_LABEL, usePromoteCandidate } from '../api/evaluation';
+import { Link } from 'react-router-dom';
 import type { FeedbackByChannel, FeedbackMessage } from '../types';
 
 const { Text, Paragraph } = Typography;
@@ -49,8 +50,10 @@ export function FeedbackDashboard() {
 
   const onPromote = async (messageId: string) => {
     try {
-      await promote.mutateAsync(messageId);
-      message.success('평가셋 후보로 승격했습니다.');
+      const r = await promote.mutateAsync(messageId);
+      message.success(
+        r.created ? '평가셋 후보로 승격했습니다. 품질 평가 화면에서 정답을 입력하세요.' : '이미 승격된 답변입니다.',
+      );
     } catch (e) {
       message.error(errorMessage(e));
     }
@@ -175,18 +178,24 @@ export function FeedbackDashboard() {
               <List.Item
                 key={m.message_id}
                 extra={
-                  <Popconfirm
-                    title="이 답변을 평가셋 후보로 승격하시겠습니까?"
-                    onConfirm={() => onPromote(m.message_id)}
-                  >
-                    <Button
-                      type="primary"
-                      icon={<RiseOutlined />}
-                      loading={promote.isPending}
+                  m.candidate_status ? (
+                    <Link to="/evaluation">
+                      <Button icon={<RiseOutlined />}>승격됨 · {CANDIDATE_STATUS_LABEL[m.candidate_status]}</Button>
+                    </Link>
+                  ) : (
+                    <Popconfirm
+                      title="이 답변을 평가셋 후보로 승격하시겠습니까?"
+                      onConfirm={() => onPromote(m.message_id)}
                     >
-                      평가셋 승격
-                    </Button>
-                  </Popconfirm>
+                      <Button
+                        type="primary"
+                        icon={<RiseOutlined />}
+                        loading={promote.isPending && promote.variables === m.message_id}
+                      >
+                        평가셋 승격
+                      </Button>
+                    </Popconfirm>
+                  )
                 }
               >
                 <List.Item.Meta
@@ -201,7 +210,14 @@ export function FeedbackDashboard() {
                     </span>
                   }
                 />
+                {m.question && (
+                  <Paragraph style={{ marginBottom: 4 }} ellipsis={{ rows: 2, expandable: true }}>
+                    <Text strong>Q. </Text>
+                    {m.question}
+                  </Paragraph>
+                )}
                 <Paragraph style={{ marginBottom: 8 }} ellipsis={{ rows: 4, expandable: true }}>
+                  {m.question && <Text strong>A. </Text>}
                   {m.content}
                 </Paragraph>
                 {m.citations.length > 0 && (

@@ -16,9 +16,10 @@ from rag_schemas import FeedbackValue
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from admin.api.evaluation import question_for
 from admin.api.responses import api_error, envelope
 from admin.core.rbac import QUALITY_EVALUATOR, SYS_ADMIN, Principal, require_roles
-from admin.db.models import Citation, Message, MessageFeedbackRow
+from admin.db.models import Citation, EvaluationCandidate, Message, MessageFeedbackRow
 from admin.db.session import get_db
 
 router = APIRouter(prefix="/api/v1", tags=["feedback"])
@@ -95,6 +96,15 @@ def feedback_messages(
         .order_by(MessageFeedbackRow.created_at.desc())
     ).all()
 
+    promoted: dict[uuid.UUID | None, str] = dict(
+        db.execute(
+            select(EvaluationCandidate.message_id, EvaluationCandidate.status).where(
+                EvaluationCandidate.message_id.in_({msg.id for _fb, msg in fb_rows})
+            )
+        )
+        .tuples()
+        .all()
+    )
     items = []
     for fb, msg in fb_rows:
         citations = (
@@ -108,8 +118,11 @@ def feedback_messages(
             {
                 "message_id": str(msg.id),
                 "conversation_id": str(msg.conversation_id),
+                "question": question_for(db, msg),
                 "content": msg.content,
                 "channel_id": fb.channel_id,
+                # 평가셋 후보로 승격됐으면 그 상태(PENDING/ACCEPTED/REJECTED), 아니면 null
+                "candidate_status": promoted.get(msg.id),
                 "value": fb.value,
                 "created_at": fb.created_at.isoformat() if fb.created_at else None,
                 "citations": [

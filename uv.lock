@@ -19,6 +19,7 @@ members = [
     "parser-indexer",
     "rag-api",
     "rag-common",
+    "rag-eval",
     "rag-observability",
     "rag-platform",
     "rag-schemas",
@@ -60,6 +61,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "qdrant-client" },
     { name = "rag-common" },
+    { name = "rag-eval" },
     { name = "rag-observability" },
     { name = "rag-schemas" },
     { name = "sqlalchemy" },
@@ -87,6 +89,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "qdrant-client", specifier = ">=1.12,<1.14" },
     { name = "rag-common", editable = "libs/common" },
+    { name = "rag-eval", editable = "libs/eval-core" },
     { name = "rag-observability", editable = "libs/observability" },
     { name = "rag-schemas", editable = "libs/schemas" },
     { name = "sqlalchemy", specifier = ">=2.0" },
@@ -707,6 +710,7 @@ dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "rag-eval" },
 ]
 
 [package.dev-dependencies]
@@ -719,6 +723,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rag-eval", editable = "libs/eval-core" },
 ]
 
 [package.metadata.requires-dev]
@@ -2528,6 +2533,17 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.10" },
     { name = "tenacity", specifier = ">=8.5" },
 ]
+
+[[package]]
+name = "rag-eval"
+version = "0.1.0"
+source = { editable = "libs/eval-core" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.7" }]
 
 [[package]]
 name = "rag-observability"

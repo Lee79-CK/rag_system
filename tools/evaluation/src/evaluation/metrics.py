@@ -1,80 +1,19 @@
-"""평가 지표 (순수 함수, §13.3 / PRD §8.1). LLM/네트워크 비종속 — 단위 테스트 가능."""
+"""평가 지표 — 공용 lib `rag_eval.metrics` re-export (admin-api 포털 평가와 공유)."""
 
-from __future__ import annotations
+from rag_eval.metrics import (
+    _doc_match,
+    answerable_answered,
+    citation_precision,
+    no_answer_safe,
+    recall_at_10,
+    summarize,
+)
 
-from evaluation.models import CaseResult, MetricSummary
-
-
-def _stem(s: str) -> str:
-    # str.rstrip(".pdf") 는 문자 집합 제거라 "guide_dp.pdf" → "guide_" 가 된다 → removesuffix 사용
-    return s.strip().lower().removesuffix(".pdf")
-
-
-def _doc_match(name: str, expected: list[str]) -> bool:
-    """문서명 일치(확장자·경로 접두 차이 허용). 기대 문서명(stem)이 검색 문서명에 포함되어야 한다.
-
-    반대 방향(검색명 ⊂ 기대명)은 "guide_" 가 "guide_dp.pdf" 에 매칭되는 오탐을 내므로 허용하지 않는다.
-    """
-    n = _stem(name)
-    return any(es and es in n for es in (_stem(e) for e in expected))
-
-
-def recall_at_10(result: CaseResult) -> float | None:
-    """정답 문서가 top-10 검색 결과에 포함되면 1.0. answerable=False는 제외(None)."""
-    if not result.case.ground_truth.answerable:
-        return None
-    expected = result.case.ground_truth.documents
-    if not expected:
-        return None
-    top10 = result.retrieved[:10]
-    hit = any(_doc_match(d.document_name, expected) for d in top10)
-    return 1.0 if hit else 0.0
-
-
-def citation_precision(result: CaseResult) -> float | None:
-    """표시된 citation 중 실제 근거(ground truth 문서)에 해당하는 비율."""
-    if not result.case.ground_truth.answerable:
-        return None
-    if not result.citations:
-        return None
-    expected = result.case.ground_truth.documents
-    if not expected:
-        return None
-    correct = sum(1 for c in result.citations if _doc_match(c.document_name, expected))
-    return correct / len(result.citations)
-
-
-def no_answer_safe(result: CaseResult) -> float | None:
-    """answerable=False 케이스에서 추측 없이 근거 부족을 안내했으면 1.0."""
-    if result.case.ground_truth.answerable:
-        return None
-    return 1.0 if result.insufficient_evidence else 0.0
-
-
-def answerable_answered(result: CaseResult) -> float | None:
-    """answerable=True 케이스에서 실제로 답변(근거 있음)했으면 1.0."""
-    if not result.case.ground_truth.answerable:
-        return None
-    return 0.0 if result.insufficient_evidence else 1.0
-
-
-def _mean(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
-
-
-def summarize(results: list[CaseResult]) -> MetricSummary:
-    def collect(fn):
-        return [v for r in results if (v := fn(r)) is not None]
-
-    by_type: dict[str, int] = {}
-    for r in results:
-        by_type[r.case.type] = by_type.get(r.case.type, 0) + 1
-
-    return MetricSummary(
-        total=len(results),
-        recall_at_10=_mean(collect(recall_at_10)),
-        citation_precision=_mean(collect(citation_precision)),
-        no_answer_safety=_mean(collect(no_answer_safe)),
-        answerable_answered=_mean(collect(answerable_answered)),
-        by_type=by_type,
-    )
+__all__ = [
+    "_doc_match",
+    "answerable_answered",
+    "citation_precision",
+    "no_answer_safe",
+    "recall_at_10",
+    "summarize",
+]

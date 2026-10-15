@@ -228,6 +228,13 @@
             "title": "Direct",
             "default": false
           },
+          "retrieved": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "type": "array",
+            "title": "Retrieved"
+          },
           "usage": {
             "additionalProperties": true,
             "type": "object",

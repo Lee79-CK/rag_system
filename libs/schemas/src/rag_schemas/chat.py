@@ -55,4 +55,7 @@ class RagCompletion(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     insufficient_evidence: bool = False
     direct: bool = False  # LLM 직접 대화 답변 (근거 문서 없음, FR-CHAT-014)
+    # 동기 completions(평가용) 전용: 컨텍스트로 선택된 검색 청크 전체(rerank 순). citations 는 본문이 인용한 것만이라
+    # Recall@10 계산에는 이 값을 쓴다. Worker(Web Chat) 경로는 채우지 않는다.
+    retrieved: list[Citation] = Field(default_factory=list)
     usage: dict = Field(default_factory=dict)  # prompt_tokens, completion_tokens, stage latencies

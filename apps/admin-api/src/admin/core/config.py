@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     qdrant_collection: str = Field(default="rag_chunks_v1", alias="QDRANT_COLLECTION")
     qdrant_timeout: float = Field(default=10.0, alias="QDRANT_TIMEOUT")
 
+    # --- 포털 평가 실행 (FR-OPS-008) — rag-api 동기 completions 호출 ---
+    rag_api_url: str = Field(default="http://localhost:8002", alias="RAG_API_URL")
+    # 문항당 read timeout. rag-api LLM timeout(120s) + 검색·rerank 여유
+    evaluation_timeout: float = Field(default=180.0, alias="EVALUATION_TIMEOUT")
+
     # RUNNING 으로 이 시간(분) 넘게 남은 index_job 은 비정상 종료(Pod 강제 종료·재시도 소진)로 보고 FAILED 처리.
     # 그대로 두면 문서의 채널 변경·비활성화·재색인이 영구히 409 로 막힌다. 최대 문서(1,000쪽 ≈ 30분)보다 넉넉히.
     index_job_stale_minutes: int = Field(default=120, alias="INDEX_JOB_STALE_MINUTES")
